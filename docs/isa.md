@@ -8,7 +8,7 @@ La ISA de PORYGON se organiza en cuatro formatos de instrucción que comparten u
 |----------|---------|----------------------------|
 | `00`     | MATH    | ALU (general y especializada) |
 | `01`     | LOST    | LSU (load/store) |
-| `10`     | JUMP    | BRU (control de flujo) |
+| `10`     | JUMP    | BRUH (control de flujo) |
 | `11`     | CRYPTO  | Unidad criptográfica Feistel4 + Bóveda de llaves |
 
 El direccionamiento de memoria es **registro-registro** (con offset), el ordenamiento de bits es **Little Endian**, y la arquitectura expone **8 registros de propósito general de 32 bits** y un **Program Counter (PC)**.
@@ -240,7 +240,6 @@ Con inmediato (`imm = 1`): `<instr> rd, imm(rs)` → `Reg[rd] ← Mem[Reg[rs] + 
 **Notas:**
 
 - `sext` = extensión de signo; `zext` = extensión de ceros.
-- Los accesos deben respetar la alineación (Sec. 7.3).
 - Un acceso desalineado genera `DIRECCION_INVALIDA`.
 
 ### Formato JUMP
@@ -275,7 +274,34 @@ Con inmediato (`imm = 1`): `<instr> rd, imm` → usa el inmediato de 16 bits del
 
 #### Estructura interna (16 bits)
 
-...
+| Bits    | Campo              | Ancho | Descripción |
+|---------|--------------------|-------|-------------|
+| [15:13] | `rs1`              | 3     | Operando A (ver tabla de roles por instrucción) |
+| [12:10] | `rs2`              | 3     | Operando B (ver tabla de roles por instrucción) |
+| [9:6]   | `funct`            | 4     | Selector de operación crypto |
+| [5:4]   | `rnd_idx` / `sk_idx` | 2   | Ronda Feistel (0–3) o subllave destino (0–3) |
+| [3:2]   | `k_idx`            | 2     | Índice de llave en la bóveda (0–3) |
+| [1:0]   | `opcode`           | 2     | `11` = CRYPTO |
+
+> [!IMPORTANT]
+>
+> El formato de instrucción visto en la estructura anterior aplica en su totalidad, solamente, en la instrucción `feistel`. La encodificación especfica de cada una de las instrucciones del formato CRYPTO se puede ver en la siguiente tabla:
+>
+> | Instrucción | `rs1` | `rs2` | `funct` | `rnd_idx`/`sk_idx` | `k_idx` |
+> |-------------|-------|-------|---------|---------------------|---------|
+> | `auth`      | token | —     | `000`   | —                   | —       |
+> | `write`     | dato (subllave 32 bits) | — | `001` | subllave (0–3) | llave (0–3) |
+> | `feistel`   | L (32 bits) | R (32 bits) | `010` | ronda (0–3) | llave (0–3) |
+> | `pwd`       | nueva contraseña | — | `011` | —              | —       |
+> | `rvk`       | —     | —     | `100`   | —                   | —       |
+>
+> **Leyenda:**
+> - **`—`** = campo no utilizado, se codifica como `000` o `00` según su ancho.
+> - **`rs1`** y **`rs2`** son siempre registros de propósito general (3 bits → 8 registros).
+> - **`rnd_idx`** y **`sk_idx`** comparten el mismo campo [6:5]. El nombre cambia según la instrucción:
+>   - En `feistel` → `rnd_idx` (número de ronda, 0–3).
+>   - En `write` → `sk_idx` (número de subllave destino, 0–3).
+> - **`k_idx`** siempre indica cuál de las 4 llaves de la bóveda se usa.
 
 #### Tabla de instrucciones CRYPTO
 
