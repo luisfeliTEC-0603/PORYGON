@@ -142,9 +142,17 @@ Un **bundle** es una palabra de instrucción VLIW de **64 bits** compuesta por *
 
 ## Instruction Reference Sheet
 
+A continuación se especifican la encodificación para los formatos escogidos.   
+
 > [!TIP]
 >
 > **Convención de codificación:** en todos los formatos, el `opcode` ocupa los bits **[1:0]**. El bit `imm` se ubica, en caso de ser necesario, **inmediatamente después** del opcode. Los campos restantes se distribuyen en los bits superiores.
+
+> [!NOTE]
+>
+> **Instrucciones NOP**
+>
+> Se codifica exclusivamente como `0x0`. Ocupa un slot, pero no se despacha a ninguna unidad funcional, no accede al banco de registros y no modifica el estado arquitectónico. El bundle continúa su avance normal. Los slots consumidos como literales no se interpretan como **NOP**, independientemente de su contenido.
 
 ### Formato MATH
 
