@@ -306,7 +306,7 @@ Con inmediato (`imm = 1`): `<instr> rd, imm` → usa el inmediato de 16 bits del
 > **Leyenda:**
 > - **`—`** = campo no utilizado, se codifica como `000` o `00` según su ancho.
 > - **`rs1`** y **`rs2`** son siempre registros de propósito general (3 bits → 8 registros).
-> - **`rnd_idx`** y **`sk_idx`** comparten el mismo campo [6:5]. El nombre cambia según la instrucción:
+> - **`rnd_idx`** y **`sk_idx`** comparten el mismo campo [5:4]. El nombre cambia según la instrucción:
 >   - En `feistel` → `rnd_idx` (número de ronda, 0–3).
 >   - En `write` → `sk_idx` (número de subllave destino, 0–3).
 > - **`k_idx`** siempre indica cuál de las 4 llaves de la bóveda se usa.

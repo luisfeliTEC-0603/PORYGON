@@ -1,6 +1,8 @@
 # Guía de Implementación del Procesador VLIW (PORYGON)
 
-Esta guía establece la hoja de ruta técnica, la arquitectura modular y el desglose de tareas para la implementación en SystemVerilog del procesador VLIW de 128 bits.
+Esta guía establece la hoja de ruta técnica, la arquitectura modular y el desglose de tareas para la implementación en SystemVerilog del procesador VLIW con bundles de 64 bits. El proyecto es 100% simulado; no requiere síntesis ni FPGA.
+
+Consulta [EnunciadoArqui.md](EnunciadoArqui.md) e [isa.md](isa.md) como fuentes de requisitos. Esta guía es material auxiliar.
 
 ---
 
@@ -9,70 +11,38 @@ Esta guía establece la hoja de ruta técnica, la arquitectura modular y el desg
 El procesador **PORYGON** es un procesador de arquitectura VLIW (Very Long Instruction Word) orientado a la aceleración de algoritmos de cifrado simétrico por bloques (Feistel4) y a la ejecución de código de propósito general. 
 
 ### Características Principales:
-* **Ancho de Bundle:** 128 bits, dividido en **4 slots** de 32 bits cada uno.
-* **Modelo de Ejecución:** Paralelismo a Nivel de Instrucción (ILP) estático. Las 4 instrucciones encapsuladas en un bundle se decodifican y ejecutan simultáneamente en unidades funcionales paralelas durante el mismo ciclo de reloj.
+* **Ancho de Bundle:** 64 bits, dividido en **4 slots** de 16 bits cada uno.
+* **Modelo de Ejecución:** Paralelismo a Nivel de Instrucción (ILP) estático. Las instrucciones de un bundle válido se despachan en paralelo. Un slot consumido como inmediato no es una instrucción; un NOP no se despacha.
 * **Pipeline:** Segmentado en 4 etapas principales: Fetch (IF), Decode/Dispatch (ID), Execute (EX) y Writeback (WB).
 
 ### Flujo de Datos al Procesar un Bundle ($W, X, Y, Z$):
-Consideremos un bundle de 128 bits compuesto por 4 operaciones independientes:
-`Bundle = [ Slot 0: W (MATH) | Slot 1: X (LOST) | Slot 2: Y (JUMP) | Slot 3: Z (CRYPTO) ]`
+Consideremos un bundle de 64 bits compuesto por 4 operaciones independientes:
+`Bundle[63:0] = [ Slot 3: Z (CRYPTO) | Slot 2: Y (JUMP) | Slot 1: X (LOST) | Slot 0: W (MATH) ]`
+
+Esta distribución ilustra un ejemplo; los slots no están ligados a una unidad fija. El despacho sigue el formato y los selectores definidos en la ISA.
 
 ```
-   +-----------------------------------------------------------------------+
-   |                       FETCH STAGE (IF)                                |
-   |  PC ---> Instruction Memory (128-bit) ---> Raw Bundle [127:0]          |
-   +-----------------------------------++----------------------------------+
-                                       ||
-                                       \/
-   +-----------------------------------------------------------------------+
-   |                    DECODE & DISPATCH STAGE (ID)                       |
-   |                                                                       |
-   |   Raw Bundle [127:0] ---> [ Dispatcher / Decoder ]                    |
-   |                               |                                       |
-   |      +------------------------+-----------------------+               |
-   |      |                        |                       |               |
-   |  Slot 0 [127:96]          Slot 1 [95:64]          Slot 2 [63:32]      |
-   |  (Instrucción W)          (Instrucción X)         (Instrucción Y)     |
-   |      |                        |                       |               |
-   |      v                        v                       v               |
-   |  [Decodificador 0]        [Decodificador 1]       [Decodificador 2]   |
-   |      |                        |                       |               |
-   |      +------------------------+-----------------------+               |
-   |                               |                                       |
-   |                               v                                       |
-   |                   Register File (8 x 32-bit)                          |
-   |                   Lectura de Puertos Paralelos                        |
-   +-----------------------------------++----------------------------------+
-                                       ||
-                                       \/
-   +-----------------------------------------------------------------------+
-   |                       EXECUTE STAGE (EX)                              |
-   |                                                                       |
-   |    Operandos W      Operandos X      Operandos Y     Operandos Z      |
-   |         |                |                |               |           |
-   |         v                v                v               v           |
-   |    +---------+      +---------+      +---------+     +----------+     |
-   |    |  ALU 1  |      |   LSU   |      |   BRU   |     | Crypto / |     |
-   |    | (Math)  |      | (Load/  |      | (Jump/  |     | KeyVault |     |
-   |    |         |      | Store)  |      | Branch) |     | (Feistel)|     |
-   |    +----+----+      +----+----+      +----+----+     +----+-----+     |
-   |         |                |                |               |           |
-   +---------|----------------|----------------|---------------|-----------+
-             |                |                |               |
-             v                v                v               v
-   +-----------------------------------------------------------------------+
-   |                      WRITEBACK STAGE (WB)                             |
-   |                                                                       |
-   |   - Retorno de resultados hacia el Register File (Puertos de escritura)|
-   |   - Acceso a Memoria de Datos (RAM) mediante la LSU                   |
-   |   - Actualización de PC (dirección de salto desde la BRU)              |
-   |   - Escritura/Consulta interna en la Bóveda de Llaves (Key Vault)     |
-   +-----------------------------------------------------------------------+
+IF: PC -> Memoria de instrucciones -> Bundle [63:0]
+                         |
+                 Registro de pipeline
+                         |
+ID: Slot 3 [63:48] | Slot 2 [47:32] | Slot 1 [31:16] | Slot 0 [15:0]
+                         |
+    Decodificación de instrucciones, inmediatos y NOP
+    Lectura de operandos y despacho flexible hacia las unidades
+                         |
+                 Registro de pipeline
+                         |
+EX: ALU general/especializada | LOST | BRUH | Crypto / Key Vault
+                         |
+                 Registro de pipeline
+                         |
+WB: Escritura de resultados según la instrucción
 ```
 
-1. **Fetch (IF):** El `PC` direcciona la Memoria de Instrucciones y recupera una palabra de 128 bits.
-2. **Decode/Dispatch (ID):** El `Dispatcher` descuartiza el bundle en 4 slots de 32 bits. Identifica el `opcode` de cada slot y extrae las direcciones de los registros fuente (`rs1`, `rs2`). Lee en paralelo los valores desde el `Register File`.
-3. **Execute (EX):** Cada unidad funcional procesa su correspondiente operación de forma paralela en el mismo ciclo:
+1. **Fetch (IF):** El `PC` direcciona la Memoria de Instrucciones y recupera una palabra de 64 bits.
+2. **Decode/Dispatch (ID):** El `Dispatcher` separa el bundle en 4 slots de 16 bits y distingue instrucciones, inmediatos y NOP. Identifica el `opcode` de cada slot y extrae las direcciones de los registros fuente (`rs1`, `rs2`). Lee en paralelo los valores desde el `Register File`.
+3. **Execute (EX):** En el ejemplo, cada unidad funcional procesa su correspondiente operación de forma paralela en el mismo ciclo:
    * **Slot 0 ($W$):** Ejecuta la operación aritmética/lógica en la `ALU 1`.
    * **Slot 1 ($X$):** La `LSU` calcula la dirección efectiva de memoria (`rs2 + off`).
    * **Slot 2 ($Y$):** La `BRU` evalúa las condiciones de salto (`jz`, `jnz`) para determinar el nuevo `PC`.
@@ -84,7 +54,7 @@ Consideremos un bundle de 128 bits compuesto por 4 operaciones independientes:
 ## 2. Desglose de Requisitos del Proyecto
 
 ### 2.1 Especificación del ISA (PORYGON ISA)
-* **Descripción:** Definición del conjunto de instrucciones de 32 bits divididas en 4 formatos principales: `MATH` (`00`), `LOST` (`01`), `JUMP` (`10`) y `CRYPTO` (`11`).
+* **Descripción:** Definición del conjunto de instrucciones de 16 bits divididas en 4 formatos principales: `MATH` (`00`), `LOST` (`01`), `JUMP` (`10`) y `CRYPTO` (`11`).
 * **Ejemplo:** `sumi rs1, rs2` (Suma con inmediato enviado en el slot adyacente del bundle).
 * **Cómo y Por Qué:** Se implementa con un espacio de registros reducido (8 registros de 32 bits, con `r0 = 0`) para simplificar el decodificador y minimizar la lógica de selección en los puertos de lectura/escritura.
 
@@ -98,9 +68,9 @@ Consideremos un bundle de 128 bits compuesto por 4 operaciones independientes:
 
 ### 2.3 Unidad Criptográfica y Algoritmo Feistel4
 * **Descripción:** Módulo de hardware acelerador que ejecuta la función de ronda Feistel sobre bloques de 64 bits (mitad izquierda $L$ de 32 bits en `rs1`, mitad derecha $R$ de 32 bits en `rs2`).
-* **Función de Ronda:** $F(x, k) = \text{ROL32}((\text{ROL32}(x, 5) + k), 13)$.
-* **Ejemplo:** `feistl rs1, rs2, k_idx, rnd_idx`.
-* **Cómo y Por Qué:** En lugar de ejecutar las 4 rondas en una única instrucción monolítica (lo cual crearía una ruta crítica de propagación de reloj demasiado larga), se implementa una instrucción por ronda. Esto permite al compilador agendar 4 invocaciones consecutivas de `feistl` explotando la filosofía VLIW.
+* **Función de Ronda:** $F(x, k) = (\text{ROL32}(x, 5) + k) \oplus \text{ROL32}(x, 13)$, con suma módulo $2^{32}$.
+* **Ejemplo:** `feistel rs1, rs2, k_idx, rnd_idx`.
+* **Cómo y Por Qué:** En lugar de ejecutar las 4 rondas en una única instrucción monolítica (lo cual crearía una ruta crítica de propagación de reloj demasiado larga), se implementa una instrucción por ronda. Esto permite al compilador agendar 4 invocaciones consecutivas de `feistel` explotando la filosofía VLIW.
 
 ### 2.4 Bóveda de Llaves (Key Vault) y Control de Acceso
 * **Descripción:** Memoria segura que almacena hasta 4 llaves de 128 bits (cada una compuesta por 4 subllaves de 32 bits).
@@ -111,7 +81,7 @@ Consideremos un bundle de 128 bits compuesto por 4 operaciones independientes:
 
 ### 2.5 Carga y Extracción de Archivos
 * **Descripción:** Herramienta en software (`load_file.py` y `extract_data.py`) que lee archivos reales (texto, imágenes BMP, binarios), los empaqueta en formato ejecutable de memoria Verilog (`.mem`), e inyecta los bloques a cifrar/descifrar en las direcciones correspondientes de la RAM del procesador.
-* **Integración con Feistel4:** El programa en ensamblador cargado en la Memoria de Instrucciones lee los bloques de datos desde la memoria RAM (inyectados por `load_file.py`), aplica las rondas de `feistl` utilizando las llaves de la `Key Vault`, y escribe el resultado cifrado de vuelta en la RAM para que `extract_data.py` extraiga el archivo procesado.
+* **Integración con Feistel4:** El programa en ensamblador cargado en la Memoria de Instrucciones lee los bloques de datos desde la memoria RAM (inyectados por `load_file.py`), aplica las rondas de `feistel` utilizando las llaves de la `Key Vault`, y escribe el resultado cifrado de vuelta en la RAM para que `extract_data.py` extraiga el archivo procesado.
 
 ### 2.6 Ensamblador Propio
 * **Descripción:** Script independiente en Python que lee un archivo en ensamblador (.asm) estructurado en bundles de 4 slot y produce la representación hexadecimal binaria para inicializar la memoria de instrucciones mediante `$readmemh`.
@@ -134,12 +104,12 @@ El procesador se estructura en 5 niveles de abstracción jerárquica:
         ├── [Nivel 3] execution_stage
         │    ├── [Nivel 4] alu_unit (Math Engine)
         │    │    └── [Nivel 5] adder_subtractor, logic_unit, shifter
-        │    ├── [Nivel 4] lsu_unit (Load/Store Engine)
+        │    ├── [Nivel 4] lost_unit (Load/Store Engine)
         │    │    └── [Nivel 5] address_calculator, byte_enable_logic
-        │    ├── [Nivel 4] bru_unit (Branch Engine)
+        │    ├── [Nivel 4] bruh_unit (Branch Engine)
         │    │    └── [Nivel 5] comparator_unit, target_pc_calculator
         │    └── [Nivel 4] crypto_unit
-        │         ├── [Nivel 5] feistel_round_logic (ROL32 + ADD + ROL32)
+        │         ├── [Nivel 5] feistel_round_logic (ROL32 + ADD + XOR)
         │         └── [Nivel 5] key_vault (Secure Memory + Auth FSM)
         └── [Nivel 3] writeback_stage
              └── Multiplexores de Selección de Resultado por Slot
@@ -157,24 +127,26 @@ El procesador se estructura en 5 niveles de abstracción jerárquica:
 #### 2. `key_vault.sv` y `crypto_unit.sv`
 * **Función:** Administra el almacenamiento seguro de llaves y computa la función de ronda Feistel4.
 * **FSM Interna (`key_vault.sv`):**
-  * Estado `LOCKED`: Bloquea cualquier operación `write` o `feistl`.
+  * Estado `LOCKED`: Bloquea cualquier operación `write` o `feistel`.
   * Estado `UNLOCKED`: Se activa cuando `auth_token_in == internal_password`. Permite escribir subllaves y ejecutar rondas.
 * **Logica Combinacional (`crypto_unit.sv`):**
   * Recibe $L$ (`rs1`), $R$ (`rs2`), $K_{idx}$ (0-3) y $Rnd_{idx}$ (0-3).
   * Extrae la subllave $K$ de 32 bits de la Bóveda.
-  * Realiza: $T = \text{ROL32}(R, 5) + K$.
-  * $F\_out = \text{ROL32}(T, 13)$.
+  * Realiza: $T = \text{ROL32}(R, 5) + K$, con suma módulo $2^{32}$.
+  * $F\_out = T \oplus \text{ROL32}(R, 13)$.
   * Nuevo $L = R$, Nuevo $R = L \oplus F\_out$.
 
 ---
 
 ## 4. Archivos SystemVerilog y Estructura de Proyecto
 
-A continuación se detalla la estructura completa del repositorio y los archivos que deben crearse:
+A continuación se muestran los archivos principales del skeleton. Los archivos de código y el Makefile están vacíos y pendientes de implementación:
 
 ```
-vliw_processor/
+PORYGON/
 ├── docs/
+│   ├── EnunciadoArqui.md
+│   ├── GUIA.md
 │   ├── isa.md
 │   ├── microarchitecture.md
 │   ├── simulation.md
@@ -183,11 +155,11 @@ vliw_processor/
 │   ├── src/
 │   │   ├── pkg_vliw.sv            # Tipos de datos, structs, enums y constantes globales
 │   │   ├── fetch_stage.sv         # Manejo del PC e interfaz de Memoria de Instrucciones
-│   │   ├── dispatch_stage.sv      # Decodificación paralela de los 4 slots de 32 bits
+│   │   ├── dispatch_stage.sv      # Decodificación paralela de los 4 slots de 16 bits
 │   │   ├── register_file.sv       # Banco de 8 registros x 32 bits multi-puerto
 │   │   ├── alu_unit.sv            # Módulo ALU (Suma, resta, lógicas, desplazamientos)
-│   │   ├── lsu_unit.sv            # Módulo de acceso a memoria de datos (Load/Store)
-│   │   ├── bru_unit.sv            # Módulo de saltos condicionales e incondicionales
+│   │   ├── lost_unit.sv           # Módulo de acceso a memoria de datos (Load/Store)
+│   │   ├── bruh_unit.sv           # Módulo de saltos condicionales e incondicionales
 │   │   ├── key_vault.sv           # Memoria segura de llaves y FSM de autenticación
 │   │   ├── crypto_unit.sv         # Circuitería combinacional para ronda Feistel4
 │   │   ├── execution_stage.sv     # Wrapper que agrupa las 4 unidades funcionales
@@ -197,8 +169,10 @@ vliw_processor/
 │   └── tb/
 │       ├── tb_pkg.sv              # Utilidades de simulación
 │       ├── tb_alu.sv              # Pruebas unitarias de la ALU
+│       ├── tb_regfile.sv          # Lectura/escritura y protección de r0
+│       ├── tb_bruh.sv             # Saltos y destino del PC
 │       ├── tb_crypto.sv           # Pruebas unitarias de Feistel4 y Bóveda
-│       ├── tb_lsu.sv              # Pruebas unitarias de lecturas/escrituras en RAM
+│       ├── tb_lost.sv             # Pruebas unitarias de lecturas/escrituras en RAM
 │       └── tb_top.sv              # Testbench de integración completa del procesador
 ├── tools/
 │   ├── assembler/
@@ -206,18 +180,22 @@ vliw_processor/
 │   └── data_loader/
 │       ├── load_file.py           # Inyector de archivos reales (texto/imágenes) a .mem
 │       └── extract_data.py        # Extractor de memoria dump a archivo binario
-├── Makefile                       # Automatización de compilación con Icarus Verilog y Verilator
+├── agents.md                      # Directrices para agentes
+├── .gitignore                     # Artefactos generados y temporales
+├── Makefile                       # Automatización de simulación pendiente
 └── README.md                      # Manual de uso y documentación principal
 ```
 
+`tb_crypto.sv` cubrirá tanto la ronda Feistel4 como la bóveda de llaves. La cobertura prevista de los testbenches se detalla en el [README](../README.md#cobertura-prevista-de-testbenches); todavía no hay pruebas implementadas.
+
 ### Descripción de los Módulos Clave:
 
-1. **`pkg_vliw.sv`**: Define los enums `opcode_e`, `math_func_e`, `crypto_func_e`, structs para los slots codificados y constantes globales como `BUNDLE_WIDTH = 128` y `SLOT_WIDTH = 32`.
+1. **`pkg_vliw.sv`**: Define los enums `opcode_e`, `math_func_e`, `crypto_func_e`, structs para los slots codificados y constantes globales como `BUNDLE_WIDTH = 64` y `SLOT_WIDTH = 16`.
 2. **`asm.py` (Ensamblador Propio)**: Lee sintaxis de ensamblador VLIW en líneas agrupadas de 4 slots. Ejemplo de sintaxis de entrada:
    ```asm
-   { sum rs1, rs2 | low rs3, 0(rs4) | jz rs1, 8 | feistl rs5, rs6, 0, 0 }
+   { sum rs1, rs2 | low rs3, 0(rs4) | jz rs1, 8 | feistel rs5, rs6, 0, 0 }
    ```
-   Produce la salida hexadecimal en palabras de 128 bits para `$readmemh("instructions.mem", inst_mem)`.
+   Produce la salida hexadecimal en palabras de 64 bits para `$readmemh("instructions.mem", inst_mem)`.
 3. **`load_file.py`**:
    * Convierte un archivo de entrada (ej: `imagen.bmp`) en una secuencia de bytes hexadecimales formateados para cargarse en la RAM desde una dirección base (`--address 0x1000`).
 
@@ -242,7 +220,7 @@ Para la gestión del proyecto en GitHub/GitLab, a continuación se presenta la l
 * **Especificación:** Implementar operaciones para las instrucciones `cln`, `sum`, `sumi`, `diff`, `diffi`, `and`, `andi`, `or`, `ori`, `xor`, `gtn`, `ltn`, `eq`, `sll`, `slr`, `mul`.
 * **Resultado Esperado:** Testbench `tb_alu.sv` verificando cada flag y resultado aritmético contra valores de referencia.
 
-### [Issue #04] - Unidad de Acceso a Memoria (`lsu_unit.sv`)
+### [Issue #04] - Unidad de Acceso a Memoria (`lost_unit.sv`)
 * **Orden:** 4
 * **Especificación:** Diseñar la lógica de cálculo de dirección efectiva (`rs2 + off`) y habilitadores de byte/half-word/word para operaciones `low`, `stw`, `lob`, `lobu`, `loh`, `lohu`, `stb`, `sth`.
 * **Resultado Esperado:** Simulación en GTKWave que demuestre la alineación de bytes y extensión de signo/ceros según la especificación del ISA.
@@ -254,17 +232,17 @@ Para la gestión del proyecto en GitHub/GitLab, a continuación se presenta la l
 
 ### [Issue #06] - Acelerador de Ronda Feistel4 (`crypto_unit.sv`)
 * **Orden:** 6
-* **Especificación:** Implementar la lógica de rotación de bits y suma modular $2^{32}$: $F(x, k) = \text{ROL32}((\text{ROL32}(x, 5) + k), 13)$. Conectar las entradas $L, R$ y la subllave obtenida de la `key_vault`.
+* **Especificación:** Implementar la lógica de rotación de bits y suma modular $2^{32}$: $F(x, k) = (\text{ROL32}(x, 5) + k) \oplus \text{ROL32}(x, 13)$. Conectar las entradas $L, R$ y la subllave obtenida de la `key_vault`.
 * **Resultado Esperado:** Validación de una ronda Feistel4 comparando el valor calculado contra el valor producido por la función C de referencia (`feistel4_F`).
 
-### [Issue #07] - Unidad de Control de Flujo (`bru_unit.sv`)
+### [Issue #07] - Unidad de Control de Flujo (`bruh_unit.sv`)
 * **Orden:** 7
 * **Especificación:** Implementar la lógica de evaluación de saltos (`j`, `ji`, `jz`, `jzi`, `jnz`, `jnzi`, `jr`) y cálculo del nuevo `PC`.
 * **Resultado Esperado:** Generación correcta del vector del nuevo `PC` y bandera `branch_taken`.
 
 ### [Issue #08] - Decodificador y Despachador de Bundles (`dispatch_stage.sv`)
 * **Orden:** 8
-* **Especificación:** Diseñar el módulo que recibe la palabra de 128 bits, extrae los 4 slots de 32 bits, decodifica los opcodes y extrae las direcciones de registros para el `register_file.sv`.
+* **Especificación:** Diseñar el módulo que recibe la palabra de 64 bits, extrae los 4 slots de 16 bits, decodifica los opcodes y extrae las direcciones de registros para el `register_file.sv`.
 * **Resultado Esperado:** Desglose correcto de 4 instrucciones simuladas en paralelo dentro del mismo ciclo.
 
 ### [Issue #09] - Integración del Pipeline y Módulo Top (`vliw_processor.sv`)
@@ -274,7 +252,7 @@ Para la gestión del proyecto en GitHub/GitLab, a continuación se presenta la l
 
 ### [Issue #10] - Desarrollo del Ensamblador Propio (`asm.py`)
 * **Orden:** 10
-* **Especificación:** Crear la herramienta en Python que traduzca código ensamblador VLIW orientado a slots hacia el formato binario/hexadecimal en palabras de 128 bits.
+* **Especificación:** Crear la herramienta en Python que traduzca código ensamblador VLIW orientado a slots hacia el formato binario/hexadecimal en palabras de 64 bits.
 * **Resultado Esperado:** Conversión exitosa de un programa test de ensamblador a un archivo `.mem` consumible por `$readmemh`.
 
 ### [Issue #11] - Desarrollo de la Herramienta de Carga y Extracción de Archivos (`load_file.py` / `extract_data.py`)
