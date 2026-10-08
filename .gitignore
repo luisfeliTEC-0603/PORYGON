@@ -1,0 +1,17 @@
+# Simulation outputs and build artifacts
+/build/
+/sim_output/
+obj_dir/
+*.vvp
+*.vcd
+*.fst
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local temporary files
+.DS_Store
+*.swp
+*.swo
+*~
