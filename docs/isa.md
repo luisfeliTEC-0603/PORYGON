@@ -216,7 +216,7 @@ Con inmediato (`imm = 1`): `<instr> rs1, #imm` → `Reg[rs1] ← Reg[rs1] <op> i
 | [15:13] | `rd`   | 3     | Registro destino (load) o fuente (store) |
 | [12:10] | `rs`   | 3     | Registro base para el cálculo de dirección |
 | [9:6]   | `funct`| 4     | Operación específica |
-| [5:3]   | `off`  | 3     | Offset corto (0–7) |
+| [5:3]   | `off`  | 3     | Offset corto con signo en complemento a dos (−4 a +3 bytes) |
 | [2]     | `imm`  | 1     | Bandera de inmediato en el siguiente slot |
 | [1:0]   | `opcode`| 2    | `01` = LOST |
 
@@ -247,6 +247,8 @@ Con inmediato (`imm = 1`): `<instr> rd, imm(rs)` → `Reg[rd] ← Mem[Reg[rs] + 
 
 **Notas:**
 
+- `off` se extiende con signo a 32 bits antes de sumarse a `Reg[rs]`.
+- Si `imm = 1`, se ignora `off`; el slot siguiente contiene un desplazamiento con signo de 16 bits (−32768 a +32767 bytes), que también se extiende con signo a 32 bits.
 - `sext` = extensión de signo; `zext` = extensión de ceros.
 - Un acceso desalineado genera `DIRECCION_INVALIDA`.
 

@@ -1,8 +1,9 @@
-// Unidad de cargas y almacenes. La RAM entrega una palabra de 32 bits
-// alineada; LOST selecciona dentro de ella el byte o la media palabra.
-// Las salidas son combinacionales. La RAM hace la escritura con reloj.
+// EX1 calcula la dirección y guarda la operación. En EX2, LOST accede
+// a la RAM y selecciona el dato. La RAM de prueba escribe al cerrar EX2.
 module lost_unit (
-    input  logic                     valid_i,
+    input  logic                     clk_i,
+    input  logic                     rst_ni,
+    input  logic                     nop_flag_i,
     input  pkg_vliw::lost_inst_t     instruction_i,
     input  logic [15:0]              immediate_i,
     input  pkg_vliw::address_t       base_address_i,
@@ -20,11 +21,14 @@ module lost_unit (
     import pkg_vliw::*;
 
     logic [31:0] offset_32;
+    logic [31:0] incoming_address;
+    logic [31:0] effective_address_q;
+    logic [31:0] store_data_q;
+    logic [3:0] function_q;
+    logic active_q;
     logic [4:0] byte_shift;
     logic [31:0] selected_word;
     logic [1:0] byte_lane;
-    logic [3:0] function_code;
-    logic active;
     logic word_aligned;
     logic half_aligned;
     logic [31:0] signed_byte_data;
@@ -32,21 +36,35 @@ module lost_unit (
     logic [31:0] signed_half_data;
     logic [31:0] unsigned_half_data;
 
-    // El inmediato ocupa un solo slot de 16 bits. Se extiende con signo
-    // porque la dirección base y el sumador son de 32 bits.
+    // El offset corto y el inmediato son desplazamientos con signo.
+    // Ambos se extienden a 32 bits antes de sumarlos a la base.
     assign offset_32 = instruction_i.immediate
         ? {{16{immediate_i[15]}}, immediate_i}
-        : {29'b0, instruction_i.offset};
-    assign effective_address_o = base_address_i + offset_32;
+        : {{29{instruction_i.offset[2]}}, instruction_i.offset};
+    assign incoming_address = base_address_i + offset_32;
 
-    // La RAM trabaja con palabras alineadas. Los bits [1:0] indican
-    // cuál de sus cuatro bytes corresponde a la dirección solicitada.
+    // El NOP evita que entre una operación nueva. La operación anterior
+    // sigue en EX2 hasta el próximo flanco, aunque nop_flag_i cambie.
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            effective_address_q <= 32'b0;
+            store_data_q <= 32'b0;
+            function_q <= 4'b0;
+            active_q <= 1'b0;
+        end else begin
+            active_q <= !nop_flag_i && instruction_i.opcode == OPCODE_LOST;
+            effective_address_q <= incoming_address;
+            store_data_q <= store_data_i;
+            function_q <= instruction_i.funct;
+        end
+    end
+
+    // EX2 usa únicamente los valores guardados al terminar EX1.
+    assign effective_address_o = effective_address_q;
     assign memory_address_o = {effective_address_o[31:2], 2'b00};
     assign byte_lane = effective_address_o[1:0];
     assign byte_shift = {byte_lane, 3'b000};
     assign selected_word = memory_read_data_i >> byte_shift;
-    assign function_code = instruction_i.funct;
-    assign active = valid_i && instruction_i.opcode == OPCODE_LOST;
     assign word_aligned = byte_lane == 2'b00;
     assign half_aligned = byte_lane[0] == 1'b0;
     assign signed_byte_data = {{24{selected_word[7]}}, selected_word[7:0]};
@@ -62,8 +80,8 @@ module lost_unit (
         load_data_o = 32'b0;
         invalid_address_o = 1'b0;
 
-        if (active) begin
-            case (function_code)
+        if (active_q) begin
+            case (function_q)
                 LOST_LOW: begin
                     if (!word_aligned) begin
                         invalid_address_o = 1'b1;
@@ -106,21 +124,21 @@ module lost_unit (
                         invalid_address_o = 1'b1;
                     end else begin
                         memory_write_enable_o = 4'b1111;
-                        memory_write_data_o = store_data_i;
+                        memory_write_data_o = store_data_q;
                     end
                 end
                 LOST_STB: begin
                     // En little endian, el byte de la dirección menor va
                     // en los bits menos significativos de la palabra.
                     memory_write_enable_o = 4'b0001 << byte_lane;
-                    memory_write_data_o = store_data_i << byte_shift;
+                    memory_write_data_o = store_data_q << byte_shift;
                 end
                 LOST_STH: begin
                     if (!half_aligned) begin
                         invalid_address_o = 1'b1;
                     end else begin
                         memory_write_enable_o = 4'b0011 << byte_lane;
-                        memory_write_data_o = store_data_i << byte_shift;
+                        memory_write_data_o = store_data_q << byte_shift;
                     end
                 end
                 default: begin
