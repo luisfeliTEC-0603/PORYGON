@@ -47,7 +47,7 @@ module super_alu #(
     always_comb begin
         if (imm_flag) begin
             // Extensión de ceros para operaciones lógicas bit a bit
-            if (funct == 6'b000100 || funct == 6'b000101 || funct == 6'b000110) begin
+            if (funct == MATH_AND || funct == MATH_OR || funct == MATH_XOR) begin
                 op2_selected = {16'h0000, imm_data_i}; // Zero extension
             end 
             // Extensión de signo para operaciones aritméticas y corrimientos
@@ -67,24 +67,22 @@ module super_alu #(
     always_comb begin
         case (funct)
             // Operaciones básicas ALU
-            6'b000001: comb_result = op2_selected;                         // mov
-            6'b000010: comb_result = op1_i + op2_selected;                 // sum / sumi
-            6'b000011: comb_result = op1_i - op2_selected;                 // diff / diffi
-            6'b000100: comb_result = op1_i & op2_selected;                 // and / andi
-            6'b000101: comb_result = op1_i | op2_selected;                 // or / ori
-            6'b000110: comb_result = op1_i ^ op2_selected;                 // xor / xori
-            6'b000111: comb_result = ~op1_i;                               // not
-
-            // Desplazamientos (Barrel Shifter - 1 Ciclo)
-            6'b001000: comb_result = op1_i << op2_selected[4:0];          // shl / shli (Lógico izq)
-            6'b001001: comb_result = op1_i >> op2_selected[4:0];          // shr / shri (Lógico der)
-            6'b001010: comb_result = $signed(op1_i) >>> op2_selected[4:0];// sar / sari (Aritmético der)
+            MATH_MOV: comb_result = op2_selected;                         // mov
+            MATH_SUM: comb_result = op1_i + op2_selected;                 // sum / sumi
+            MATH_DIFF: comb_result = op1_i - op2_selected;                 // diff / diffi
+            MATH_AND: comb_result = op1_i & op2_selected;                 // and / andi
+            MATH_OR: comb_result = op1_i | op2_selected;                 // or / ori
+            MATH_XOR: comb_result = op1_i ^ op2_selected;                 // xor / xori
+            MATH_NOT: comb_result = ~op1_i;                               // not
+            MATH_SHL: comb_result = op1_i << op2_selected[4:0];          // shl / shli (Lógico izq)
+            MATH_SHR: comb_result = op1_i >> op2_selected[4:0];          // shr / shri (Lógico der)
+            MATH_SAR: comb_result = $signed(op1_i) >>> op2_selected[4:0];// sar / sari (Aritmético der)
 
             // Comparaciones
-            6'b001100: comb_result = (op1_i > op2_selected) ? 32'd1 : 32'd0;  // gtn
-            6'b001101: comb_result = (op1_i < op2_selected) ? 32'd1 : 32'd0;  // ltn
-            6'b001110: comb_result = (op1_i == op2_selected) ? 32'd1 : 32'd0; // eor
-            6'b001111: comb_result = (op1_i != 32'd0) ? 32'd1 : 32'd0;        // nez
+            MATH_GTN: comb_result = (op1_i > op2_selected) ? 32'd1 : 32'd0;  // gtn
+            MATH_LTN: comb_result = (op1_i < op2_selected) ? 32'd1 : 32'd0;  // ltn
+            MATH_EOR: comb_result = (op1_i == op2_selected) ? 32'd1 : 32'd0; // eor
+            MATH_NEZ: comb_result = (op1_i != 32'd0) ? 32'd1 : 32'd0;        // nez
 
             default: comb_result = '0;
         endcase
@@ -102,9 +100,13 @@ module super_alu #(
     logic                  mul_valid_stage1_q;
     logic [2*DATA_WIDTH-1:0] mul_result_stage2_q;
     logic                    mul_valid_stage2_q;
+    logic                    mul_high_stage1_q;
+    logic                    mul_high_stage2_q;
 
     logic is_mul_instr;
-    assign is_mul_instr = (!is_nop_i) && (funct == MATH_MUL);
+    logic is_mul_high_instr;
+    assign is_mul_instr = (!is_nop_i) && ((funct == MATH_MUL) || (funct == MATH_MULH));
+    assign is_mul_high_instr = (!is_nop_i) && (funct == MATH_MULH);
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -113,11 +115,14 @@ module super_alu #(
             mul_valid_stage1_q <= 1'b0;
             mul_result_stage2_q <= '0;
             mul_valid_stage2_q  <= 1'b0;
+            mul_high_stage1_q   <= 1'b0;
+            mul_high_stage2_q   <= 1'b0;
         end else begin
             // EX2: producto completo firmado de 32 x 32 bits.
             mul_result_stage2_q <=
                 $signed(mul_op1_stage1_q) * $signed(mul_op2_stage1_q);
             mul_valid_stage2_q <= mul_valid_stage1_q;
+            mul_high_stage2_q <= mul_high_stage1_q;
 
             // EX1: captura de los operandos de la instrucción cuyo destino
             // arquitectónico es rs1.
@@ -125,10 +130,12 @@ module super_alu #(
                 mul_op1_stage1_q   <= op1_i;
                 mul_op2_stage1_q   <= op2_selected;
                 mul_valid_stage1_q <= 1'b1;
+                mul_high_stage1_q  <= is_mul_high_instr;
             end else begin
                 mul_op1_stage1_q   <= '0;
                 mul_op2_stage1_q   <= '0;
                 mul_valid_stage1_q <= 1'b0;
+                mul_high_stage1_q  <= 1'b0;
             end
         end
     end
@@ -138,7 +145,10 @@ module super_alu #(
     // ========================================================================
     always_comb begin
         if (mul_valid_stage2_q) begin
-            result_o       = mul_result_stage2_q[DATA_WIDTH-1:0];
+            if (mul_high_stage2_q)
+                result_o = mul_result_stage2_q[2*DATA_WIDTH-1:DATA_WIDTH];
+            else
+                result_o = mul_result_stage2_q[DATA_WIDTH-1:0];
             write_enable_o = 1'b1;
         end
         else if (is_nop_i || is_mul_instr) begin

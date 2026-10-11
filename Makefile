@@ -26,6 +26,7 @@ sim-super-alu: $(BUILD_DIR)/super_alu.vvp
 
 $(BUILD_DIR)/super_alu.vvp: $(PKG) $(SRC_DIR)/super_alu_unit.sv $(TB_DIR)/tb_super_alu.sv
 	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_super_alu -o $@ $^
 
 # Banco de registros: se habilita después de validar el flujo inicial de ALU.
 sim-regfile: $(BUILD_DIR)/regfile.vvp

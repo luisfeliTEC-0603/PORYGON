@@ -40,7 +40,8 @@ package pkg_vliw;
         MATH_GTN  = 6'b001100,
         MATH_LTN  = 6'b001101,
         MATH_EOR  = 6'b001110,
-        MATH_NEZ  = 6'b001111
+        MATH_NEZ  = 6'b001111,
+        MATH_MULH = 6'b010000
     } math_funct_t;
 
     typedef enum logic [3:0] {
