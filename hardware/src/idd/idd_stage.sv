@@ -9,10 +9,8 @@ import pkg_vliw::*;
  *   2. imm_mux (×4)    : reemplaza inmediatos por NOP.
  *   3. pipe_gate (×5)  : enruta slots a ALU0, ALU1, LSU, BRU, CRYPTO.
  *   4. nop_detector(×5): marca NOPs por pipe.
- *   5. rf_addr_gen (×5): genera direcciones de operandos por pipe.
- *
- * El inmediato de cada pipe se calcula a partir del índice del slot que
- * hizo match en su pipe_gate: imm = slot_raw[index + 1].
+ *   5. imm_router (×5) : calcula el inmediato asociado a cada pipe.
+ *   6. rf_addr_gen (×5): genera direcciones de operandos por pipe.
  *
  * @param BUNDLE_WIDTH Ancho del bundle.
  * @param SLOT_WIDTH   Ancho del slot.
@@ -76,12 +74,11 @@ module idd_stage #(
     logic [SLOT_WIDTH-1:0] slot_clean [0:NUM_SLOTS-1];
 
     logic is_imm_0, is_imm_1, is_imm_2, is_imm_3;
+    logic is_imm_1_raw, is_imm_2_raw, is_imm_3_raw;
 
     logic [SLOT_WIDTH-1:0] alu0_slot, alu1_slot, lsu_slot, bru_slot, crypto_slot;
-
-    logic [1:0] alu0_idx, alu1_idx, lsu_idx, bru_idx, crypto_idx;
-
-    logic alu0_match, alu1_match, lsu_match, bru_match, crypto_match;
+    logic [1:0]            alu0_idx,  alu1_idx,  lsu_idx,  bru_idx,  crypto_idx;
+    logic                  alu0_match, alu1_match, lsu_match, bru_match, crypto_match;
 
     logic [SLOT_WIDTH-1:0] alu0_imm, alu1_imm, lsu_imm, bru_imm, crypto_imm;
 
@@ -98,10 +95,8 @@ module idd_stage #(
     );
 
     // ------------------------------------------------------------------------
-    // 2. Selectores de inmediato
+    // 2. Selectores de inmediato con corte de cadena
     // ------------------------------------------------------------------------
-    logic is_imm_1_raw, is_imm_2_raw, is_imm_3_raw;
-
     assign is_imm_1_raw = slot_raw[0][2];
     assign is_imm_2_raw = slot_raw[1][2];
     assign is_imm_3_raw = slot_raw[2][2];
@@ -173,21 +168,62 @@ module idd_stage #(
     );
 
     // ------------------------------------------------------------------------
-    // 5. Cálculo del inmediato por pipe
+    // 5. Cálculo del inmediato por pipe (vía imm_router)
     // ------------------------------------------------------------------------
-    assign alu0_imm = (alu0_match && alu0_slot[2] && (alu0_idx < 2'd3))
-                      ? slot_raw[alu0_idx + 2'd1] : {SLOT_WIDTH{1'b0}};
+    imm_router #(
+        .NUM_SLOTS  (NUM_SLOTS),
+        .SLOT_WIDTH (SLOT_WIDTH)
+    ) u_alu0_imm_sel (
+        .match_i    (alu0_match),
+        .slot_i     (alu0_slot),
+        .slot_idx_i (alu0_idx),
+        .slot_raw_i (slot_raw),
+        .imm_o      (alu0_imm)
+    );
 
-    assign alu1_imm = (alu1_match && alu1_slot[2] && (alu1_idx < 2'd3))
-                      ? slot_raw[alu1_idx + 2'd1] : {SLOT_WIDTH{1'b0}};
+    imm_router #(
+        .NUM_SLOTS  (NUM_SLOTS),
+        .SLOT_WIDTH (SLOT_WIDTH)
+    ) u_alu1_imm_sel (
+        .match_i    (alu1_match),
+        .slot_i     (alu1_slot),
+        .slot_idx_i (alu1_idx),
+        .slot_raw_i (slot_raw),
+        .imm_o      (alu1_imm)
+    );
 
-    assign lsu_imm = (lsu_match && lsu_slot[2] && (lsu_idx < 2'd3))
-                     ? slot_raw[lsu_idx + 2'd1] : {SLOT_WIDTH{1'b0}};
+    imm_router #(
+        .NUM_SLOTS  (NUM_SLOTS),
+        .SLOT_WIDTH (SLOT_WIDTH)
+    ) u_lsu_imm_sel (
+        .match_i    (lsu_match),
+        .slot_i     (lsu_slot),
+        .slot_idx_i (lsu_idx),
+        .slot_raw_i (slot_raw),
+        .imm_o      (lsu_imm)
+    );
 
-    assign bru_imm = (bru_match && bru_slot[2] && (bru_idx < 2'd3))
-                     ? slot_raw[bru_idx + 2'd1] : {SLOT_WIDTH{1'b0}};
+    imm_router #(
+        .NUM_SLOTS  (NUM_SLOTS),
+        .SLOT_WIDTH (SLOT_WIDTH)
+    ) u_bru_imm_sel (
+        .match_i    (bru_match),
+        .slot_i     (bru_slot),
+        .slot_idx_i (bru_idx),
+        .slot_raw_i (slot_raw),
+        .imm_o      (bru_imm)
+    );
 
-    assign crypto_imm = {SLOT_WIDTH{1'b0}};
+    imm_router #(
+        .NUM_SLOTS  (NUM_SLOTS),
+        .SLOT_WIDTH (SLOT_WIDTH)
+    ) u_crypto_imm_sel (
+        .match_i    (crypto_match),
+        .slot_i     (crypto_slot),
+        .slot_idx_i (crypto_idx),
+        .slot_raw_i (slot_raw),
+        .imm_o      (crypto_imm)
+    );
 
     // ------------------------------------------------------------------------
     // 6. Detectar NOPs

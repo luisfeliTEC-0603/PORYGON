@@ -18,7 +18,7 @@ import pkg_vliw::*;
  * @output imm_o       Inmediato asociado, o 0 si no aplica.
  */
 
-module imm_selector #(
+module imm_router #(
     parameter integer NUM_SLOTS  = pkg_vliw::NUM_SLOTS,
     parameter integer SLOT_WIDTH = pkg_vliw::SLOT_WIDTH
 ) (
