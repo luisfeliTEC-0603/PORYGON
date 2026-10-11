@@ -71,7 +71,7 @@ superior, sin dependencias externas.
 ### Carga
 
 ```bash
-python tools/data_loader/load_file.py --input archivo.txt --output memory.mem --address 0x00010000
+python tools/data_loader/load_file.py --input archivo.txt --output memory.mem --address 0x8000
 ```
 
 | Opción | Default | Descripción |
@@ -82,6 +82,7 @@ python tools/data_loader/load_file.py --input archivo.txt --output memory.mem --
 | `--width` | `8` | Bits por palabra del `.mem`; debe coincidir con el ancho del arreglo de `memory_sp_ram.sv` |
 | `--endian` | `little` | Orden de bytes dentro de la palabra |
 | `--mem-base` | `0x0` | Dirección que corresponde a la posición 0 del arreglo |
+| `--mem-bytes` | `65536` | Tamaño del arreglo en bytes; coincide con `MEMORY_BYTES` de `pkg_vliw.sv` |
 | `--block` | `8` | Rellena con ceros hasta múltiplo de N bytes (los 64 bits de un bloque Feistel4) |
 | `--no-pad` | — | No rellenar el último bloque |
 | `--append` | — | Agrega el bloque a un `.mem` existente en lugar de sobrescribirlo |
@@ -94,7 +95,7 @@ los argumentos exactos que hay que pasarle después a `extract_data.py`.
 ### Extracción
 
 ```bash
-python tools/data_loader/extract_data.py --memory memory_dump.mem --address 0x00010000 --size 1024 --output resultado.bin
+python tools/data_loader/extract_data.py --memory memory_dump.mem --address 0x8000 --size 1024 --output resultado.bin
 ```
 
 | Opción | Default | Descripción |
@@ -117,22 +118,22 @@ Cargar un archivo, cifrarlo en la simulación y recuperar el resultado:
 
 ```bash
 # 1. Inyectar el archivo en el segmento de datos
-python tools/data_loader/load_file.py --input imagen.bmp --output data.mem --address 0x00010000
+python tools/data_loader/load_file.py --input imagen.bmp --output data.mem --address 0x8000
 #    tamano original : 70 bytes
 #    relleno         : 2 bytes de ceros
-#    para extraer    : --address 0x00010000 --size 70
+#    para extraer    : --address 0x00008000 --size 70
 
 # 2. Ejecutar la simulación: lee data.mem con $readmemh y vuelca memory_dump.mem con $writememh
 
 # 3. Recuperar el resultado con el tamaño original que reportó la carga
-python tools/data_loader/extract_data.py --memory memory_dump.mem --address 0x00010000 --size 70 --output cifrado.bmp
+python tools/data_loader/extract_data.py --memory memory_dump.mem --address 0x8000 --size 70 --output cifrado.bmp
 ```
 
 Varios archivos en una misma imagen de memoria:
 
 ```bash
-python tools/data_loader/load_file.py --input texto.txt  --output data.mem --address 0x00010000
-python tools/data_loader/load_file.py --input imagen.bmp --output data.mem --address 0x00010100 --append
+python tools/data_loader/load_file.py --input texto.txt  --output data.mem --address 0x8000
+python tools/data_loader/load_file.py --input imagen.bmp --output data.mem --address 0x8100 --append
 ```
 
 ## Cobertura prevista de testbenches
