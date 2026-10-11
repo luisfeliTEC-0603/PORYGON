@@ -176,18 +176,18 @@ Con inmediato (`imm = 1`): `<instr> rs1, #imm` → `Reg[rs1] ← Reg[rs1] <op> i
 | Instrucción | `funct` | `pipe` | `imm` | Descripción |
 |-------------|---------|--------|-------|-------------|
 | `nop`       | `000000`| 0      | 0     | No operación |
-| `mov`       | `000001`| 0      | 0     | `rs1 ← rs2` |
-| `sum`       | `000010`| 0      | 0     | `rs1 ← rs1 + rs2` |
-| `sumi`      | `000010`| 0      | 1     | `rs1 ← rs1 + imm` |
-| `diff`       | `000011`| 0      | 0     | `rs1 ← rs1 − rs2` |
-| `diffi`       | `000011`| 0      | 1     | `rs1 ← rs1 − imm` |
-| `and`       | `000100`| 0      | 0     | `rs1 ← rs1 & rs2` |
-| `andi`      | `000100`| 0      | 1     | `rs1 ← rs1 & imm` |
-| `or`        | `000101`| 0      | 0     | `rs1 ← rs1 \| rs2` |
-| `ori`       | `000101`| 0      | 1     | `rs1 ← rs1 \| imm` |
-| `xor`       | `000110`| 0      | 0     | `rs1 ← rs1 ^ rs2` |
-| `xori`      | `000110`| 0      | 1     | `rs1 ← rs1 ^ imm` |
-| `not`       | `000111`| 0      | 0     | `rs1 ← ~rs1` |
+| `mov`       | `000001`| `(0 o 1)`   | 0     | `rs1 ← rs2` |
+| `sum`       | `000010`| `(0 o 1)`    | 0     | `rs1 ← rs1 + rs2` |
+| `sumi`      | `000010`| `(0 o 1)`   | 1     | `rs1 ← rs1 + imm` |
+| `diff`       | `000011`| `(0 o 1)`  | 0     | `rs1 ← rs1 − rs2` |
+| `diffi`       | `000011`| `(0 o 1)`  | 1     | `rs1 ← rs1 − imm` |
+| `and`       | `000100`| `(0 o 1)`  | 0     | `rs1 ← rs1 & rs2` |
+| `andi`      | `000100`| `(0 o 1)`   | 1     | `rs1 ← rs1 & imm` |
+| `or`        | `000101`| `(0 o 1)`   | 0     | `rs1 ← rs1 \| rs2` |
+| `ori`       | `000101`| `(0 o 1)`  | 1     | `rs1 ← rs1 \| imm` |
+| `xor`       | `000110`| `(0 o 1)`   | 0     | `rs1 ← rs1 ^ rs2` |
+| `xori`      | `000110`| `(0 o 1)`  | 1     | `rs1 ← rs1 ^ imm` |
+| `not`       | `000111`| `(0 o 1)`  | 0     | `rs1 ← ~rs1` |
 | `shl`       | `001000`| 1      | 0     | `rs1 ← rs1 << rs2` (lógico) |
 | `shli`      | `001000`| 1      | 1     | `rs1 ← rs1 << imm` |
 | `shr`       | `001001`| 1      | 0     | `rs1 ← rs1 >> rs2` (lógico) |
@@ -196,11 +196,12 @@ Con inmediato (`imm = 1`): `<instr> rs1, #imm` → `Reg[rs1] ← Reg[rs1] <op> i
 | `sari`      | `001010`| 1      | 1     | `rs1 ← rs1 >>> imm` |
 | `mul`       | `001011`| 1      | 0     | `rs1 ← rs1 × rs2` (parte baja) |
 | `muli`      | `001011`| 1      | 1     | `rs1 ← rs1 × imm` |
-| `gtn`       | `001100`| 0      | 0     | `rs1 ← (rs1 > rs2) ? 1 : 0` |
-| `ltn`       | `001101`| 0      | 0     | `rs1 ← (rs1 < rs2) ? 1 : 0` |
-| `eor`       | `001110`| 0      | 0     | `rs1 ← (rs1 == rs2) ? 1 : 0` |
-| `nez`       | `001111`| 0      | 0     | `rs1 ← (rs1 != 0) ? 1 : 0` |
-
+| `gtn`       | `001100`| `(0 o 1)`  | 0     | `rs1 ← (rs1 > rs2) ? 1 : 0` |
+| `ltn`       | `001101`| `(0 o 1)` | 0     | `rs1 ← (rs1 < rs2) ? 1 : 0` |
+| `eor`       | `001110`| `(0 o 1)`  | 0     | `rs1 ← (rs1 == rs2) ? 1 : 0` |
+| `nez`       | `001111`| `(0 o 1)`  | 0     | `rs1 ← (rs1 != 0) ? 1 : 0` |
+| `mulh`      | `010000`| 1      | 0     | `rs1 ← rs1 × rs2[63:32]` (parte alta) |
+| `mulhi`     | `010000`| 1      | 1     | `rs1 ← rs1 × imm[63:32]` (parte alta con inmediato) |
 **Notas:**
 
 - Las operaciones con sufijo `i` (por ejemplo `sumi`) requieren `imm = 1` y consumen el slot siguiente como inmediato de 16 bits.
