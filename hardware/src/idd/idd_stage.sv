@@ -33,8 +33,6 @@ module idd_stage #(
     parameter integer SLOT_WIDTH   = pkg_vliw::SLOT_WIDTH,
     parameter integer NUM_SLOTS    = pkg_vliw::NUM_SLOTS
 ) (
-    input  logic                    clk_i,
-    input  logic                    rst_ni,
     input  logic [BUNDLE_WIDTH-1:0] bundle_i,
 
     // ---- ALU0 ----
