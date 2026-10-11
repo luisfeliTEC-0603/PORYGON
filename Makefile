@@ -8,7 +8,7 @@ TB_DIR := hardware/tb
 COMMON_FLAGS := -g2012 -Wall -I$(SRC_DIR)
 PKG := $(SRC_DIR)/pkg_vliw.sv
 
-.PHONY: all sim sim-alu sim-super-alu sim-regfile clean
+.PHONY: all sim sim-alu sim-super-alu sim-regfile sim-bruh clean
 
 all: sim
 
@@ -36,9 +36,15 @@ $(BUILD_DIR)/regfile.vvp: $(PKG) $(SRC_DIR)/register_file.sv $(TB_DIR)/tb_regfil
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_regfile -o $@ $^
 
+sim-bruh: $(BUILD_DIR)/bruh.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/bruh.vvp: $(PKG) $(SRC_DIR)/bruh_unit.sv $(TB_DIR)/tb_bruh.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_bruh -o $@ $^
+
 # Espacios reservados para las siguientes unidades:
 # sim-lost: compilar lost_unit.sv y tb_lost.sv.
-# sim-bruh: compilar bruh_unit.sv y tb_bruh.sv.
 # sim-crypto: compilar key_vault.sv, crypto_unit.sv y tb_crypto.sv.
 # sim-pkg: compilar utilidades de pkg_vliw.sv y tb_pkg.sv.
 # sim-top: compilar todas las unidades, etapas, memoria, vliw_processor.sv y tb_top.sv.
