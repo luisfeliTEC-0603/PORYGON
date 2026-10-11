@@ -3,7 +3,11 @@ import pkg_vliw::*;
 /**
  * @brief Detector de NOP.
  *
- * @param SLOT_WIDTH Ancho del slot. Default: 16.
+ * @details
+ * Compara el slot recibido contra NOP_ENCODING (0x0000). Si coincide,
+ * emite nop_flag=1. Es puramente combinacional.
+ *
+ * @param SLOT_WIDTH Ancho del slot.
  *
  * @input  slot_i     Slot a evaluar.
  * @output nop_flag_o '1' si el slot es NOP, '0' en caso contrario.

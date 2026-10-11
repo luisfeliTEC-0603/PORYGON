@@ -13,9 +13,9 @@ module imm_mux #(
 ) (
     input  logic [SLOT_WIDTH-1:0] slot_i,
     input  logic                  is_imm_i,
-    output logic [SLOT_WIDTH-1:0] instr_o
+    output logic [SLOT_WIDTH-1:0] slot_o
 );
 
-    assign instr_o = is_imm_i ? slot_i : NOP_ENCODING;
+    assign slot_o = is_imm_i ? NOP_ENCODING : slot_i;
 
 endmodule
