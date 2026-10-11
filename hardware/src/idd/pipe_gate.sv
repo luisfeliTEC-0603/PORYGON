@@ -48,7 +48,7 @@ module pipe_gate #(
                 subpipe_ok = (slot[SUB_PIPE_BIT] == SUB_PIPE[0]);
             end
 
-            match = opcode_ok && subpipe_ok;
+            match = opcode_ok && subpipe_ok && (slot != NOP_ENCODING);
         end
     endfunction
 
