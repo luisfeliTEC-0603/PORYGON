@@ -8,11 +8,11 @@ TB_DIR := hardware/tb
 COMMON_FLAGS := -g2012 -Wall -I$(SRC_DIR)
 PKG := $(SRC_DIR)/pkg_vliw.sv
 
-.PHONY: all sim sim-alu sim-regfile clean
+.PHONY: all sim sim-alu sim-super-alu sim-regfile clean
 
 all: sim
 
-sim: sim-alu
+sim: sim-alu sim-super-alu
 
 sim-alu: $(BUILD_DIR)/alu.vvp
 	$(VVP) $<
@@ -20,6 +20,12 @@ sim-alu: $(BUILD_DIR)/alu.vvp
 $(BUILD_DIR)/alu.vvp: $(PKG) $(SRC_DIR)/alu_unit.sv $(TB_DIR)/tb_alu.sv
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_alu -o $@ $^
+
+sim-super-alu: $(BUILD_DIR)/super_alu.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/super_alu.vvp: $(PKG) $(SRC_DIR)/super_alu_unit.sv $(TB_DIR)/tb_super_alu.sv
+	mkdir -p $(BUILD_DIR)
 
 # Banco de registros: se habilita después de validar el flujo inicial de ALU.
 sim-regfile: $(BUILD_DIR)/regfile.vvp
