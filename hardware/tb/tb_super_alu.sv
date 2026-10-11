@@ -176,6 +176,44 @@ module tb_super_alu;
             $display("[FAIL] PRUEBA 5c: Esperado 42 en EX2, Obtenido %d", result_o);
 
         // --------------------------------------------------------------------
+        // PRUEBA 5d: Multiplicacion pequena paso a paso (6 * 9 = 54).
+        // EX1 calcula p0=6*9=54 y p1=p2=p3=0; EX2 combina los parciales.
+        // --------------------------------------------------------------------
+        is_nop_i = 1'b1;
+        repeat (2) @(posedge clk_i);
+        instruction_i = {3'd1, 3'd2, 6'b001011, 1'b1, 1'b0, 2'b00};
+        is_nop_i = 1'b0;
+        op1_i = 32'd6;
+        op2_i = 32'd9;
+        @(posedge clk_i);
+        #1;
+        if (write_enable_o == 1'b0)
+            $display("[PASS] PRUEBA 5d-EX1: 6 * 9 aun no tiene writeback");
+        else
+            $display("[FAIL] PRUEBA 5d-EX1: writeback prematuro, result=0x%h", result_o);
+        @(posedge clk_i);
+        #1;
+        if (result_o == 32'd54 && write_enable_o == 1'b1)
+            $display("[PASS] PRUEBA 5d-EX2: 6 * 9 = %d", result_o);
+        else
+            $display("[FAIL] PRUEBA 5d-EX2: esperado 54, obtenido %d", result_o);
+
+        // --------------------------------------------------------------------
+        // PRUEBA 5e: Productos parciales no nulos en ambas mitades.
+        // 0x00010002 * 0x00030004 = 0x0003000a0008.
+        // --------------------------------------------------------------------
+        instruction_i = {3'd1, 3'd2, 6'b001011, 1'b1, 1'b0, 2'b00};
+        op1_i = 32'h0001_0002;
+        op2_i = 32'h0003_0004;
+        @(posedge clk_i);
+        @(posedge clk_i);
+        #1;
+        if (result_o == 32'h000a_0008 && write_enable_o == 1'b1)
+            $display("[PASS] PRUEBA 5e: productos parciales, low=0x%h", result_o);
+        else
+            $display("[FAIL] PRUEBA 5e: esperado low=0x000a0008, obtenido 0x%h", result_o);
+
+        // --------------------------------------------------------------------
         // PRUEBA 6: Corrimientos y casos limite de 32 bits.
         // --------------------------------------------------------------------
         // Se drena el resultado pendiente de la multiplicacion anterior.

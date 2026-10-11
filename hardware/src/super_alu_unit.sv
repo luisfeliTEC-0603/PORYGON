@@ -91,14 +91,26 @@ module super_alu #(
     // ========================================================================
     // Pipeline de multiplicación de dos etapas
     // ========================================================================
-    // EX1 captura los operandos asociados a rs1 y rs2/inmediato. El producto
-    // combinacional se encuentra entre EX1 y EX2, y EX2 registra el resultado.
-    // Así, mul/muli tienen latencia de dos flancos, pero pueden aceptarse a
-    // razón de una instrucción por ciclo.
-    logic [DATA_WIDTH-1:0] mul_op1_stage1_q;
-    logic [DATA_WIDTH-1:0] mul_op2_stage1_q;
+    // EX1 calcula cuatro productos parciales de 16x16. EX2 los desplaza y
+    // suma para formar el producto firmado completo de 64 bits.
+    localparam integer HALF_WIDTH = DATA_WIDTH / 2;
+
+    logic signed [DATA_WIDTH-1:0] mul_op1_low_ext;
+    logic signed [DATA_WIDTH-1:0] mul_op2_low_ext;
+    logic signed [DATA_WIDTH-1:0] mul_op1_high_ext;
+    logic signed [DATA_WIDTH-1:0] mul_op2_high_ext;
+    logic        [DATA_WIDTH-1:0] mul_partial_0_d;
+    logic signed [DATA_WIDTH-1:0] mul_partial_1_d;
+    logic signed [DATA_WIDTH-1:0] mul_partial_2_d;
+    logic signed [DATA_WIDTH-1:0] mul_partial_3_d;
+
+    logic        [DATA_WIDTH-1:0] mul_partial_0_stage1_q;
+    logic signed [DATA_WIDTH-1:0] mul_partial_1_stage1_q;
+    logic signed [DATA_WIDTH-1:0] mul_partial_2_stage1_q;
+    logic signed [DATA_WIDTH-1:0] mul_partial_3_stage1_q;
     logic                  mul_valid_stage1_q;
-    logic [2*DATA_WIDTH-1:0] mul_result_stage2_q;
+    logic signed [2*DATA_WIDTH-1:0] mul_result_stage2_d;
+    logic signed [2*DATA_WIDTH-1:0] mul_result_stage2_q;
     logic                    mul_valid_stage2_q;
     logic                    mul_high_stage1_q;
     logic                    mul_high_stage2_q;
@@ -108,32 +120,61 @@ module super_alu #(
     assign is_mul_instr = (!is_nop_i) && ((funct == MATH_MUL) || (funct == MATH_MULH));
     assign is_mul_high_instr = (!is_nop_i) && (funct == MATH_MULH);
 
+    always_comb begin
+        mul_op1_low_ext = {{HALF_WIDTH{1'b0}}, op1_i[HALF_WIDTH-1:0]};
+        mul_op2_low_ext = {{HALF_WIDTH{1'b0}}, op2_selected[HALF_WIDTH-1:0]};
+        mul_op1_high_ext = {{HALF_WIDTH{op1_i[DATA_WIDTH-1]}}, op1_i[DATA_WIDTH-1:HALF_WIDTH]};
+        mul_op2_high_ext = {{HALF_WIDTH{op2_selected[DATA_WIDTH-1]}}, op2_selected[DATA_WIDTH-1:HALF_WIDTH]};
+
+        mul_partial_0_d = mul_op1_low_ext * mul_op2_low_ext;
+        mul_partial_1_d = mul_op1_high_ext * mul_op2_low_ext;
+        mul_partial_2_d = mul_op1_low_ext * mul_op2_high_ext;
+        mul_partial_3_d = mul_op1_high_ext * mul_op2_high_ext;
+    end
+
+    always_comb begin
+        mul_result_stage2_d = {{DATA_WIDTH{1'b0}}, mul_partial_0_stage1_q};
+        mul_result_stage2_d = mul_result_stage2_d +
+                              ($signed({{DATA_WIDTH{mul_partial_1_stage1_q[DATA_WIDTH-1]}},
+                                         mul_partial_1_stage1_q}) <<< HALF_WIDTH);
+        mul_result_stage2_d = mul_result_stage2_d +
+                              ($signed({{DATA_WIDTH{mul_partial_2_stage1_q[DATA_WIDTH-1]}},
+                                         mul_partial_2_stage1_q}) <<< HALF_WIDTH);
+        mul_result_stage2_d = mul_result_stage2_d +
+                              ($signed({{DATA_WIDTH{mul_partial_3_stage1_q[DATA_WIDTH-1]}},
+                                         mul_partial_3_stage1_q}) <<< DATA_WIDTH);
+    end
+
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
-            mul_op1_stage1_q   <= '0;
-            mul_op2_stage1_q   <= '0;
+            mul_partial_0_stage1_q <= '0;
+            mul_partial_1_stage1_q <= '0;
+            mul_partial_2_stage1_q <= '0;
+            mul_partial_3_stage1_q <= '0;
             mul_valid_stage1_q <= 1'b0;
             mul_result_stage2_q <= '0;
             mul_valid_stage2_q  <= 1'b0;
             mul_high_stage1_q   <= 1'b0;
             mul_high_stage2_q   <= 1'b0;
         end else begin
-            // EX2: producto completo firmado de 32 x 32 bits.
-            mul_result_stage2_q <=
-                $signed(mul_op1_stage1_q) * $signed(mul_op2_stage1_q);
+            // EX2: desplazar y sumar los cuatro productos parciales.
+            mul_result_stage2_q <= mul_result_stage2_d;
             mul_valid_stage2_q <= mul_valid_stage1_q;
             mul_high_stage2_q <= mul_high_stage1_q;
 
-            // EX1: captura de los operandos de la instrucción cuyo destino
-            // arquitectónico es rs1.
+            // EX1: calcular los productos parciales de la instrucción actual.
             if (is_mul_instr) begin
-                mul_op1_stage1_q   <= op1_i;
-                mul_op2_stage1_q   <= op2_selected;
+                mul_partial_0_stage1_q <= mul_partial_0_d;
+                mul_partial_1_stage1_q <= mul_partial_1_d;
+                mul_partial_2_stage1_q <= mul_partial_2_d;
+                mul_partial_3_stage1_q <= mul_partial_3_d;
                 mul_valid_stage1_q <= 1'b1;
                 mul_high_stage1_q  <= is_mul_high_instr;
             end else begin
-                mul_op1_stage1_q   <= '0;
-                mul_op2_stage1_q   <= '0;
+                mul_partial_0_stage1_q <= '0;
+                mul_partial_1_stage1_q <= '0;
+                mul_partial_2_stage1_q <= '0;
+                mul_partial_3_stage1_q <= '0;
                 mul_valid_stage1_q <= 1'b0;
                 mul_high_stage1_q  <= 1'b0;
             end
