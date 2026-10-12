@@ -9,7 +9,7 @@ COMMON_FLAGS := -g2012 -Wall -I$(SRC_DIR)
 PKG := $(SRC_DIR)/pkg_vliw.sv
 
 .PHONY: all sim sim-alu sim-super-alu sim-regfile sim-bruh sim-feistel \
-	sim-crypto-decode clean
+	sim-crypto-decode sim-key-vault clean
 
 all: sim
 
@@ -57,6 +57,13 @@ sim-crypto-decode: $(BUILD_DIR)/crypto_decode.vvp
 $(BUILD_DIR)/crypto_decode.vvp: $(PKG) $(SRC_DIR)/crypto/crypto_decode.sv $(TB_DIR)/tb_crypto_decode.sv
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto_decode -o $@ $^
+
+sim-key-vault: $(BUILD_DIR)/key_vault.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/key_vault.vvp: $(PKG) $(SRC_DIR)/crypto/key_vault.sv $(TB_DIR)/tb_key_vault.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_key_vault -o $@ $^
 
 # Espacios reservados para las siguientes unidades:
 # sim-lost: compilar lost_unit.sv y tb_lost.sv.
