@@ -250,8 +250,8 @@ static porygon_parse_result_t parse_jump(parser_t *parser,
                 return result;
             }
         }
-        /* Se conserva el número; la unidad y el origen del PC se fijarán
-           antes de convertirlo al campo binario de JUMP. */
+        /* Se conserva el número escrito: este parser no conoce la posición
+           final del bundle y todavía no lo convierte a bits de JUMP. */
         result = parse_number(parser, &offset);
         if (result.status != PORYGON_PARSE_OK) {
             return result;

@@ -133,7 +133,8 @@ porygon_encode_result_t porygon_encode_jump(porygon_jump_op_t op, int rd,
         return PORYGON_ENCODE_INVALID_FORM;
     }
 
-    /* Solo se empaqueta el campo crudo: la unidad de salto sigue por definir. */
+    /* Se empaqueta el patrón crudo; la BRUH lo extiende con signo y lo escala
+       a bytes. jump_fixup resuelve etiquetas para la forma con inmediato. */
     *encoded = (uint16_t)(((unsigned int)rd << 13) |
                           ((unsigned int)offset_bits << 5) |
                           ((unsigned int)op << 3) |

@@ -87,8 +87,9 @@ porygon_encode_result_t porygon_encode_lost(porygon_lost_op_t op, int rd,
 
 /*
  * op selecciona el funct de JUMP. offset_bits representa el campo [12:5]
- * (0 a 255), sin interpretar aún las unidades del desplazamiento. Si
- * immediate es verdadero, ese campo debe ser cero y el literal irá en el
+ * (0 a 255). La BRUH interpreta esos bits con signo en unidades de bundle,
+ * tomando como base el PC del bundle actual. Si immediate es verdadero,
+ * ese campo debe ser cero y el literal irá en el
  * siguiente slot. jr no admite inmediato ni offset; j no utiliza rd.
  */
 porygon_encode_result_t porygon_encode_jump(porygon_jump_op_t op, int rd,
