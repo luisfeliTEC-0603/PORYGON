@@ -121,7 +121,7 @@ El procesador se estructura en 5 niveles de abstracción jerárquica:
 * **Función:** Almacena los 8 registros de 32 bits. `r0` está permanentemente conectado a cero (`32'h0`).
 * **Puertos:**
   * 8 Puertos de Lectura de 3 bits (`r_addr_0` a `r_addr_7`).
-  * 4 Puertos de Escritura de 3 bits (`w_addr_0` a `w_addr_3`), habilitados por `w_en`.
+  * 5 puertos de escritura: direcciones de 3 bits en `write_addr_i[0:4]`, habilitados por `write_enable_i[0:4]`. Feistel utiliza dos canales.
 * **Ejemplo de Uso:** Al ejecutar un bundle con 4 instrucciones que leen 2 registros cada una, los 8 puertos de lectura devuelven los operandos a las 4 FUs de forma simultánea.
 
 #### 2. `key_vault.sv` y `crypto_unit.sv`
@@ -160,8 +160,12 @@ PORYGON/
 │   │   ├── alu_unit.sv            # Módulo ALU (Suma, resta, lógicas, desplazamientos)
 │   │   ├── lost_unit.sv           # Módulo de acceso a memoria de datos (Load/Store)
 │   │   ├── bruh_unit.sv           # Módulo de saltos condicionales e incondicionales
-│   │   ├── key_vault.sv           # Memoria segura de llaves y FSM de autenticación
-│   │   ├── crypto_unit.sv         # Circuitería combinacional para ronda Feistel4
+│   │   ├── crypto/
+│   │   │   ├── crypto_unit.sv     # Integración de la unidad criptográfica
+│   │   │   ├── crypto_decode.sv   # Decodificación de solicitudes CRYPTO
+│   │   │   ├── key_vault.sv       # Bóveda y control de autenticación
+│   │   │   ├── feistel_round_logic.sv # Datapath combinacional de una ronda
+│   │   │   └── crypto_wb.sv       # Registro EX/WB de dos resultados
 │   │   ├── execution_stage.sv     # Wrapper que agrupa las 4 unidades funcionales
 │   │   ├── writeback_stage.sv     # Lógica de arbitraje y escritura en RegFile / RAM
 │   │   ├── memory_sp_ram.sv       # Modelo de Memoria RAM de datos (64 KB mínimo)
@@ -212,7 +216,7 @@ Para la gestión del proyecto en GitHub/GitLab, a continuación se presenta la l
 
 ### [Issue #02] - Diseño del Banco de Registros Multi-Puerto (`register_file.sv`)
 * **Orden:** 2
-* **Especificación:** Implementar el módulo de 8 registros de 32 bits. Debe contar con 8 puertos de lectura asíncrona y 4 puertos de escritura síncrona. Garantizar que la lectura de `r0` devuelva siempre `32'h00000000`.
+* **Especificación:** Implementar el módulo de 8 registros de 32 bits. Debe contar con 8 puertos de lectura asíncrona y 5 puertos de escritura síncrona. Garantizar que la lectura de `r0` devuelva siempre `32'h00000000`.
 * **Resultado Esperado:** Testbench `tb_regfile.sv` que verifique lecturas/escrituras simultáneas y la inmutabilidad de `r0`.
 
 ### [Issue #03] - Unidad Aritmético-Lógica (`alu_unit.sv`)

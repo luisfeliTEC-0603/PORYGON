@@ -1,9 +1,12 @@
+// Banco GPR con ocho lecturas asíncronas y cinco escrituras desde writeback.
+// Admite los dos resultados de CRYPTO y tres resultados de las otras unidades.
 import pkg_vliw::*;
 
 module register_file #(
     parameter integer DATA_WIDTH       = pkg_vliw::DATA_WIDTH,
     parameter integer NUM_REGS         = pkg_vliw::NUM_REGS,
-    parameter integer REG_INDEX_WIDTH = $clog2(NUM_REGS)
+    parameter integer REG_INDEX_WIDTH = $clog2(NUM_REGS),
+    parameter integer NUM_WRITE_PORTS = pkg_vliw::RF_WRITE_PORTS
 ) (
     input  logic  clk_i,
     input  logic  rst_ni,
@@ -13,10 +16,10 @@ module register_file #(
     // Datos leídos de los registros direccionados (32 bits cada uno)
     output logic [DATA_WIDTH-1:0]      read_data_o [0:7],
 
-    // Interfaces de Escritura (4 puertos paralelos para 4 slots VLIW)
-    input  logic                      write_enable_i [0:3],
-    input  logic [REG_INDEX_WIDTH-1:0] write_addr_i   [0:3],
-    input  logic [DATA_WIDTH-1:0]      write_data_i   [0:3]
+    // Feistel produce dos escrituras; los puertos no corresponden uno a uno a slots.
+    input  logic                      write_enable_i [0:NUM_WRITE_PORTS-1],
+    input  logic [REG_INDEX_WIDTH-1:0] write_addr_i   [0:NUM_WRITE_PORTS-1],
+    input  logic [DATA_WIDTH-1:0]      write_data_i   [0:NUM_WRITE_PORTS-1]
 );
 
     // Arreglo de 8 registros de 32 bits para almacenar el estado del CPU
@@ -45,7 +48,7 @@ module register_file #(
     end
 
     // ========================================================================
-    // Lógica Secuencial: Escritura Síncrona Multi-Puerto (4 Puertos) y Reset
+    // Lógica Secuencial: Escritura Síncrona Multi-Puerto y Reset
     // ========================================================================
     // Ocurre en el flanco de subida de reloj (posedge clk_i) o ante el reset.
     always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -55,8 +58,8 @@ module register_file #(
                 registers_q[register_index] <= '0;
             end
         end else begin
-            // Procesamiento de escrituras en paralelo para los 4 slots de Writeback (WB)
-            for (write_port = 0; write_port < 4; write_port = write_port + 1) begin
+            // Conserva la prioridad existente: el índice mayor gana si hay colisión.
+            for (write_port = 0; write_port < NUM_WRITE_PORTS; write_port = write_port + 1) begin
                 // Protecciones de Escritura:
                 // 1. Debe estar activo el habilitador de escritura (write_enable_i == 1).
                 // 2. Regla de Arquitectura: r0 es de SOLO LECTURA (write_addr_i != 0).

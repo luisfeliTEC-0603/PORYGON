@@ -1,8 +1,10 @@
+// Tipos y constantes compartidos por dispatch, unidades funcionales y registros.
 package pkg_vliw;
 
     parameter integer DATA_WIDTH = 32;
     parameter integer ADDR_WIDTH = 32;
     parameter integer NUM_REGS = 8;
+    parameter integer RF_WRITE_PORTS = 5;
     parameter integer NUM_SLOTS = 4;
     parameter integer SLOT_WIDTH = 16;
     parameter integer BUNDLE_WIDTH = 64;
@@ -101,6 +103,7 @@ package pkg_vliw;
         logic [2:0] rs1;
         logic [2:0] rs2;
         logic [2:0] funct;
+        // [6:5]: ronda, subllave o palabra de credencial, según funct.
         logic [1:0] round_or_subkey;
         logic [1:0] key_index;
         logic reserved;

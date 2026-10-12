@@ -1,15 +1,19 @@
+// Verifica cinco escrituras simultáneas, enables, protección de r0 y reset del GPR.
 module tb_regfile;
+    localparam integer NUM_WRITE_PORTS = pkg_vliw::RF_WRITE_PORTS;
 
     logic clk;
     logic rst_n;
     logic [2:0] read_addr [0:7];
-    logic [31:0] read_data [0:7];
-    logic write_enable [0:3];
-    logic [2:0] write_addr [0:3];
-    logic [31:0] write_data [0:3];
+    wire [31:0] read_data [0:7];
+    logic write_enable [0:NUM_WRITE_PORTS-1];
+    logic [2:0] write_addr [0:NUM_WRITE_PORTS-1];
+    logic [31:0] write_data [0:NUM_WRITE_PORTS-1];
     integer port;
 
-    register_file dut (
+    register_file #(
+        .NUM_WRITE_PORTS(NUM_WRITE_PORTS)
+    ) u_register_file (
         .clk_i(clk),
         .rst_ni(rst_n),
         .read_addr_i(read_addr),
@@ -25,47 +29,66 @@ module tb_regfile;
         clk = 1'b0;
         rst_n = 1'b0;
         for (port = 0; port < 8; port = port + 1) begin
-            read_addr[port] = 3'd0;
+            read_addr[port] = port[2:0];
         end
-        for (port = 0; port < 4; port = port + 1) begin
+        for (port = 0; port < NUM_WRITE_PORTS; port = port + 1) begin
             write_enable[port] = 1'b0;
             write_addr[port] = 3'd0;
             write_data[port] = 32'd0;
         end
         #2;
+        for (port = 0; port < 8; port = port + 1) begin
+            if (read_data[port] !== 32'd0) $fatal(1, "Initial reset failed: r%0d", port);
+        end
         rst_n = 1'b1;
 
-        write_enable[0] = 1'b1;
-        write_addr[0] = 3'd1;
-        write_data[0] = 32'h11111111;
-        write_enable[1] = 1'b1;
-        write_addr[1] = 3'd2;
-        write_data[1] = 32'h22222222;
-        write_enable[2] = 1'b1;
-        write_addr[2] = 3'd3;
-        write_data[2] = 32'h33333333;
-        write_enable[3] = 1'b1;
-        write_addr[3] = 3'd0;
-        write_data[3] = 32'hffffffff;
+        // Los cinco resultados deben persistir tras el mismo flanco.
+        for (port = 0; port < NUM_WRITE_PORTS; port = port + 1) begin
+            write_enable[port] = 1'b1;
+            write_addr[port] = port[2:0] + 3'd1;
+            write_data[port] = 32'h11111111 * (port + 1);
+        end
         @(posedge clk);
         #1;
+        for (port = 0; port < NUM_WRITE_PORTS; port = port + 1) begin
+            if (read_data[port+1] !== 32'h11111111 * (port + 1))
+                $fatal(1, "Simultaneous write failed: port %0d", port);
+        end
 
-        read_addr[0] = 3'd0;
-        read_addr[1] = 3'd1;
-        read_addr[2] = 3'd2;
-        read_addr[3] = 3'd3;
-        read_addr[4] = 3'd1;
-        read_addr[5] = 3'd2;
-        read_addr[6] = 3'd3;
-        read_addr[7] = 3'd0;
+        @(negedge clk);
+        for (port = 0; port < NUM_WRITE_PORTS; port = port + 1) begin
+            write_enable[port] = 1'b0;
+            write_addr[port] = 3'd6;
+            write_data[port] = 32'hdeadbeef;
+        end
+        @(posedge clk);
         #1;
-        if (read_data[0] !== 32'h0 || read_data[7] !== 32'h0) $fatal(1, "r0 is not immutable");
-        if (read_data[1] !== 32'h11111111 || read_data[4] !== 32'h11111111) $fatal(1, "r1 read failed");
-        if (read_data[2] !== 32'h22222222 || read_data[5] !== 32'h22222222) $fatal(1, "r2 read failed");
-        if (read_data[3] !== 32'h33333333 || read_data[6] !== 32'h33333333) $fatal(1, "r3 read failed");
+        if (read_data[6] !== 32'd0) $fatal(1, "Disabled write modified r6");
+        for (port = 0; port < NUM_WRITE_PORTS; port = port + 1) begin
+            if (read_data[port+1] !== 32'h11111111 * (port + 1))
+                $fatal(1, "Disabled writes did not preserve r%0d", port + 1);
+        end
 
-        $display("tb_regfile: PASS (8 async reads, 4 sync writes, r0 protected)");
+        // Cada puerto intenta escribir r0 por separado, incluido el quinto.
+        for (port = 0; port < NUM_WRITE_PORTS; port = port + 1) begin
+            @(negedge clk);
+            write_enable[port] = 1'b1;
+            write_addr[port] = 3'd0;
+            @(posedge clk);
+            #1;
+            if (read_data[0] !== 32'd0) $fatal(1, "r0 modified by port %0d", port);
+            write_enable[port] = 1'b0;
+        end
+
+        // El reset asíncrono existente limpia el banco sin esperar otro flanco.
+        @(negedge clk);
+        rst_n = 1'b0;
+        #1;
+        for (port = 0; port < 8; port = port + 1) begin
+            if (read_data[port] !== 32'd0) $fatal(1, "Final reset failed: r%0d", port);
+        end
+
+        $display("tb_regfile: PASS (8 async reads, 5 simultaneous writes, enables, r0, reset)");
         $finish;
     end
-
 endmodule
