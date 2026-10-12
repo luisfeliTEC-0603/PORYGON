@@ -38,6 +38,15 @@ $(BUILD_DIR)/regfile.vvp: $(PKG) $(SRC_DIR)/register_file.sv $(TB_DIR)/tb_regfil
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_regfile -o $@ $^
 
+sim-lost: $(BUILD_DIR)/lost.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/lost.vvp: $(PKG) $(SRC_DIR)/lost_unit.sv $(TB_DIR)/tb_lost.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_lost -o $@ $^
+
+# Espacios reservados para las siguientes unidades:
+# sim-bruh: compilar bruh_unit.sv y tb_bruh.sv.
 sim-bruh: $(BUILD_DIR)/bruh.vvp
 	$(VVP) $<
 
