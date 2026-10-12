@@ -45,6 +45,10 @@ module tb_bruh;
     endtask
 
     initial begin
+        // Configuración para GTKWave
+        $dumpfile("waveform_bruh.vcd");
+        $dumpvars(0, tb_bruh);
+
         pc = PC_BASE;
         operand_a = 32'h0000_0000;
         immediate = 16'h0000;
