@@ -34,6 +34,8 @@ static const porygon_mnemonic_t MNEMONICS[] = {
     {"sari",    PORYGON_FORMAT_MATH,   PORYGON_MATH_SAR,        true},
     {"mul",     PORYGON_FORMAT_MATH,   PORYGON_MATH_MUL,        false},
     {"muli",    PORYGON_FORMAT_MATH,   PORYGON_MATH_MUL,        true},
+    {"mulh",    PORYGON_FORMAT_MATH,   PORYGON_MATH_MULH,       false},
+    {"mulhi",   PORYGON_FORMAT_MATH,   PORYGON_MATH_MULH,       true},
     {"gtn",     PORYGON_FORMAT_MATH,   PORYGON_MATH_GTN,        false},
     {"ltn",     PORYGON_FORMAT_MATH,   PORYGON_MATH_LTN,        false},
     {"eor",     PORYGON_FORMAT_MATH,   PORYGON_MATH_EOR,        false},
