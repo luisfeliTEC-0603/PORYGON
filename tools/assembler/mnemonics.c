@@ -6,9 +6,10 @@
 #include <string.h>
 
 /*
- * Los nombres provienen de docs/isa.md. Las variantes con sufijo "i"
- * comparten funct con su forma normal y se distinguen mediante immediate.
- * El parser futuro utilizará format para validar operandos y elegir encoder.
+ * MATH, LOST y JUMP siguen docs/isa.md de esta rama. CRYPTO sigue la revisión
+ * de la ISA entregada por el equipo, que añade LOPW y cambia los bits de funct.
+ * Las variantes con sufijo "i" comparten funct con su forma normal y se
+ * distinguen mediante immediate. El parser usa format para leer operandos.
  */
 static const porygon_mnemonic_t MNEMONICS[] = {
     {"nop",     PORYGON_FORMAT_NOP,    0,                       false},
@@ -67,7 +68,8 @@ static const porygon_mnemonic_t MNEMONICS[] = {
     {"write",   PORYGON_FORMAT_CRYPTO, PORYGON_CRYPTO_WRITE,   false},
     {"feistel", PORYGON_FORMAT_CRYPTO, PORYGON_CRYPTO_FEISTEL, false},
     {"pwd",     PORYGON_FORMAT_CRYPTO, PORYGON_CRYPTO_PWD,     false},
-    {"rvk",     PORYGON_FORMAT_CRYPTO, PORYGON_CRYPTO_RVK,     false}
+    {"rvk",     PORYGON_FORMAT_CRYPTO, PORYGON_CRYPTO_RVK,     false},
+    {"lopw",    PORYGON_FORMAT_CRYPTO, PORYGON_CRYPTO_LOPW,    false}
 };
 
 const porygon_mnemonic_t *porygon_find_mnemonic(const char *name)

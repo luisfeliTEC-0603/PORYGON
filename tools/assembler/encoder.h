@@ -17,7 +17,7 @@ typedef enum {
 } porygon_encode_result_t;
 
 /*
- * Cada valor es el campo funct de la ISA. El futuro parser convertirá nombres
+ * Cada valor es el campo funct de la ISA. El parser convierte nombres
  * como "sum" y "sumi" al mismo PORYGON_MATH_SUM; el bit immediate los distingue.
  * Este módulo recibe la operación ya identificada, no texto ensamblador.
  */
@@ -62,7 +62,8 @@ typedef enum {
     PORYGON_CRYPTO_WRITE = 1,
     PORYGON_CRYPTO_FEISTEL = 2,
     PORYGON_CRYPTO_PWD = 3,
-    PORYGON_CRYPTO_RVK = 4
+    PORYGON_CRYPTO_RVK = 4,
+    PORYGON_CRYPTO_LOPW = 5
 } porygon_crypto_op_t;
 
 /*
@@ -95,11 +96,14 @@ porygon_encode_result_t porygon_encode_jump(porygon_jump_op_t op, int rd,
                                             uint16_t *encoded);
 
 /*
- * op selecciona el funct de CRYPTO. round_or_subkey y key_index admiten 0..3.
- * Cada campo que la operación no utiliza debe recibirse como cero.
+ * op selecciona funct[9:7] de CRYPTO. item_index representa la ronda,
+ * subllave o palabra de credencial en [6:5], según la operación; key_index
+ * representa la llave de la bóveda en [4:3]. Ambos índices admiten 0..3.
+ * Los campos sin uso deben recibirse como cero; reserved[2] siempre se
+ * codifica como cero y CRYPTO no consume un slot literal.
  */
 porygon_encode_result_t porygon_encode_crypto(porygon_crypto_op_t op, int rs1,
-                                              int rs2, int round_or_subkey,
+                                              int rs2, int item_index,
                                               int key_index, uint16_t *encoded);
 
 #endif

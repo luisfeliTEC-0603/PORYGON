@@ -142,34 +142,37 @@ porygon_encode_result_t porygon_encode_jump(porygon_jump_op_t op, int rd,
 }
 
 porygon_encode_result_t porygon_encode_crypto(porygon_crypto_op_t op, int rs1,
-                                              int rs2, int round_or_subkey,
+                                              int rs2, int item_index,
                                               int key_index, uint16_t *encoded)
 {
     if (encoded == NULL) {
         return PORYGON_ENCODE_INVALID_ARGUMENT;
     }
-    /* El enum CRYPTO ocupa funct[9:6]; el 3 final será opcode CRYPTO. */
-    if (op < PORYGON_CRYPTO_AUTH || op > PORYGON_CRYPTO_RVK) {
+    /* El enum coincide con funct[9:7] de la nueva tabla CRYPTO. */
+    if (op < PORYGON_CRYPTO_AUTH || op > PORYGON_CRYPTO_LOPW) {
         return PORYGON_ENCODE_INVALID_OPERATION;
     }
     if (!valid_register(rs1) || !valid_register(rs2) ||
-        !valid_two_bit_field(round_or_subkey) ||
+        !valid_two_bit_field(item_index) ||
         !valid_two_bit_field(key_index)) {
         return PORYGON_ENCODE_OUT_OF_RANGE;
     }
-    /* Los campos que la operación no usa se codifican siempre como cero. */
-    if (((op == PORYGON_CRYPTO_AUTH || op == PORYGON_CRYPTO_PWD) &&
-         (rs2 != 0 || round_or_subkey != 0 || key_index != 0)) ||
+    /* AUTH, PWD y RVK no reciben operandos. WRITE solo usa rs1, índice de
+       subllave y llave; LOPW usa rs1 e índice de palabra. FEISTEL usa todos. */
+    if (((op == PORYGON_CRYPTO_AUTH || op == PORYGON_CRYPTO_PWD ||
+          op == PORYGON_CRYPTO_RVK) &&
+         (rs1 != 0 || rs2 != 0 || item_index != 0 || key_index != 0)) ||
         (op == PORYGON_CRYPTO_WRITE && rs2 != 0) ||
-        (op == PORYGON_CRYPTO_RVK &&
-         (rs1 != 0 || rs2 != 0 || round_or_subkey != 0 || key_index != 0))) {
+        (op == PORYGON_CRYPTO_LOPW && (rs2 != 0 || key_index != 0))) {
         return PORYGON_ENCODE_INVALID_FORM;
     }
 
+    /* [15:13] rs1, [12:10] rs2, [9:7] funct, [6:5] índice compartido,
+       [4:3] llave, [2] reservado=0, [1:0] opcode=11. */
     *encoded = (uint16_t)(((unsigned int)rs1 << 13) |
                           ((unsigned int)rs2 << 10) |
-                          ((unsigned int)op << 6) |
-                          ((unsigned int)round_or_subkey << 4) |
-                          ((unsigned int)key_index << 2) | 3u);
+                          ((unsigned int)op << 7) |
+                          ((unsigned int)item_index << 5) |
+                          ((unsigned int)key_index << 3) | 3u);
     return PORYGON_ENCODE_OK;
 }
