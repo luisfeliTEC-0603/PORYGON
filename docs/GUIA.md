@@ -160,8 +160,12 @@ PORYGON/
 │   │   ├── alu_unit.sv            # Módulo ALU (Suma, resta, lógicas, desplazamientos)
 │   │   ├── lost_unit.sv           # Módulo de acceso a memoria de datos (Load/Store)
 │   │   ├── bruh_unit.sv           # Módulo de saltos condicionales e incondicionales
-│   │   ├── key_vault.sv           # Memoria segura de llaves y FSM de autenticación
-│   │   ├── crypto_unit.sv         # Circuitería combinacional para ronda Feistel4
+│   │   ├── crypto/
+│   │   │   ├── crypto_unit.sv     # Integración de la unidad criptográfica
+│   │   │   ├── crypto_decode.sv   # Decodificación de solicitudes CRYPTO
+│   │   │   ├── key_vault.sv       # Bóveda y control de autenticación
+│   │   │   ├── feistel_round_logic.sv # Datapath combinacional de una ronda
+│   │   │   └── crypto_wb.sv       # Registro EX/WB de dos resultados
 │   │   ├── execution_stage.sv     # Wrapper que agrupa las 4 unidades funcionales
 │   │   ├── writeback_stage.sv     # Lógica de arbitraje y escritura en RegFile / RAM
 │   │   ├── memory_sp_ram.sv       # Modelo de Memoria RAM de datos (64 KB mínimo)

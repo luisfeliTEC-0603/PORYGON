@@ -64,12 +64,13 @@ package pkg_vliw;
         JUMP_JR  = 2'b11
     } jump_funct_t;
 
-    typedef enum logic [3:0] {
-        CRYPTO_AUTH    = 4'b0000,
-        CRYPTO_WRITE   = 4'b0001,
-        CRYPTO_FEISTEL = 4'b0010,
-        CRYPTO_PWD     = 4'b0011,
-        CRYPTO_RVK     = 4'b0100
+    typedef enum logic [2:0] {
+        CRYPTO_AUTH    = 3'b000,
+        CRYPTO_WRITE   = 3'b001,
+        CRYPTO_FEISTEL = 3'b010,
+        CRYPTO_PWD     = 3'b011,
+        CRYPTO_RVK     = 3'b100,
+        CRYPTO_LOPW    = 3'b101
     } crypto_funct_t;
 
     typedef struct packed {
@@ -101,9 +102,11 @@ package pkg_vliw;
     typedef struct packed {
         logic [2:0] rs1;
         logic [2:0] rs2;
-        logic [3:0] funct;
+        logic [2:0] funct;
+        // [6:5]: ronda, subllave o palabra de credencial, según funct.
         logic [1:0] round_or_subkey;
         logic [1:0] key_index;
+        logic reserved;
         opcode_t opcode;
     } crypto_inst_t;
 

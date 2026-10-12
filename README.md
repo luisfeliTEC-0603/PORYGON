@@ -36,6 +36,7 @@ con asignación flexible de unidades funcionales.
 | Ruta | Contenido |
 |------|-----------|
 | `hardware/src/` | Paquete compartido, etapas del pipeline, unidades funcionales, banco de registros y modelo de memoria |
+| `hardware/src/crypto/` | Interfaces de la unidad CRYPTO, decodificador, bóveda, ronda Feistel y registro EX/WB |
 | `hardware/tb/` | Archivos reservados para testbenches unitarios y de integración |
 | `tools/assembler/` | Ensamblador propio pendiente de implementación |
 | `tools/data_loader/` | Herramienta de carga y extracción de archivos (implementada) |

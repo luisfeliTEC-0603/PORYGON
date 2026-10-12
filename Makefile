@@ -45,7 +45,7 @@ $(BUILD_DIR)/bruh.vvp: $(PKG) $(SRC_DIR)/bruh_unit.sv $(TB_DIR)/tb_bruh.sv
 
 # Espacios reservados para las siguientes unidades:
 # sim-lost: compilar lost_unit.sv y tb_lost.sv.
-# sim-crypto: compilar key_vault.sv, crypto_unit.sv y tb_crypto.sv.
+# sim-crypto: compilar $(SRC_DIR)/crypto/*.sv y $(TB_DIR)/tb_crypto.sv, con $(PKG) primero.
 # sim-pkg: compilar utilidades de pkg_vliw.sv y tb_pkg.sv.
 # sim-top: compilar todas las unidades, etapas, memoria, vliw_processor.sv y tb_top.sv.
 
