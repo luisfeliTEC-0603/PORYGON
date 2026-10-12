@@ -8,6 +8,7 @@ module tb_alu;
     logic [31:0] operand_a;
     logic [31:0] operand_b;
     logic [31:0] result;
+    logic [2:0]  dest_addr;
     logic        write_enable;
 
     alu_unit dut (
@@ -17,6 +18,7 @@ module tb_alu;
         .operand_a_i(operand_a),
         .operand_b_i(operand_b),
         .result_o(result),
+        .dest_addr_o(dest_addr),
         .write_enable_o(write_enable)
     );
 
@@ -30,11 +32,20 @@ module tb_alu;
             instruction = {3'd1, 3'd2, funct, 1'b0, use_immediate, MATH_OPCODE};
             is_nop = 1'b0;
             #1;
+            if (dest_addr !== 3'd1)
+                $fatal(1, "FAIL %s: dest=%d expected=1", test_name, dest_addr);
             if ((result !== expected) || (write_enable !== 1'b1))
                 $fatal(1, "FAIL %s: result=0x%h write=%b expected=0x%h", test_name, result, write_enable, expected);
             $display("[PASS] %s: result=0x%h", test_name, result);
         end
     endtask
+
+    // Sin escritura válida, la dirección de salida debe quedar en cero.
+    always @(instruction or is_nop) begin
+        #1;
+        if (write_enable === 1'b0 && dest_addr !== 3'd0)
+            $fatal(1, "FAIL disabled writeback: dest=%d expected=0", dest_addr);
+    end
 
     initial begin
         instruction = 16'h0000;
@@ -54,6 +65,17 @@ module tb_alu;
         check_result(MATH_AND, 1'b0, 32'h0000_0005, "AND");
         check_result(MATH_OR, 1'b0, 32'h0000_0007, "OR");
         check_result(MATH_XOR, 1'b0, 32'h0000_0002, "XOR");
+
+        instruction = {3'd5, 3'd2, MATH_SUM, 1'b0, 1'b0, MATH_OPCODE};
+        #1;
+        if (result !== 32'd12 || dest_addr !== 3'd5 || write_enable !== 1'b1)
+            $fatal(1, "FAIL SUM destination R5: result=0x%h dest=%d write=%b",
+                   result, dest_addr, write_enable);
+        $display("[PASS] SUM destination follows rs1=R5");
+        is_nop = 1'b1;
+        #1;
+        if (dest_addr !== 3'd0 || write_enable !== 1'b0)
+            $fatal(1, "FAIL NOP with destination R5");
 
         operand_a = 32'h0000_0000;
         check_result(MATH_NOT, 1'b0, 32'hFFFF_FFFF, "NOT zero");

@@ -16,6 +16,7 @@ module tb_super_alu;
     logic [31:0] op2_i;
 
     logic [31:0] result_o;
+    logic [2:0]  dest_addr_o;
     logic        write_enable_o;
     integer     cycle_count;
 
@@ -33,6 +34,7 @@ module tb_super_alu;
         .op1_i          (op1_i),
         .op2_i          (op2_i),
         .result_o       (result_o),
+        .dest_addr_o    (dest_addr_o),
         .write_enable_o (write_enable_o)
     );
 
@@ -70,6 +72,9 @@ module tb_super_alu;
 
         // Reset del sistema
         #12;
+        if (dest_addr_o !== 3'd0 || dut.dest_stage1_q !== 3'd0 ||
+            dut.dest_stage2_q !== 3'd0)
+            $fatal(1, "Reset no limpia las direcciones de destino");
         rst_ni = 1;
         #8;
 
@@ -104,6 +109,8 @@ module tb_super_alu;
         op2_i         = 32'd25;
         #1; // Pequeño retardo combinacional
         
+        if (dest_addr_o !== 3'd1)
+            $fatal(1, "SUM no entrega el destino rs1");
         if (result_o == 32'd40 && write_enable_o == 1'b1)
             $display("[PASS] PRUEBA 2: Suma combinacional 15 + 25 = %d (1 ciclo)", result_o);
         else
@@ -352,6 +359,44 @@ module tb_super_alu;
             $display("[PASS] PRUEBA 13: NOP deshabilita escritura en banco de registros correctamente");
         else
             $display("[FAIL] PRUEBA 13: NOP habilitó escritura en banco de registros");
+
+        // Multiplicaciones consecutivas con destinos distintos: la dirección
+        // debe viajar con su producto aunque la instrucción de entrada cambie.
+        @(negedge clk_i);
+        instruction_i = {3'd2, 3'd1, MATH_MUL, 1'b1, 1'b0, 2'b00};
+        is_nop_i = 1'b0;
+        op1_i = 32'd6;
+        op2_i = 32'd7;
+        @(posedge clk_i);
+        #1;
+        if (write_enable_o !== 1'b0)
+            $fatal(1, "MUL habilita escritura antes de EX2");
+
+        @(negedge clk_i);
+        instruction_i = {3'd5, 3'd1, MATH_MULH, 1'b1, 1'b0, 2'b00};
+        op1_i = 32'h8000_0000;
+        op2_i = 32'd1;
+        @(posedge clk_i);
+        #1;
+        if (result_o !== 32'd42 || dest_addr_o !== 3'd2 ||
+            write_enable_o !== 1'b1)
+            $fatal(1, "Primer MUL perdió su resultado o destino R2");
+
+        @(negedge clk_i);
+        instruction_i = '0;
+        is_nop_i = 1'b1;
+        op1_i = '0;
+        op2_i = '0;
+        @(posedge clk_i);
+        #1;
+        if (result_o !== 32'hFFFF_FFFF || dest_addr_o !== 3'd5 ||
+            write_enable_o !== 1'b1)
+            $fatal(1, "Segundo MULH perdió su resultado o destino R5");
+        @(posedge clk_i);
+        #1;
+        if (write_enable_o !== 1'b0 || dest_addr_o !== 3'd0)
+            $fatal(1, "NOP no limpia la salida de destino tras drenar MUL");
+        $display("[PASS] PRUEBA 14: MUL/MULH consecutivos conservan destinos R2/R5");
 
         #20;
         $display("==================================================");
