@@ -8,7 +8,8 @@ TB_DIR := hardware/tb
 COMMON_FLAGS := -g2012 -Wall -I$(SRC_DIR)
 PKG := $(SRC_DIR)/pkg_vliw.sv
 
-.PHONY: all sim sim-alu sim-super-alu sim-regfile sim-bruh sim-feistel clean
+.PHONY: all sim sim-alu sim-super-alu sim-regfile sim-bruh sim-feistel \
+	sim-crypto-decode clean
 
 all: sim
 
@@ -49,6 +50,13 @@ sim-feistel: $(BUILD_DIR)/feistel_round.vvp
 $(BUILD_DIR)/feistel_round.vvp: $(PKG) $(SRC_DIR)/crypto/feistel_round_logic.sv $(TB_DIR)/tb_crypto.sv
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto -o $@ $^
+
+sim-crypto-decode: $(BUILD_DIR)/crypto_decode.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/crypto_decode.vvp: $(PKG) $(SRC_DIR)/crypto/crypto_decode.sv $(TB_DIR)/tb_crypto_decode.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto_decode -o $@ $^
 
 # Espacios reservados para las siguientes unidades:
 # sim-lost: compilar lost_unit.sv y tb_lost.sv.
