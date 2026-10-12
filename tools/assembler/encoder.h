@@ -36,7 +36,8 @@ typedef enum {
     PORYGON_MATH_GTN = 12,
     PORYGON_MATH_LTN = 13,
     PORYGON_MATH_EOR = 14,
-    PORYGON_MATH_NEZ = 15
+    PORYGON_MATH_NEZ = 15,
+    PORYGON_MATH_MULH = 16
 } porygon_math_op_t;
 
 typedef enum {

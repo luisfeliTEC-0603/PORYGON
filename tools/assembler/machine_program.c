@@ -48,8 +48,9 @@ void porygon_describe_instruction(porygon_machine_instruction_t *out)
            de rs1; con inmediato o en forma unaria no leen rs2. */
         /* Los funct de desplazamiento y multiplicación usan la ALU especial
            de la ISA; las demás operaciones MATH usan la general. */
-        out->resource = (in->funct >= PORYGON_MATH_SHL &&
-                         in->funct <= PORYGON_MATH_MUL)
+        out->resource = ((in->funct >= PORYGON_MATH_SHL &&
+                          in->funct <= PORYGON_MATH_MUL) ||
+                         in->funct == PORYGON_MATH_MULH)
                             ? PORYGON_RESOURCE_MATH_SPECIAL
                             : PORYGON_RESOURCE_MATH;
         if (in->funct != PORYGON_MATH_MOV) {

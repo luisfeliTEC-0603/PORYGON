@@ -42,6 +42,7 @@ porygon_encode_result_t porygon_encode_math(porygon_math_op_t op, int rs1,
     case PORYGON_MATH_SHR:
     case PORYGON_MATH_SAR:
     case PORYGON_MATH_MUL:
+    case PORYGON_MATH_MULH:
         allows_immediate = true;
         pipe = 1;
         break;

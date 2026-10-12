@@ -44,7 +44,7 @@ typedef size_t porygon_label_id_t;
 #define PORYGON_NO_LABEL SIZE_MAX
 #define PORYGON_NO_BLOCK SIZE_MAX
 
-/* Recurso funcional requerido. MATH_SPECIAL agrupa mul y desplazamientos;
+/* Recurso funcional requerido. MATH_SPECIAL agrupa mul, mulh y desplazamientos;
    las capacidades y latencias concretas se fijarán con el scheduler/RTL. */
 typedef enum {
     PORYGON_RESOURCE_NONE,
