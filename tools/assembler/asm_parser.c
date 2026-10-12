@@ -231,6 +231,7 @@ static porygon_parse_result_t parse_jump(parser_t *parser,
     porygon_parse_result_t result;
     uint8_t rd = 0;
     int64_t offset = 0;
+    const char *offset_start;
 
     /* JR toma un registro; J toma un desplazamiento; los saltos
        condicionales toman ambos, separados por coma. */
@@ -252,9 +253,18 @@ static porygon_parse_result_t parse_jump(parser_t *parser,
         }
         /* Se conserva el número escrito: este parser no conoce la posición
            final del bundle y todavía no lo convierte a bits de JUMP. */
+        skip_space(parser);
+        offset_start = parser->cursor;
         result = parse_number(parser, &offset);
         if (result.status != PORYGON_PARSE_OK) {
             return result;
+        }
+        /* El campo corto tiene ocho bits con signo; ji/jzi/jnzi consumen un
+           literal de dieciséis bits también con signo. El valor se verifica
+           aquí para que el encoder no descubra un salto imposible más tarde. */
+        if ((instruction->immediate && (offset < -32768 || offset > 32767)) ||
+            (!instruction->immediate && (offset < -128 || offset > 127))) {
+            return result_at(PORYGON_PARSE_OUT_OF_RANGE, parser, offset_start);
         }
     }
 
