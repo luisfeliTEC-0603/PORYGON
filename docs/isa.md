@@ -82,14 +82,17 @@ La bóveda de llaves mantiene internamente los siguientes recursos:
 | Recurso | Ancho | Tipo | Descripción |
 |---------|-------|------|-------------|
 | `keys[0..3]` | 4 × 128 bits | R/W (solo `write`) | 4 llaves de 128 bits, cada una dividida en 4 subllaves de 32 bits |
-| `rsp` | 32 bits | R/W (solo `pwd`) | *Register for Stored Password*: almacena la contraseña de autenticación |
-| `rsa` | 32 bits | WO (solo `auth`) | *Register for Stored Authentication*: almacena temporalmente el token recibido para compararlo con `rsp` |
+| `rsp` | 128 bits | R/W (solo `pwd`) | *Register for Stored Password*: almacena la contraseña de autenticación |
+| `rsa` | 128 bits | WO (solo `LOPW`) | *Register for Stored Authentication*: almacena temporalmente las cuatro palabras de la credencial candidata |
+| `rsa_valid` | 4 bits | R/W interno | Indica cuáles palabras de `rsa` fueron cargadas mediante `LOPW` |
 | `state` | 2 bits | R/W (FSM) | Estado de la FSM de autenticación |
+| `auth_timer` | Parametrizable | R/W interno | Temporizador de inactividad de la sesión autenticada |
 
 **Notas:**
 
-- `rsa` es un registro **write-only** propio de la unidad criptográfica. El programa **no puede leerlo**; solo se escribe mediante la instrucción `auth`.
+- `rsa` es un registro **write-only** propio de la unidad criptográfica. El programa **no puede leerlo**; solo se escribe mediante la instrucción `LOPW`.
 - `rsp` **no es legible** desde registros de propósito general. Solo se escribe mediante `pwd` (previa autenticación) y se compara internamente con `rsa`.
+- `rsp` se inicializa durante reset con una constante aleatoria de 128 bits definida directamente en SystemVerilog.
 - Las llaves `keys[0..3]` **nunca** se escriben en registros de propósito general ni en memoria general. Solo `feistel` las lee (como subllaves) y `write` las escribe.
 - El estado `state` controla el acceso a las operaciones privilegiadas.
 
@@ -102,12 +105,12 @@ La bóveda de llaves mantiene internamente los siguientes recursos:
 > **Comparación `rsa == rsp`**
 >
 > El mecanismo de autenticación opera de la siguiente manera:
-> 1. El programa coloca un token en un registro de propósito general (por ejemplo, `rs1`).
-> 2. Ejecuta `auth rs1`. La unidad criptográfica **escribe** el valor de `rs1` en `rsa`. 
-> 3. La unidad criptográfica **compara** `rsa` con `rsp`.
-> 4. Si `rsa == rsp`, la FSM transiciona a `AUTHENTICATED` y el bit `AUTH` del registro de estado se pone en 1.
-> 5. Si `rsa != rsp`, la FSM permanece en `LOCKED` y se genera la excepción `AUTENTICACION_FALLIDA`.
-> 6. Tras la comparación, `rsa` es limpiado para no dejar el token residual.
+> 1. El programa divide una credencial de 128 bits en cuatro palabras de 32 bits.
+> 2. Ejecuta cuatro instrucciones `LOPW`, con índices de palabra 0, 1, 2 y 3, para construir `rsa`.
+> 3. Ejecuta `auth` sin operandos. La unidad criptográfica compara atómicamente `rsa` con `rsp`.
+> 4. Si las cuatro palabras están válidas y `rsa == rsp`, la FSM transiciona a `AUTHENTICATED`, el bit `AUTH` del registro de estado se pone en 1 y comienza el temporizador de inactividad.
+> 5. Si la credencial está incompleta o `rsa != rsp`, la FSM permanece en `LOCKED` y se genera la excepción `AUTENTICACION_FALLIDA`.
+> 6. Tras la comparación, `rsa` y `rsa_valid` son limpiados para no dejar la credencial residual.
 
 ## Bundle
 
@@ -287,40 +290,54 @@ Con inmediato (`imm = 1`): `<instr> rd, imm` → usa el inmediato de 16 bits del
 |---------|--------------------|-------|-------------|
 | [15:13] | `rs1`              | 3     | Operando A (ver tabla de roles por instrucción) |
 | [12:10] | `rs2`              | 3     | Operando B (ver tabla de roles por instrucción) |
-| [9:6]   | `funct`            | 4     | Selector de operación crypto |
-| [5:4]   | `rnd_idx` / `sk_idx` | 2   | Ronda Feistel (0–3) o subllave destino (0–3) |
-| [3:2]   | `k_idx`            | 2     | Índice de llave en la bóveda (0–3) |
+| [9:7]   | `funct`            | 3     | Selector de operación crypto |
+| [6:5]   | `rnd_idx` / `sk_idx` / `word_idx` | 2 | Ronda Feistel, subllave destino o palabra de credencial (0–3) |
+| [4:3]   | `k_idx`            | 2     | Índice de llave en la bóveda (0–3) |
+| [2]     | `reserved`         | 1     | Reservado; debe codificarse siempre como `0` |
 | [1:0]   | `opcode`           | 2     | `11` = CRYPTO |
 
 > [!IMPORTANT]
 >
 > El formato de instrucción visto en la estructura anterior aplica en su totalidad, solamente, en la instrucción `feistel`. La encodificación especfica de cada una de las instrucciones del formato CRYPTO se puede ver en la siguiente tabla:
 >
-> | Instrucción | `rs1` | `rs2` | `funct` | `rnd_idx`/`sk_idx` | `k_idx` |
-> |-------------|-------|-------|---------|---------------------|---------|
-> | `auth`      | token | —     | `000`   | —                   | —       |
-> | `write`     | dato (subllave 32 bits) | — | `001` | subllave (0–3) | llave (0–3) |
-> | `feistel`   | L (32 bits) | R (32 bits) | `010` | ronda (0–3) | llave (0–3) |
-> | `pwd`       | nueva contraseña | — | `011` | —              | —       |
-> | `rvk`       | —     | —     | `100`   | —                   | —       |
+> | Instrucción | `rs1` | `rs2` | `funct` | `rnd_idx`/`sk_idx`/`word_idx` | `k_idx` |
+> |-------------|-------|-------|---------|--------------------------------|---------|
+> | `auth`      | —     | —     | `000`   | —                              | —       |
+> | `write`     | dato (subllave 32 bits) | — | `001` | subllave (0–3)       | llave (0–3) |
+> | `feistel`   | L (32 bits) | R (32 bits) | `010` | ronda (0–3)            | llave (0–3) |
+> | `pwd`       | —     | —     | `011`   | —                              | —       |
+> | `rvk`       | —     | —     | `100`   | —                              | —       |
+> | `LOPW`      | palabra de credencial (32 bits) | — | `101` | palabra (0–3)    | —       |
 >
 > **Leyenda:**
 > - **`—`** = campo no utilizado, se codifica como `000` o `00` según su ancho.
 > - **`rs1`** y **`rs2`** son siempre registros de propósito general (3 bits → 8 registros).
-> - **`rnd_idx`** y **`sk_idx`** comparten el mismo campo [5:4]. El nombre cambia según la instrucción:
+> - **`rnd_idx`**, **`sk_idx`** y **`word_idx`** comparten el mismo campo [6:5]. El nombre cambia según la instrucción:
 >   - En `feistel` → `rnd_idx` (número de ronda, 0–3).
 >   - En `write` → `sk_idx` (número de subllave destino, 0–3).
-> - **`k_idx`** siempre indica cuál de las 4 llaves de la bóveda se usa.
+>   - En `LOPW` → `word_idx` (palabra de la credencial, 0–3).
+> - **`k_idx`** indica cuál de las 4 llaves de la bóveda se usa en `write` y `feistel`.
+> - El bit `reserved` ocupa la posición [2] utilizada como `imm` en los demás formatos. CRYPTO no consume slots inmediatos, por lo que este bit siempre debe ser `0`.
 
 #### Tabla de instrucciones CRYPTO
 
 | Instrucción | `funct` | Descripción |
 |-------------|---------|-------------|
-| `auth`      | `000`   | Envía el token en `rs1` a la bóveda. Si coincide con la contraseña almacenada, `AUTH ← 1`. |
+| `auth`      | `000`   | Compara atómicamente la credencial de 128 bits construida en `rsa` contra `rsp`. Si coincide y está completa, `AUTH ← 1` e inicia el temporizador. |
 | `write`     | `001`   | Almacena la subllave de 32 bits de `rs1` en la posición `k_idx` (llave 0–3), `sk_idx` (subllave 0–3). Requiere `AUTH = 1`. |
 | `feistel`   | `010`   | Ejecuta una ronda Feistel4: recibe L en `rs1`, R en `rs2`, usa la subllave `rnd_idx` de la llave `k_idx`. Devuelve nuevo L en `rs1` y nuevo R en `rs2`. Requiere `AUTH = 1`. |
-| `pwd`       | `011`   | Cambia la contraseña de la bóveda al valor de `rs1`. Requiere `AUTH = 1`. |
+| `pwd`       | `011`   | Copia en `rsp` la credencial completa de 128 bits construida previamente mediante `LOPW`. Requiere `AUTH = 1` y revoca la sesión al completar el cambio. |
 | `rvk`       | `100`   | Revoca la autenticación: `AUTH ← 0`. |
+| `LOPW`      | `101`   | Escribe los 32 bits de `rs1` en la palabra `word_idx` de `rsa`; el índice 0 inicia una credencial nueva. |
+
+**Notas:**
+
+- `word_idx = 00`, `01`, `10` y `11` selecciona respectivamente `rsa[31:0]`, `rsa[63:32]`, `rsa[95:64]` y `rsa[127:96]`.
+- `LOPW` con `word_idx = 00` limpia primero `rsa` y `rsa_valid`, escribe la palabra menos significativa y deja `rsa_valid = 0001`. Los demás índices conservan las palabras cargadas y activan su bit correspondiente de `rsa_valid`.
+- `LOPW` no compara palabras individuales ni modifica `AUTH`.
+- `auth` requiere `rsa_valid = 1111`, produce un único resultado para los 128 bits y limpia `rsa` y `rsa_valid` después del intento.
+- Un `auth` exitoso carga el temporizador de inactividad. Cada operación protegida aceptada lo recarga; su expiración revoca la autenticación.
+- Para cambiar la contraseña, software autenticado ejecuta cuatro `LOPW` y luego `pwd`. La contraseña se actualiza atómicamente, se limpia el buffer temporal y la sesión pasa a `LOCKED`.
 
 ---
 
