@@ -513,12 +513,9 @@ porygon_program_parse_result_t porygon_parse_program(
         ++line_number;
     } while (true);
 
-    if (builder.program.instruction_count == 0) {
-        parsed = result(PORYGON_PROGRAM_EMPTY, PORYGON_PARSE_OK, 1, 1);
-        goto failure;
-    }
     /* Una etiqueta al final no nombra una instrucción ni un bloque al que el
-       scheduler pueda asignar una posición de bundle. */
+       scheduler pueda asignar una posición de bundle. Se comprueba antes del
+       programa vacío para dar el error preciso incluso si solo hay etiquetas. */
     for (index = 0; index < builder.program.label_count; ++index) {
         if (builder.program.labels[index].instruction_index ==
             builder.program.instruction_count) {
@@ -527,6 +524,10 @@ porygon_program_parse_result_t porygon_parse_program(
                             builder.program.labels[index].column);
             goto failure;
         }
+    }
+    if (builder.program.instruction_count == 0) {
+        parsed = result(PORYGON_PROGRAM_EMPTY, PORYGON_PARSE_OK, 1, 1);
+        goto failure;
     }
     parsed = resolve_targets(&builder);
     if (parsed.status != PORYGON_PROGRAM_OK) {
