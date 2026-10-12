@@ -2,6 +2,7 @@ IVERILOG ?= iverilog
 VVP ?= vvp
 
 BUILD_DIR := build
+WAVE_DIR := $(BUILD_DIR)/waves
 SRC_DIR := hardware/src
 TB_DIR := hardware/tb
 
@@ -9,7 +10,7 @@ COMMON_FLAGS := -g2012 -Wall -I$(SRC_DIR)
 PKG := $(SRC_DIR)/pkg_vliw.sv
 
 .PHONY: all sim sim-alu sim-super-alu sim-regfile sim-bruh sim-feistel \
-	sim-crypto-decode sim-key-vault clean
+	sim-crypto-decode sim-key-vault sim-crypto-wb sim-crypto-unit sim-crypto clean
 
 all: sim
 
@@ -44,30 +45,54 @@ $(BUILD_DIR)/bruh.vvp: $(PKG) $(SRC_DIR)/bruh_unit.sv $(TB_DIR)/tb_bruh.sv
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_bruh -o $@ $^
 
-sim-feistel: $(BUILD_DIR)/feistel_round.vvp
+sim-crypto: sim-feistel sim-crypto-decode sim-key-vault sim-crypto-wb sim-crypto-unit
+
+sim-feistel: $(BUILD_DIR)/feistel_round.vvp | $(WAVE_DIR)
 	$(VVP) $<
 
 $(BUILD_DIR)/feistel_round.vvp: $(PKG) $(SRC_DIR)/crypto/feistel_round_logic.sv $(TB_DIR)/tb_crypto.sv
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto -o $@ $^
 
-sim-crypto-decode: $(BUILD_DIR)/crypto_decode.vvp
+sim-crypto-decode: $(BUILD_DIR)/crypto_decode.vvp | $(WAVE_DIR)
 	$(VVP) $<
 
 $(BUILD_DIR)/crypto_decode.vvp: $(PKG) $(SRC_DIR)/crypto/crypto_decode.sv $(TB_DIR)/tb_crypto_decode.sv
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto_decode -o $@ $^
 
-sim-key-vault: $(BUILD_DIR)/key_vault.vvp
+sim-key-vault: $(BUILD_DIR)/key_vault.vvp | $(WAVE_DIR)
 	$(VVP) $<
 
 $(BUILD_DIR)/key_vault.vvp: $(PKG) $(SRC_DIR)/crypto/key_vault.sv $(TB_DIR)/tb_key_vault.sv
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_key_vault -o $@ $^
 
+sim-crypto-wb: $(BUILD_DIR)/crypto_wb.vvp | $(WAVE_DIR)
+	$(VVP) $<
+
+$(BUILD_DIR)/crypto_wb.vvp: $(PKG) $(SRC_DIR)/crypto/crypto_wb.sv $(TB_DIR)/tb_crypto_wb.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto_wb -o $@ $^
+
+sim-crypto-unit: $(BUILD_DIR)/crypto_unit.vvp | $(WAVE_DIR)
+	$(VVP) $<
+
+$(BUILD_DIR)/crypto_unit.vvp: $(PKG) \
+	$(SRC_DIR)/crypto/crypto_decode.sv \
+	$(SRC_DIR)/crypto/key_vault.sv \
+	$(SRC_DIR)/crypto/feistel_round_logic.sv \
+	$(SRC_DIR)/crypto/crypto_wb.sv \
+	$(SRC_DIR)/crypto/crypto_unit.sv \
+	$(TB_DIR)/tb_crypto_unit.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto_unit -o $@ $^
+
+$(WAVE_DIR):
+	mkdir -p $@
+
 # Espacios reservados para las siguientes unidades:
 # sim-lost: compilar lost_unit.sv y tb_lost.sv.
-# sim-crypto: integrar todos los módulos CRYPTO cuando estén implementados.
 # sim-pkg: compilar utilidades de pkg_vliw.sv y tb_pkg.sv.
 # sim-top: compilar todas las unidades, etapas, memoria, vliw_processor.sv y tb_top.sv.
 

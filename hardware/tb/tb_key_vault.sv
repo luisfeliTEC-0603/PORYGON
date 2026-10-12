@@ -153,6 +153,9 @@ module tb_key_vault;
     endtask
 
     initial begin
+        $dumpfile("build/waves/key_vault.vcd");
+        $dumpvars(0, tb_key_vault);
+
         clk_i = 1'b0;
         rst_ni = 1'b0;
         ex_valid_i = 1'b0;
@@ -192,7 +195,27 @@ module tb_key_vault;
         commit_operation();
         expect_bit(authenticated_o, 1'b0, "incomplete credential remains locked");
 
+        prepare_operation(CRYPTO_LOPW, '0, '0, 2'd1, TEST_PASSWORD[63:32]);
+        commit_operation();
+        prepare_operation(CRYPTO_LOPW, '0, '0, 2'd2, TEST_PASSWORD[95:64]);
+        commit_operation();
+        prepare_operation(CRYPTO_LOPW, '0, '0, 2'd3, TEST_PASSWORD[127:96]);
+        commit_operation();
+        prepare_operation(CRYPTO_LOPW, '0, '0, 2'd0, TEST_PASSWORD[31:0]);
+        commit_operation();
+        prepare_operation(CRYPTO_AUTH, '0, '0, '0, '0);
+        expect_bit(auth_failed_o, 1'b1,
+                   "LOPW word 0 restarts credential assembly");
+        commit_operation();
+
         authenticate(TEST_PASSWORD, 1'b1, "initial password authenticates");
+        prepare_operation(CRYPTO_AUTH, '0, '0, '0, '0);
+        expect_bit(auth_failed_o, 1'b1, "auth consumes credential buffer");
+        commit_operation();
+        expect_bit(authenticated_o, 1'b0,
+                   "auth without a new credential revokes session");
+        authenticate(TEST_PASSWORD, 1'b1,
+                     "reauthentication after consumed credential");
 
         for (key_number = 0; key_number < 4; key_number = key_number + 1) begin
             for (subkey_number = 0; subkey_number < 4;
@@ -231,6 +254,17 @@ module tb_key_vault;
                 expect_word(subkey_o, '0, "idle cycle hides selected subkey");
             end
         end
+
+        idle_cycles(TEST_TIMEOUT_CYCLES - 1);
+        expect_bit(authenticated_o, 1'b1,
+                   "session remains before LOPW boundary activity");
+        prepare_operation(CRYPTO_LOPW, '0, '0, 2'd0, NEW_PASSWORD[31:0]);
+        commit_operation();
+        expect_bit(authenticated_o, 1'b1,
+                   "authenticated LOPW reloads timeout");
+        idle_cycles(TEST_TIMEOUT_CYCLES - 1);
+        expect_bit(authenticated_o, 1'b1,
+                   "LOPW reload lasts through timeout boundary minus one");
 
         prepare_operation(CRYPTO_FEISTEL, 2'd1, 2'd2, '0, '0);
         commit_operation();
@@ -278,6 +312,8 @@ module tb_key_vault;
         @(posedge clk_i);
         #1;
         ex_valid_i = 1'b0;
+        prepare_operation(CRYPTO_LOPW, '0, '0, 2'd0, NEW_PASSWORD[31:0]);
+        commit_operation();
         @(negedge clk_i);
         rst_ni = 1'b0;
         ex_valid_i = 1'b1;
@@ -285,12 +321,20 @@ module tb_key_vault;
         key_index_i = 2'd2;
         subkey_index_i = 2'd3;
         op_a_data_i = 32'hffff_ffff;
+        #1;
+        expect_bit(authenticated_o, 1'b1,
+                   "synchronous reset waits for active edge");
         @(posedge clk_i);
         #1;
         expect_bit(authenticated_o, 1'b0, "reset has priority");
         @(negedge clk_i);
         rst_ni = 1'b1;
         ex_valid_i = 1'b0;
+
+        prepare_operation(CRYPTO_AUTH, '0, '0, '0, '0);
+        expect_bit(auth_failed_o, 1'b1,
+                   "reset clears partial credential");
+        commit_operation();
 
         authenticate(TEST_PASSWORD, 1'b1, "reset restores initial password");
         prepare_operation(CRYPTO_FEISTEL, 2'd2, 2'd3, '0, '0);

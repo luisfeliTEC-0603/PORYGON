@@ -61,6 +61,9 @@ module tb_crypto;
     endtask
 
     initial begin
+        $dumpfile("build/waves/feistel_round.vcd");
+        $dumpvars(0, tb_crypto);
+
         test_count = 0;
         error_count = 0;
         left_i = '0;

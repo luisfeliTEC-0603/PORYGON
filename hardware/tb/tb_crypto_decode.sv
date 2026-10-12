@@ -71,6 +71,9 @@ module tb_crypto_decode;
     endtask
 
     initial begin
+        $dumpfile("build/waves/crypto_decode.vcd");
+        $dumpvars(0, tb_crypto_decode);
+
         test_count = 0;
         error_count = 0;
         ex_valid_i = 1'b0;
