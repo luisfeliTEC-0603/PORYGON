@@ -15,15 +15,16 @@ import pkg_vliw::*;
 
 module rf_addr_gen #(
     parameter integer SLOT_WIDTH = pkg_vliw::SLOT_WIDTH
+    parameter integer REG_INDEX_WIDTH = $clog2(pkg_vliw::NUM_REGS)
 ) (
     input  logic [SLOT_WIDTH-1:0] slot_i,
-    output logic [2:0]            op_a_addr_o,
-    output logic [2:0]            op_b_addr_o
+    output logic [REG_INDEX_WIDTH-1:0] op_a_addr_o,
+    output logic [REG_INDEX_WIDTH-1:0] op_b_addr_o
 );
 
     always_comb begin
-        op_a_addr_o = slot_i[15:13];
-        op_b_addr_o = slot_i[12:10];
+        op_a_addr_o = {{(REG_INDEX_WIDTH-3){1'b0}}, slot_i[15:13]};
+        op_b_addr_o = {{(REG_INDEX_WIDTH-3){1'b0}}, slot_i[12:10]};
     end
 
 endmodule
