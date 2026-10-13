@@ -49,6 +49,13 @@ sim: sim-alu sim-super-alu
 sim-top: $(BUILD_DIR)/top.vvp | $(WAVE_DIR)
 	$(VVP) $<
 
+sim-system: $(BUILD_DIR)/system.vvp | $(WAVE_DIR)
+	$(VVP) $< $(ARGS)
+
+$(BUILD_DIR)/system.vvp: $(SYSTEM_RTL_SOURCES) $(TB_DIR)/tb_system.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_system -o $@ $(SYSTEM_RTL_SOURCES) $(TB_DIR)/tb_system.sv
+
 
 $(BUILD_DIR)/top.vvp: $(SYSTEM_RTL_SOURCES) $(TB_DIR)/tb_top.sv \
 	$(TB_DIR)/programs/top_integration.mem $(TB_DIR)/programs/top_data.mem
