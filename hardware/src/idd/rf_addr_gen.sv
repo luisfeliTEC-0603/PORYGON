@@ -14,7 +14,7 @@ import pkg_vliw::*;
  */
 
 module rf_addr_gen #(
-    parameter integer SLOT_WIDTH = pkg_vliw::SLOT_WIDTH
+    parameter integer SLOT_WIDTH = pkg_vliw::SLOT_WIDTH,
     parameter integer REG_INDEX_WIDTH = $clog2(pkg_vliw::NUM_REGS)
 ) (
     input  logic [SLOT_WIDTH-1:0] slot_i,

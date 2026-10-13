@@ -1,18 +1,22 @@
+`timescale 1ns/1ps
+
 // Verifica cinco escrituras simultáneas, enables, protección de r0 y reset del GPR.
 module tb_regfile;
     localparam integer NUM_WRITE_PORTS = pkg_vliw::RF_WRITE_PORTS;
+    localparam integer NUM_READ_PORTS  = pkg_vliw::RF_READ_PORTS;
 
     logic clk;
     logic rst_n;
-    logic [2:0] read_addr [0:7];
-    wire [31:0] read_data [0:7];
+    logic [2:0] read_addr [0:NUM_READ_PORTS-1];
+    wire  [31:0] read_data [0:NUM_READ_PORTS-1];
     logic write_enable [0:NUM_WRITE_PORTS-1];
     logic [2:0] write_addr [0:NUM_WRITE_PORTS-1];
     logic [31:0] write_data [0:NUM_WRITE_PORTS-1];
     integer port;
 
     register_file #(
-        .NUM_WRITE_PORTS(NUM_WRITE_PORTS)
+        .NUM_WRITE_PORTS(NUM_WRITE_PORTS),
+        .NUM_READ_PORTS (NUM_READ_PORTS)
     ) u_register_file (
         .clk_i(clk),
         .rst_ni(rst_n),
@@ -28,7 +32,7 @@ module tb_regfile;
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
-        for (port = 0; port < 8; port = port + 1) begin
+        for (port = 0; port < NUM_READ_PORTS; port = port + 1) begin
             read_addr[port] = port[2:0];
         end
         for (port = 0; port < NUM_WRITE_PORTS; port = port + 1) begin
