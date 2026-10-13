@@ -5,16 +5,17 @@ import pkg_vliw::*;
 module register_file #(
     parameter integer DATA_WIDTH       = pkg_vliw::DATA_WIDTH,
     parameter integer NUM_REGS         = pkg_vliw::NUM_REGS,
-    parameter integer REG_INDEX_WIDTH = $clog2(NUM_REGS),
-    parameter integer NUM_WRITE_PORTS = pkg_vliw::RF_WRITE_PORTS
+    parameter integer REG_INDEX_WIDTH  = $clog2(NUM_REGS),
+    parameter integer NUM_READ_PORTS   = pkg_vliw::RF_READ_PORTS, 
+    parameter integer NUM_WRITE_PORTS  = pkg_vliw::RF_WRITE_PORTS
 ) (
     input  logic  clk_i,
     input  logic  rst_ni,
 
     // Direcciones de lectura (3 bits cada una) para hasta 8 operandos simultáneos
-    input  logic [REG_INDEX_WIDTH-1:0] read_addr_i [0:7],
+    input  logic [REG_INDEX_WIDTH-1:0] read_addr_i [0:NUM_READ_PORTS-1],
     // Datos leídos de los registros direccionados (32 bits cada uno)
-    output logic [DATA_WIDTH-1:0]      read_data_o [0:7],
+    output logic [DATA_WIDTH-1:0]      read_data_o [0:NUM_READ_PORTS-1],
 
     // Feistel produce dos escrituras; los puertos no corresponden uno a uno a slots.
     input  logic                      write_enable_i [0:NUM_WRITE_PORTS-1],
@@ -31,12 +32,12 @@ module register_file #(
     integer write_port;
 
     // ========================================================================
-    // Lógica Combinacional: Lectura Asíncrona Multi-Puerto (8 Puertos)
+    // Lógica Combinacional: Lectura Asíncrona Multi-Puerto 
     // ========================================================================
-    // Permite que la etapa de Decode/Dispatch lea hasta 8 operandos de forma 
+    // Permite que la etapa de Decode/Dispatch lea hasta `NUM_READ_PORTS` operandos de forma 
     // inmediata sin esperar un flanco de reloj.
     always_comb begin
-        for (read_port = 0; read_port < 8; read_port = read_port + 1) begin
+        for (read_port = 0; read_port < NUM_READ_PORTS; read_port = read_port + 1) begin
             // Regla de Arquitectura: r0 (dirección 0) siempre entrega cero constante
             if (read_addr_i[read_port] == '0) begin
                 read_data_o[read_port] = '0;

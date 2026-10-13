@@ -1,4 +1,5 @@
 `timescale 1ns/1ps
+
 // Testbench autoverificable para idd_stage (combinacional).
 // Modelo de referencia: parseo secuencial del bundle (independiente del RTL).
 module idd_stage_tb;
@@ -85,15 +86,11 @@ module idd_stage_tb;
         return {rd, rs, f, off, imm, 2'b01};
     endfunction
     function automatic logic [15:0] mk_jump(input [2:0] rd, input [7:0] off, input [1:0] f, input imm);
-        return {rd, off, f, 1'b0, imm, 2'b10};   // formato [4:3]=funct -> usamos {f,1'b?}
+        return {rd, off, f, imm, 2'b10};   // formato [4:3]=funct -> usamos {f,1'b?}
     endfunction
     function automatic logic [15:0] mk_cry(input [2:0] rs1, rs2, input [2:0] f, input [1:0] r, input [1:0] k);
         return {rs1, rs2, f, r, k, 1'b0, 2'b11};
     endfunction
-    function automatic logic [15:0] bnd(input [15:0] s0, s1, s2, s3);
-        return {s3, s2, s1, s0};
-    endfunction
-
     function automatic logic [63:0] mkb(input [15:0] s0, s1, s2, s3);
         return {s3, s2, s1, s0};
     endfunction

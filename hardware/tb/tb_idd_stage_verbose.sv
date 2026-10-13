@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-// Testbench "verbose": para cada caso imprime ENTRADA, SALIDA del DUT y VALOR ESPERADO.
+
 module idd_stage_tb_verbose;
     import pkg_vliw::*;
 

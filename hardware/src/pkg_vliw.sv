@@ -1,14 +1,15 @@
 // Tipos y constantes compartidos por dispatch, unidades funcionales y registros.
 package pkg_vliw;
 
-    parameter integer DATA_WIDTH = 32;
-    parameter integer ADDR_WIDTH = 32;
-    parameter integer NUM_REGS = 8;
-    parameter integer RF_WRITE_PORTS = 5;
-    parameter integer NUM_SLOTS = 4;
-    parameter integer SLOT_WIDTH = 16;
-    parameter integer BUNDLE_WIDTH = 64;
-    parameter integer MEMORY_BYTES = 65536;
+    parameter integer DATA_WIDTH        = 32;
+    parameter integer ADDR_WIDTH        = 32;
+    parameter integer NUM_REGS          = 8;
+    parameter integer RF_READ_PORTS     = 10;
+    parameter integer RF_WRITE_PORTS    = 5;
+    parameter integer NUM_SLOTS         = 4;
+    parameter integer SLOT_WIDTH        = 16;
+    parameter integer BUNDLE_WIDTH      = 64;
+    parameter integer MEMORY_BYTES      = 65536;
 
     // Dispatcher has to know what units are busy in order to send NOP to unoccupied unit
     localparam logic [SLOT_WIDTH-1:0] NOP_ENCODING = 16'h0000;
