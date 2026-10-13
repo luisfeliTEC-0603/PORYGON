@@ -16,23 +16,21 @@ module tb_lost;
     logic memory_read_enable;
     logic [3:0] memory_write_enable;
     word_t memory_write_data;
-    logic load_valid;
-    word_t load_data;
     logic invalid_address;
-    integer cycle_count = 0;
+    logic load_valid;
+    logic [2:0] load_rd;
+    word_t load_data;
     integer checks_passed = 0;
-    string current_case;
 
-    // RAM de prueba: 64 KiB, lectura directa y escritura en flanco positivo.
-    // Las pruebas usan direcciones del segmento de datos 0x10000-0x1FFFF.
+    // RAM de prueba: lee y escribe en el flanco positivo. read_data conserva
+    // la ultima respuesta hasta que se capture otra lectura.
     logic [31:0] memory_words [0:16383];
 
     always #5 clk = ~clk;
-    always @(posedge clk) cycle_count <= cycle_count + 1;
-
-    assign memory_read_data = memory_words[memory_address[15:2]];
 
     always @(posedge clk) begin
+        if (memory_read_enable)
+            memory_read_data <= memory_words[memory_address[15:2]];
         if (memory_write_enable[0])
             memory_words[memory_address[15:2]][7:0] <= memory_write_data[7:0];
         if (memory_write_enable[1])
@@ -57,13 +55,24 @@ module tb_lost;
         .memory_read_enable_o(memory_read_enable),
         .memory_write_enable_o(memory_write_enable),
         .memory_write_data_o(memory_write_data),
+        .invalid_address_o(invalid_address),
         .load_valid_o(load_valid),
-        .load_data_o(load_data),
-        .invalid_address_o(invalid_address)
+        .load_rd_o(load_rd),
+        .load_data_o(load_data)
     );
 
-    task automatic issue(
+    task automatic check_word(
         input string name,
+        input logic [31:0] actual,
+        input logic [31:0] expected
+    );
+        if (actual !== expected)
+            $fatal(1, "%s: recibido=%08h esperado=%08h", name, actual, expected);
+        checks_passed = checks_passed + 1;
+    endtask
+
+    task automatic issue(
+        input logic [2:0] rd,
         input logic [3:0] funct,
         input logic [2:0] offset,
         input logic use_immediate,
@@ -71,117 +80,58 @@ module tb_lost;
         input address_t base,
         input word_t data
     );
-        begin
-            // Las entradas se presentan en EX1 y se capturan en su flanco final.
-            @(negedge clk);
-            instruction = {3'd1, 3'd2, funct, offset, use_immediate, OPCODE_LOST};
-            immediate = literal;
-            base_address = base;
-            store_data = data;
-            nop_flag = 1'b0;
-            current_case = name;
-            $display("[EX1 C%0d] %s: funct=%04b base=%08h off=%0d imm=%b literal=%04h dato=%08h",
-                cycle_count, name, funct, base, $signed(offset), use_immediate, literal, data);
-            @(posedge clk);
-            #1;
-            nop_flag = 1'b1;
-        end
+        @(negedge clk);
+        instruction = {rd, 3'd2, funct, offset, use_immediate, OPCODE_LOST};
+        immediate = literal;
+        base_address = base;
+        store_data = data;
+        nop_flag = 1'b0;
+        #1;
     endtask
 
-    task automatic check_word(
+    task automatic expect_request(
         input string name,
-        input logic [31:0] actual,
-        input logic [31:0] expected
+        input address_t expected_effective,
+        input logic expected_read,
+        input logic [3:0] expected_write,
+        input word_t expected_data,
+        input logic expected_invalid
     );
-        begin
-            if (actual !== expected) begin
-                $fatal(1, "[FAIL C%0d] %s: recibido=%08h esperado=%08h",
-                    cycle_count, name, actual, expected);
-            end
-            checks_passed = checks_passed + 1;
-            $display("[OK C%0d] %s: %08h", cycle_count, name, actual);
-        end
+        check_word($sformatf("%s effective", name), effective_address, expected_effective);
+        check_word($sformatf("%s memory", name), memory_address,
+            {expected_effective[31:2], 2'b00});
+        if (memory_read_enable !== expected_read ||
+            memory_write_enable !== expected_write ||
+            memory_write_data !== expected_data ||
+            invalid_address !== expected_invalid)
+            $fatal(1, "%s: read=%b write=%04b data=%08h invalid=%b",
+                name, memory_read_enable, memory_write_enable,
+                memory_write_data, invalid_address);
+        checks_passed = checks_passed + 1;
     endtask
 
-    task automatic expect_load(input string name, input word_t expected);
-        begin
-            #1;
-            if (memory_read_enable !== 1'b1 || load_valid !== 1'b1 ||
-                memory_write_enable !== 4'b0000 || invalid_address !== 1'b0) begin
-                $fatal(1, "[FAIL C%0d] %s: read=%b valid=%b mask=%04b error=%b; esperado 1,1,0000,0",
-                    cycle_count, name, memory_read_enable, load_valid,
-                    memory_write_enable, invalid_address);
-            end
-            checks_passed = checks_passed + 1;
-            $display("[EX2 C%0d] %s: direccion=%08h palabra=%08h dato=%08h",
-                cycle_count, name, effective_address, memory_read_data, load_data);
-            check_word(name, load_data, expected);
-        end
+    task automatic capture_request;
+        @(posedge clk);
+        #1;
     endtask
 
-    task automatic expect_store(
+    task automatic expect_load(
         input string name,
-        input address_t expected_address,
-        input logic [3:0] expected_mask,
+        input logic [2:0] expected_rd,
         input word_t expected_data
     );
-        begin
-            #1;
-            check_word($sformatf("%s direccion de RAM", name), memory_address, expected_address);
-            check_word($sformatf("%s mascara", name),
-                {28'b0, memory_write_enable}, {28'b0, expected_mask});
-            check_word($sformatf("%s dato", name), memory_write_data, expected_data);
-            if (memory_read_enable !== 1'b0 || load_valid !== 1'b0 ||
-                invalid_address !== 1'b0) begin
-                $fatal(1, "[FAIL C%0d] %s: read=%b valid=%b error=%b; esperado 0,0,0",
-                    cycle_count, name, memory_read_enable, load_valid, invalid_address);
-            end
-            checks_passed = checks_passed + 1;
-            $display("[EX2 C%0d] %s: direccion=%08h RAM=%08h mascara=%04b dato=%08h",
-                cycle_count, name, effective_address, memory_address,
-                memory_write_enable, memory_write_data);
-        end
+        if (load_valid !== 1'b1 || load_rd !== expected_rd ||
+            load_data !== expected_data)
+            $fatal(1, "%s: valid=%b rd=%0d data=%08h; esperado rd=%0d data=%08h",
+                name, load_valid, load_rd, load_data, expected_rd, expected_data);
+        checks_passed = checks_passed + 1;
     endtask
 
-    task automatic expect_invalid(input string name);
-        begin
-            #1;
-            if (invalid_address !== 1'b1 || memory_read_enable !== 1'b0 ||
-                memory_write_enable !== 4'b0000 || load_valid !== 1'b0) begin
-                $fatal(1, "[FAIL C%0d] %s: direccion=%08h error=%b read=%b mask=%04b valid=%b; esperado 1,0,0000,0",
-                    cycle_count, name, effective_address, invalid_address,
-                    memory_read_enable, memory_write_enable, load_valid);
-            end
-            checks_passed = checks_passed + 1;
-            $display("[EX2 C%0d] %s: direccion=%08h rechazada por desalineacion",
-                cycle_count, name, effective_address);
-        end
-    endtask
-
-    task automatic commit_store;
-        address_t committed_address;
-        begin
-            committed_address = memory_address;
-            @(posedge clk);
-            #1;
-            $display("[RAM C%0d] %s: direccion=%08h palabra=%08h",
-                cycle_count, current_case, committed_address,
-                memory_words[committed_address[15:2]]);
-        end
-    endtask
-
-    task automatic expect_inactive(input string name);
-        begin
-            #1;
-            if (memory_read_enable !== 1'b0 || memory_write_enable !== 4'b0000 ||
-                load_valid !== 1'b0 || invalid_address !== 1'b0) begin
-                $fatal(1, "[FAIL C%0d] %s: read=%b mask=%04b valid=%b error=%b; esperado 0,0000,0,0",
-                    cycle_count, name, memory_read_enable, memory_write_enable,
-                    load_valid, invalid_address);
-            end
-            checks_passed = checks_passed + 1;
-            $display("[OK C%0d] %s: sin lectura, escritura ni resultado", cycle_count, name);
-        end
+    task automatic expect_no_load(input string name);
+        if (load_valid !== 1'b0 || load_rd !== 3'b000 || load_data !== 32'b0)
+            $fatal(1, "%s: respuesta inesperada valid=%b rd=%0d data=%08h",
+                name, load_valid, load_rd, load_data);
+        checks_passed = checks_passed + 1;
     endtask
 
     initial begin
@@ -194,108 +144,185 @@ module tb_lost;
         immediate = '0;
         base_address = '0;
         store_data = '0;
-        memory_words[8] = 32'b0;
+        memory_read_data = '0;
+        memory_words[8] = '0;
         memory_words[9] = 32'hAABB_CCDD;
         #2;
         rst_n = 1'b1;
 
-        // Este patrón contiene bytes positivos y negativos para probar
-        // las extensiones de signo y de ceros.
-        $display("\n=== Escritura y lectura de palabra ===");
-        issue("stw", LOST_STW, 3'd0, 1'b0, 16'b0, 32'h0001_0020, 32'h80FF_017F);
-        expect_store("stw", 32'h0001_0020, 4'b1111, 32'h80FF_017F);
-        check_word("stw antes de cerrar EX2", memory_words[8], 32'b0);
-        commit_store();
-        check_word("stw RAM", memory_words[8], 32'h80FF_017F);
+        issue(3'd1, LOST_STW, 3'd0, 1'b0, 16'b0,
+            32'h0001_0020, 32'h80FF_017F);
+        expect_request("stw", 32'h0001_0020, 1'b0, 4'b1111,
+            32'h80FF_017F, 1'b0);
+        check_word("stw antes del flanco", memory_words[8], 32'b0);
+        capture_request();
+        check_word("stw despues del flanco", memory_words[8], 32'h80FF_017F);
+        expect_no_load("stw");
 
-        issue("low", LOST_LOW, 3'd0, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_load("low", 32'h80FF_017F);
-        $display("\n=== Seleccion de bytes y medias palabras ===");
-        issue("lob byte 0", LOST_LOB, 3'd0, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_load("lob byte 0", 32'h0000_007F);
-        issue("lob byte 1", LOST_LOB, 3'd1, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_load("lob byte 1", 32'h0000_0001);
-        issue("lob byte 2", LOST_LOB, 3'd2, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_load("lob byte 2", 32'hFFFF_FFFF);
-        issue("lob byte 3", LOST_LOB, 3'd3, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_load("lob byte 3", 32'hFFFF_FF80);
-        issue("lobu byte 2", LOST_LOBU, 3'd2, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_load("lobu byte 2", 32'h0000_00FF);
-        issue("lobu byte 3", LOST_LOBU, 3'd3, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_load("lobu byte 3", 32'h0000_0080);
-        issue("loh mitad baja", LOST_LOH, 3'd0, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_load("loh mitad baja", 32'h0000_017F);
-        issue("loh mitad alta", LOST_LOH, 3'd2, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_load("loh mitad alta", 32'hFFFF_80FF);
-        issue("lohu mitad alta", LOST_LOHU, 3'd2, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_load("lohu mitad alta", 32'h0000_80FF);
+        issue(3'd3, LOST_LOW, 3'd0, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("low", 32'h0001_0020, 1'b1, 4'b0000, 32'b0, 1'b0);
+        expect_no_load("low antes del flanco");
+        capture_request();
+        expect_load("low", 3'd3, 32'h80FF_017F);
 
-        $display("\n=== Escrituras parciales ===");
-        issue("stb", LOST_STB, 3'd1, 1'b0, 16'b0, 32'h0001_0020, 32'h0000_00AA);
-        expect_store("stb", 32'h0001_0020, 4'b0010, 32'h0000_AA00);
-        commit_store();
+        issue(3'd5, LOST_LOB, 3'd2, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("lob", 32'h0001_0022, 1'b1, 4'b0000, 32'b0, 1'b0);
+        expect_load("respuesta previa sigue estable", 3'd3, 32'h80FF_017F);
+        capture_request();
+        expect_load("lob", 3'd5, 32'hFFFF_FFFF);
+
+        issue(3'd6, LOST_LOBU, 3'd3, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("lobu", 32'h0001_0023, 1'b1, 4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("lobu", 3'd6, 32'h0000_0080);
+
+        issue(3'd2, LOST_LOH, 3'd2, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("loh", 32'h0001_0022, 1'b1, 4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("loh", 3'd2, 32'hFFFF_80FF);
+
+        issue(3'd7, LOST_LOHU, 3'd2, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("lohu", 32'h0001_0022, 1'b1, 4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("lohu", 3'd7, 32'h0000_80FF);
+
+        issue(3'd1, LOST_LOB, 3'd0, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("lob byte 0", 32'h0001_0020, 1'b1,
+            4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("lob byte 0", 3'd1, 32'h0000_007F);
+
+        issue(3'd2, LOST_LOB, 3'd1, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("lob byte 1", 32'h0001_0021, 1'b1,
+            4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("lob byte 1", 3'd2, 32'h0000_0001);
+
+        issue(3'd3, LOST_LOBU, 3'd2, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("lobu byte 2", 32'h0001_0022, 1'b1,
+            4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("lobu byte 2", 3'd3, 32'h0000_00FF);
+
+        issue(3'd4, LOST_LOH, 3'd0, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("loh mitad baja", 32'h0001_0020, 1'b1,
+            4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("loh mitad baja", 3'd4, 32'h0000_017F);
+
+        issue(3'd5, LOST_LOHU, 3'd0, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("lohu mitad baja", 32'h0001_0020, 1'b1,
+            4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("lohu mitad baja", 3'd5, 32'h0000_017F);
+
+        issue(3'd1, LOST_STB, 3'd1, 1'b0, 16'b0,
+            32'h0001_0020, 32'h0000_00AA);
+        expect_request("stb", 32'h0001_0021, 1'b0, 4'b0010,
+            32'h0000_AA00, 1'b0);
+        capture_request();
         check_word("stb RAM", memory_words[8], 32'h80FF_AA7F);
+        check_word("read_data estable sin lectura", memory_read_data, 32'h80FF_017F);
+        expect_no_load("stb");
 
-        issue("sth", LOST_STH, 3'd2, 1'b0, 16'b0, 32'h0001_0020, 32'h0000_1234);
-        expect_store("sth", 32'h0001_0020, 4'b1100, 32'h1234_0000);
-        commit_store();
+        issue(3'd1, LOST_STH, 3'd2, 1'b0, 16'b0,
+            32'h0001_0020, 32'h0000_1234);
+        expect_request("sth", 32'h0001_0022, 1'b0, 4'b1100,
+            32'h1234_0000, 1'b0);
+        capture_request();
         check_word("sth RAM", memory_words[8], 32'h1234_AA7F);
 
-        // 3'b100 representa -4 en complemento a dos de 3 bits.
-        // El literal no debe afectar la dirección cuando imm = 0.
-        $display("\n=== Offsets con signo e inmediato ===");
-        issue("offset corto -4", LOST_LOW, 3'b100, 1'b0, 16'h1234, 32'h0001_0024, 32'b0);
-        expect_load("offset corto -4", 32'h1234_AA7F);
-        check_word("dirección con off -4", effective_address, 32'h0001_0020);
-        issue("lowi offset -5", LOST_LOW, 3'd0, 1'b1, 16'hFFFB, 32'h0001_0025, 32'b0);
-        expect_load("lowi offset -5", 32'h1234_AA7F);
-        check_word("dirección con imm -5", effective_address, 32'h0001_0020);
-        issue("offset corto -1", LOST_LOB, 3'b111, 1'b0, 16'b0, 32'h0001_0028, 32'b0);
-        expect_load("offset corto -1", 32'hFFFF_FFAA);
+        // off=-4 ignora el literal; imm=-5 ignora off.
+        issue(3'd3, LOST_LOW, 3'b100, 1'b0, 16'h1234,
+            32'h0001_0024, 32'b0);
+        expect_request("off negativo", 32'h0001_0020, 1'b1,
+            4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("off negativo", 3'd3, 32'h1234_AA7F);
 
-        issue("stbi offset +4", LOST_STB, 3'd0, 1'b1, 16'd4, 32'h0001_001F, 32'h0000_00EE);
-        expect_store("stbi offset +4", 32'h0001_0020, 4'b1000, 32'hEE00_0000);
-        commit_store();
+        issue(3'd4, LOST_LOW, 3'd3, 1'b1, 16'hFFFB,
+            32'h0001_0025, 32'b0);
+        expect_request("imm negativo", 32'h0001_0020, 1'b1,
+            4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("imm negativo", 3'd4, 32'h1234_AA7F);
+
+        issue(3'd1, LOST_STB, 3'd0, 1'b1, 16'd4,
+            32'h0001_001F, 32'h0000_00EE);
+        expect_request("stbi", 32'h0001_0023, 1'b0, 4'b1000,
+            32'hEE00_0000, 1'b0);
+        capture_request();
         check_word("stbi RAM", memory_words[8], 32'hEE34_AA7F);
-        issue("lobui offset +4", LOST_LOBU, 3'd0, 1'b1, 16'd4, 32'h0001_001F, 32'b0);
-        expect_load("lobui offset +4", 32'h0000_00EE);
 
-        // Palabras: múltiplos de 4. Medias palabras: múltiplos de 2.
-        $display("\n=== Direcciones desalineadas ===");
-        issue("low desalineado", LOST_LOW, 3'd2, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_invalid("low desalineado");
-        issue("loh desalineado", LOST_LOH, 3'd1, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_invalid("loh desalineado");
-        issue("lohu desalineado", LOST_LOHU, 3'd3, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_invalid("lohu desalineado");
-        issue("stw desalineado", LOST_STW, 3'd1, 1'b0, 16'b0, 32'h0001_0020, 32'hDEAD_BEEF);
-        expect_invalid("stw desalineado");
-        issue("sth desalineado", LOST_STH, 3'd1, 1'b0, 16'b0, 32'h0001_0020, 32'h0000_BEEF);
-        expect_invalid("sth desalineado");
-        @(posedge clk);
-        #1;
-        check_word("RAM tras errores", memory_words[8], 32'hEE34_AA7F);
+        issue(3'd4, LOST_LOBU, 3'd0, 1'b1, 16'd4,
+            32'h0001_001F, 32'b0);
+        expect_request("lobui", 32'h0001_0023, 1'b1,
+            4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_load("lobui", 3'd4, 32'h0000_00EE);
 
-        $display("\n=== NOP y funcion reservada ===");
+        issue(3'd3, LOST_LOW, 3'd1, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("low desalineado", 32'h0001_0021, 1'b0,
+            4'b0000, 32'b0, 1'b1);
+        capture_request();
+        expect_no_load("low desalineado");
+
+        issue(3'd3, LOST_LOH, 3'd1, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("loh desalineado", 32'h0001_0021, 1'b0,
+            4'b0000, 32'b0, 1'b1);
+        capture_request();
+        expect_no_load("loh desalineado");
+
+        issue(3'd3, LOST_LOHU, 3'd1, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("lohu desalineado", 32'h0001_0021, 1'b0,
+            4'b0000, 32'b0, 1'b1);
+        capture_request();
+        expect_no_load("lohu desalineado");
+
+        issue(3'd1, LOST_STW, 3'd1, 1'b0, 16'b0,
+            32'h0001_0020, 32'hDEAD_BEEF);
+        expect_request("stw desalineado", 32'h0001_0021, 1'b0,
+            4'b0000, 32'b0, 1'b1);
+        capture_request();
+        check_word("RAM tras desalineacion", memory_words[8], 32'hEE34_AA7F);
+
+        issue(3'd1, LOST_STH, 3'd1, 1'b0, 16'b0,
+            32'h0001_0020, 32'h0000_BEEF);
+        expect_request("sth desalineado", 32'h0001_0021, 1'b0,
+            4'b0000, 32'b0, 1'b1);
+        capture_request();
+        check_word("RAM tras sth desalineado", memory_words[8], 32'hEE34_AA7F);
+
+        issue(3'd1, LOST_STW, 3'd0, 1'b0, 16'b0,
+            32'h0001_0020, 32'hDEAD_BEEF);
         nop_flag = 1'b1;
-        expect_inactive("unidad sin instruccion");
-
-        // Un NOP debe bloquear el store antes del flanco que termina EX1.
-        @(negedge clk);
-        instruction = {3'd1, 3'd2, LOST_STW, 3'd0, 1'b0, OPCODE_LOST};
-        base_address = 32'h0001_0020;
-        store_data = 32'hDEAD_BEEF;
-        nop_flag = 1'b1;
-        @(posedge clk);
-        expect_inactive("NOP bloquea stw");
-        @(posedge clk);
         #1;
+        expect_request("NOP", 32'h0001_0020, 1'b0,
+            4'b0000, 32'b0, 1'b0);
+        capture_request();
         check_word("RAM tras NOP", memory_words[8], 32'hEE34_AA7F);
 
-        issue("funct reservado", 4'b1111, 3'd0, 1'b0, 16'b0, 32'h0001_0020, 32'b0);
-        expect_inactive("funct reservado");
+        issue(3'd1, 4'b1111, 3'd0, 1'b0, 16'b0,
+            32'h0001_0020, 32'b0);
+        expect_request("funcion reservada", 32'h0001_0020, 1'b0,
+            4'b0000, 32'b0, 1'b0);
+        capture_request();
+        expect_no_load("funcion reservada");
 
-        $display("\ntb_lost: PASS (%0d comprobaciones)", checks_passed);
+        $display("tb_lost: PASS (%0d comprobaciones)", checks_passed);
         $finish;
     end
 endmodule

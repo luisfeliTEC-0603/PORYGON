@@ -9,6 +9,7 @@ module alu_unit #(
     input logic [DATA_WIDTH-1:0] operand_a_i,
     input logic [DATA_WIDTH-1:0] operand_b_i,
     output logic [DATA_WIDTH-1:0] result_o,
+    output logic [2:0]            dest_addr_o,
     output logic                  write_enable_o
 );
 
@@ -64,6 +65,8 @@ module alu_unit #(
                             (instruction_i[1:0] == OPCODE_MATH) &&
                             is_normal_funct;
     assign result_o = execute_enable ? comb_result : '0;
+    // En formato MATH, rs1 también es el destino. Esta ALU es combinacional.
+    assign dest_addr_o = execute_enable ? instruction_i[15:13] : '0;
     assign write_enable_o = execute_enable;
 
 endmodule

@@ -27,6 +27,7 @@ module super_alu #(
     // Salidas hacia la etapa de Writeback (WB)
     // ------------------------------------------------------------------------
     output logic [DATA_WIDTH-1:0] result_o,      // Resultado de 32 bits
+    output logic [2:0]            dest_addr_o,   // Registro destino alineado con el resultado
     output logic                  write_enable_o // Habilita la escritura en RegFile
 );
 
@@ -114,6 +115,8 @@ module super_alu #(
     logic                    mul_valid_stage2_q;
     logic                    mul_high_stage1_q;
     logic                    mul_high_stage2_q;
+    logic [2:0]              dest_stage1_q;
+    logic [2:0]              dest_stage2_q;
 
     logic is_mul_instr;
     logic is_mul_high_instr;
@@ -156,11 +159,14 @@ module super_alu #(
             mul_valid_stage2_q  <= 1'b0;
             mul_high_stage1_q   <= 1'b0;
             mul_high_stage2_q   <= 1'b0;
+            dest_stage1_q      <= '0;
+            dest_stage2_q      <= '0;
         end else begin
             // EX2: desplazar y sumar los cuatro productos parciales.
             mul_result_stage2_q <= mul_result_stage2_d;
             mul_valid_stage2_q <= mul_valid_stage1_q;
             mul_high_stage2_q <= mul_high_stage1_q;
+            dest_stage2_q <= dest_stage1_q;
 
             // EX1: calcular los productos parciales de la instrucción actual.
             if (is_mul_instr) begin
@@ -170,6 +176,8 @@ module super_alu #(
                 mul_partial_3_stage1_q <= mul_partial_3_d;
                 mul_valid_stage1_q <= 1'b1;
                 mul_high_stage1_q  <= is_mul_high_instr;
+                // En formato MATH, rs1 también es el registro destino.
+                dest_stage1_q <= instruction_i[15:13];
             end else begin
                 mul_partial_0_stage1_q <= '0;
                 mul_partial_1_stage1_q <= '0;
@@ -177,6 +185,7 @@ module super_alu #(
                 mul_partial_3_stage1_q <= '0;
                 mul_valid_stage1_q <= 1'b0;
                 mul_high_stage1_q  <= 1'b0;
+                dest_stage1_q <= '0;
             end
         end
     end
@@ -186,6 +195,7 @@ module super_alu #(
     // ========================================================================
     always_comb begin
         if (mul_valid_stage2_q) begin
+            dest_addr_o = dest_stage2_q;
             if (mul_high_stage2_q)
                 result_o = mul_result_stage2_q[2*DATA_WIDTH-1:DATA_WIDTH];
             else
@@ -193,10 +203,12 @@ module super_alu #(
             write_enable_o = 1'b1;
         end
         else if (is_nop_i || is_mul_instr) begin
+            dest_addr_o    = '0;
             result_o       = '0;
             write_enable_o = 1'b0;
         end
         else begin
+            dest_addr_o   = instruction_i[15:13];
             result_o       = comb_result;
             write_enable_o = (funct != MATH_NOP);
         end
