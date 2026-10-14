@@ -63,14 +63,13 @@ typedef enum {
     PORYGON_MEMORY_WRITE
 } porygon_memory_effect_t;
 
-/* Estado arquitectónico fuera del banco de registros. Las máscaras permiten
-   modelar dependencias sin fingir que AUTH o las banderas son registros GPR. */
-#define PORYGON_STATE_FLAGS  UINT32_C(0x01)
+/* Estado arquitectónico fuera del banco de registros. La máscara conserva el
+   orden observable de credenciales, autenticación y bóveda. */
 #define PORYGON_STATE_CRYPTO UINT32_C(0x02)
 
 /* Entrada que recibe el scheduler para una operación. uses/defs son máscaras
    de ocho bits; por ejemplo, leer r1 y r3 da 0b00001010. state_uses/defs
-   aplican la misma idea a banderas y estado CRYPTO. */
+   aplican la misma idea al estado CRYPTO. */
 typedef struct {
     porygon_instruction_t instruction;
     porygon_label_id_t target_label; /* No se convierte todavía en offset. */

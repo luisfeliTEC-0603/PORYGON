@@ -61,9 +61,6 @@ void porygon_describe_instruction(porygon_machine_instruction_t *out)
             out->uses |= register_bit(in->operands.math.rs2);
         }
         define_register(out, in->operands.math.rs1);
-        /* Marcar todas las operaciones MATH como escritoras de banderas es
-           conservador hasta fijar qué funct las actualiza en el RTL. */
-        out->state_defs = PORYGON_STATE_FLAGS;
         break;
     case PORYGON_FORMAT_LOST:
         out->resource = PORYGON_RESOURCE_LOST;
