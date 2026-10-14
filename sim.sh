@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Uso: ./sim.sh <programa.mem> [ciclos] [opciones]
+
+Opciones:
+  --data <datos.mem>       Inicializa la memoria de datos.
+  --out <directorio>       Guarda resultados en este directorio.
+  --expect <clave=valor>   Verifica PC, errores o un registro r0-r7. Repetible.
+  -h, --help               Muestra esta ayuda.
+
+Ejemplos:
+  ./sim.sh programa.mem
+  ./sim.sh programa.mem 300 --data datos.mem
+  ./sim.sh programa.mem 300 --expect r1=10 --expect errors=0
+EOF
+}
+
+fail() {
+    printf 'error: %s\n' "$*" >&2
+    exit 2
+}
+
+absolute_file() {
+    local path=$1
+    local directory
+    [[ -f "$path" ]] || fail "no existe el archivo '$path'"
+    directory=$(cd "$(dirname "$path")" && pwd -P)
+    printf '%s/%s\n' "$directory" "$(basename "$path")"
+}
+
+root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+[[ $# -gt 0 ]] || { usage >&2; exit 2; }
+[[ $1 != "-h" && $1 != "--help" ]] || { usage; exit 0; }
+
+instruction_file=$(absolute_file "$1")
+shift
+cycles=200
+if [[ $# -gt 0 && $1 =~ ^[1-9][0-9]*$ ]]; then
+    cycles=$1
+    shift
+fi
+
+data_file=""
+output_dir=""
+expectations=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --data)
+            [[ $# -ge 2 ]] || fail "--data requiere una ruta"
+            data_file=$(absolute_file "$2")
+            shift 2
+            ;;
+        --out)
+            [[ $# -ge 2 ]] || fail "--out requiere un directorio"
+            output_dir=$2
+            shift 2
+            ;;
+        --expect)
+            [[ $# -ge 2 ]] || fail "--expect requiere clave=valor"
+            [[ $2 == *=* ]] || fail "expectativa inválida '$2'; use clave=valor"
+            expectations+=("$2")
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *) fail "opción desconocida '$1'" ;;
+    esac
+done
+
+if [[ -z "$output_dir" ]]; then
+    program_name=$(basename "$instruction_file")
+    program_name=${program_name%.*}
+    output_dir="$root_dir/sim_output/$program_name"
+elif [[ $output_dir != /* ]]; then
+    output_dir="$(pwd -P)/$output_dir"
+fi
+mkdir -p "$output_dir"
+output_dir=$(cd "$output_dir" && pwd -P)
+
+dump_file="$output_dir/memory.dump.mem"
+vcd_file="$output_dir/waves.vcd"
+result_file="$output_dir/results.txt"
+log_file="$output_dir/simulation.log"
+build_log="$output_dir/build.log"
+
+if ! make -s -C "$root_dir" build/system.vvp >"$build_log" 2>&1; then
+    printf 'La compilación del simulador falló. Últimas líneas del log:\n' >&2
+    tail -20 "$build_log" >&2
+    exit 1
+fi
+
+vvp_args=(
+    "+INSTR=$instruction_file"
+    "+CYCLES=$cycles"
+    "+DUMP=$dump_file"
+    "+VCD=$vcd_file"
+    "+RESULT=$result_file"
+)
+if [[ -n "$data_file" ]]; then
+    vvp_args+=("+DATA=$data_file")
+fi
+
+if ! "${VVP:-vvp}" "$root_dir/build/system.vvp" "${vvp_args[@]}" >"$log_file" 2>&1; then
+    printf 'La simulación falló. Últimas líneas del log:\n' >&2
+    tail -20 "$log_file" >&2
+    exit 1
+fi
+[[ -s "$result_file" ]] || fail "la simulación no produjo '$result_file'"
+
+result_value() {
+    local key=$1
+    awk -F= -v wanted="$key" '$1 == wanted { value=$2 } END { if (value != "") print value }' \
+        "$result_file"
+}
+
+compare_values() {
+    local actual=$1
+    local expected=$2
+    [[ $actual =~ ^(0[xX][0-9a-fA-F]+|[0-9]+)$ ]] || return 1
+    [[ $expected =~ ^(0[xX][0-9a-fA-F]+|[0-9]+)$ ]] || return 1
+    (( actual == expected ))
+}
+
+printf '\nPORYGON — resumen de simulación\n'
+printf '  ciclos : %s\n' "$(result_value cycles)"
+printf '  PC     : %s\n' "$(result_value pc)"
+printf '  errores: %s\n' "$(result_value errors)"
+printf '  GPR    :'
+for register in {0..7}; do
+    printf ' r%d=%s' "$register" "$(result_value "r$register")"
+done
+printf '\n'
+
+failed=0
+base_errors=$(result_value errors)
+if ! compare_values "$base_errors" 0; then
+    printf '  estado : ERROR ARQUITECTÓNICO\n' >&2
+    failed=1
+fi
+
+for expectation in "${expectations[@]}"; do
+    key=${expectation%%=*}
+    expected=${expectation#*=}
+    actual=$(result_value "$key")
+    if [[ -z "$actual" ]]; then
+        printf "  FAIL   : resultado desconocido '%s'\n" "$key" >&2
+        failed=1
+    elif compare_values "$actual" "$expected"; then
+        printf '  PASS   : %s=%s\n' "$key" "$actual"
+    else
+        printf '  FAIL   : %s esperado=%s obtenido=%s\n' "$key" "$expected" "$actual" >&2
+        failed=1
+    fi
+done
+
+if (( failed != 0 )); then
+    printf '  artefactos: %s\n' "$output_dir" >&2
+    exit 1
+fi
+if (( ${#expectations[@]} == 0 )); then
+    printf '  estado : COMPLETADA SIN ERRORES; resultado funcional no verificado\n'
+else
+    printf '  estado : PASS\n'
+fi
+printf '  artefactos: %s\n' "$output_dir"

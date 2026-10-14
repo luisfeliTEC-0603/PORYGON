@@ -20,16 +20,29 @@
 Proyecto académico CE4301, desarrollado **100% por simulación** con Icarus
 Verilog o Verilator. No requiere síntesis ni implementación en FPGA.
 
-El repositorio contiene el skeleton inicial: los módulos SystemVerilog, los
-testbenches y el `Makefile` son archivos vacíos pendientes de implementación.
-Todavía no hay un flujo ejecutable de compilación o simulación. La herramienta de
-carga y extracción de archivos (`tools/data_loader/`) ya está implementada; el
-ensamblador propio (`tools/assembler/`) sigue pendiente. Los documentos de
-microarquitectura, simulación e integración con CE1108 también están pendientes
-de contenido.
+El repositorio contiene el procesador, sus memorias de simulación, testbenches,
+ensamblador, scheduler y herramientas de carga y extracción. El `Makefile`
+permite ejecutar pruebas unitarias y de sistema con Icarus Verilog; `sim.sh`
+ofrece la interfaz corta para cargar programas externos y conservar evidencia.
 
 La ISA define bundles de 64 bits, compuestos por cuatro slots de 16 bits,
 con asignación flexible de unidades funcionales.
+
+## Simulación rápida
+
+`sim.sh` evita escribir directamente los plusargs de Verilog:
+
+```bash
+./sim.sh programa.mem
+./sim.sh programa.mem 300 --data datos.mem
+./sim.sh programa.mem 300 --expect r1=10 --expect errors=0
+```
+
+El segundo argumento es el presupuesto de ciclos y vale 200 por defecto. La
+simulación muestra PC, registros y errores, y conserva `memory.dump.mem`,
+`waves.vcd`, `simulation.log` y `results.txt` en `sim_output/<programa>/`.
+`--out directorio` cambia esa ubicación. Sin expectativas se informa una
+ejecución completada, pero no se afirma corrección funcional.
 
 ## Estructura
 

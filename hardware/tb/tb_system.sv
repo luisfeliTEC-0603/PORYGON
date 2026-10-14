@@ -33,6 +33,9 @@ module tb_system;
     reg [1023:0] data_file = "";
     reg [1023:0] vcd_file = "build/waves/system.vcd";
     reg [1023:0] dump_file = "build/memory_dump.mem";
+    reg [1023:0] result_file = "";
+    integer result_fd;
+    integer total_errors;
 
     always #5 clk = ~clk;
 
@@ -72,6 +75,7 @@ module tb_system;
         void'($value$plusargs("CYCLES=%d", max_cycles));
         void'($value$plusargs("VCD=%s", vcd_file));
         void'($value$plusargs("DUMP=%s", dump_file));
+        void'($value$plusargs("RESULT=%s", result_file));
 
         $dumpfile(vcd_file);
         $dumpvars(0, tb_system);
@@ -110,6 +114,29 @@ module tb_system;
 
         $writememh(dump_file, dut.u_data_memory.memory);
         $display("Volcado de memoria generado en: %0s", dump_file);
+
+        if (result_file != "") begin
+            total_errors = data_access_errors + instruction_access_errors +
+                           alignment_errors + auth_failed_errors + access_errors;
+            result_fd = $fopen(result_file, "w");
+            if (result_fd == 0) begin
+                $fatal(1, "No se pudo crear el archivo de resultados: %0s", result_file);
+            end
+            $fdisplay(result_fd, "cycles=%0d", cycle_count);
+            $fdisplay(result_fd, "pc=0x%08h", dut.instruction_address);
+            $fdisplay(result_fd, "authenticated=%0d", authenticated);
+            $fdisplay(result_fd, "data_access_errors=%0d", data_access_errors);
+            $fdisplay(result_fd, "instruction_access_errors=%0d", instruction_access_errors);
+            $fdisplay(result_fd, "alignment_errors=%0d", alignment_errors);
+            $fdisplay(result_fd, "auth_failed_errors=%0d", auth_failed_errors);
+            $fdisplay(result_fd, "access_errors=%0d", access_errors);
+            $fdisplay(result_fd, "errors=%0d", total_errors);
+            for (int i = 0; i < 8; i++) begin
+                $fdisplay(result_fd, "r%0d=0x%08h", i,
+                          dut.u_processor.u_register_file.registers_q[i]);
+            end
+            $fclose(result_fd);
+        end
         $finish;
     end
 endmodule
