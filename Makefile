@@ -40,11 +40,16 @@ $(BUILD_DIR)/vliw_processor.vvp: $(RTL_SOURCES)
 
 .PHONY: all sim sim-alu sim-super-alu sim-regfile sim-bruh sim-feistel \
 	sim-crypto-decode sim-key-vault sim-crypto-wb sim-crypto-unit sim-crypto \
-	sim-top clean
+	sim-top sim-system clean
 
 all: sim
 
-sim: sim-alu sim-super-alu
+ifeq ($(strip $(PROG)),)
+sim: sim-alu sim-super-alu sim-top
+else
+sim:
+	@./sim.sh "$(PROG)" "$(if $(strip $(CYCLES)),$(CYCLES),200)" $(if $(strip $(DATA)),--data "$(DATA)")
+endif
 
 sim-top: $(BUILD_DIR)/top.vvp | $(WAVE_DIR)
 	$(VVP) $<

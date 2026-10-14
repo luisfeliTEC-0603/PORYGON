@@ -30,7 +30,28 @@ con asignación flexible de unidades funcionales.
 
 ## Simulación rápida
 
-`sim.sh` evita escribir directamente los plusargs de Verilog:
+La interfaz habitual del proyecto evita escribir directamente los plusargs de
+Verilog:
+
+```bash
+make sim PROG=programa.mem
+make sim PROG=hardware/tb/programs/crypto_integration.mem \
+  DATA=hardware/tb/programs/crypto_data.mem CYCLES=180
+```
+
+`CYCLES` vale 200 por defecto y `DATA` es opcional. Cada programa conserva
+`memory.dump.mem`, `waves.vcd`, `simulation.log` y `results.txt` en
+`sim_output/<programa>/`; al terminar se imprimen las rutas absolutas de esos
+archivos. `make sim` sin `PROG` ejecuta la regresión predeterminada de ALU,
+SUPER-ALU y procesador completo (`sim-top`).
+
+`top_integration.mem` pertenece a una prueba negativa que accede fuera del rango
+de datos de manera intencional. Para validar ese caso se usa `make sim` sin
+`PROG`; ejecutarlo directamente con `PROG` informa correctamente el evento como
+un error arquitectónico.
+
+Para validaciones reproducibles con resultados esperados se usa directamente
+el runner avanzado:
 
 ```bash
 ./sim.sh programa.mem
@@ -38,11 +59,23 @@ con asignación flexible de unidades funcionales.
 ./sim.sh programa.mem 300 --expect r1=10 --expect errors=0
 ```
 
-El segundo argumento es el presupuesto de ciclos y vale 200 por defecto. La
-simulación muestra PC, registros y errores, y conserva `memory.dump.mem`,
-`waves.vcd`, `simulation.log` y `results.txt` en `sim_output/<programa>/`.
-`--out directorio` cambia esa ubicación. Sin expectativas se informa una
-ejecución completada, pero no se afirma corrección funcional.
+El segundo argumento es el presupuesto de ciclos. `--out directorio` cambia la
+ubicación de los artefactos. Sin expectativas se informa una ejecución
+completada, pero no se afirma corrección funcional.
+
+## Extracción rápida
+
+Después de `make sim`, el wrapper local recupera un rango del volcado sin pedir
+su ruta completa:
+
+```bash
+./extract.sh programa 0x10000 32 resultado.bin
+```
+
+El comando lee `sim_output/programa/memory.dump.mem` y guarda la salida como
+`sim_output/programa/resultado.bin`. El cuarto argumento es opcional y vale
+`resultado.bin` por defecto. También se puede pasar como primer argumento la
+ruta explícita a cualquier dump `.mem`.
 
 ## Estructura
 

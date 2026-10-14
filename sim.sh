@@ -89,6 +89,13 @@ result_file="$output_dir/results.txt"
 log_file="$output_dir/simulation.log"
 build_log="$output_dir/build.log"
 
+print_artifact_paths() {
+    printf '  volcado: %s\n' "$dump_file"
+    printf '  ondas  : %s\n' "$vcd_file"
+    printf '  resultado: %s\n' "$result_file"
+    printf '  log     : %s\n' "$log_file"
+}
+
 if ! make -s -C "$root_dir" build/system.vvp >"$build_log" 2>&1; then
     printf 'La compilación del simulador falló. Últimas líneas del log:\n' >&2
     tail -20 "$build_log" >&2
@@ -144,28 +151,30 @@ if ! compare_values "$base_errors" 0; then
     failed=1
 fi
 
-for expectation in "${expectations[@]}"; do
-    key=${expectation%%=*}
-    expected=${expectation#*=}
-    actual=$(result_value "$key")
-    if [[ -z "$actual" ]]; then
-        printf "  FAIL   : resultado desconocido '%s'\n" "$key" >&2
-        failed=1
-    elif compare_values "$actual" "$expected"; then
-        printf '  PASS   : %s=%s\n' "$key" "$actual"
-    else
-        printf '  FAIL   : %s esperado=%s obtenido=%s\n' "$key" "$expected" "$actual" >&2
-        failed=1
-    fi
-done
+if (( ${#expectations[@]} > 0 )); then
+    for expectation in "${expectations[@]}"; do
+        key=${expectation%%=*}
+        expected=${expectation#*=}
+        actual=$(result_value "$key")
+        if [[ -z "$actual" ]]; then
+            printf "  FAIL   : resultado desconocido '%s'\n" "$key" >&2
+            failed=1
+        elif compare_values "$actual" "$expected"; then
+            printf '  PASS   : %s=%s\n' "$key" "$actual"
+        else
+            printf '  FAIL   : %s esperado=%s obtenido=%s\n' "$key" "$expected" "$actual" >&2
+            failed=1
+        fi
+    done
+fi
 
 if (( failed != 0 )); then
-    printf '  artefactos: %s\n' "$output_dir" >&2
+    print_artifact_paths >&2
     exit 1
 fi
 if (( ${#expectations[@]} == 0 )); then
-    printf '  estado : COMPLETADA SIN ERRORES; resultado funcional no verificado\n'
+    printf '  estado : COMPLETADA SIN ERRORES (resultado funcional no verificado)\n'
 else
     printf '  estado : PASS\n'
 fi
-printf '  artefactos: %s\n' "$output_dir"
+print_artifact_paths
