@@ -29,17 +29,17 @@ module crypto_wb (
     input  logic clk_i,
     input  logic rst_ni,
     // Enables ya calificados por permiso de ronda y destino distinto de r0.
-    input  logic write_enable_i [0:1],
+    input  logic [0:1] write_enable_i,
     input  logic auth_failed_i,
     input  logic access_error_i,
-    input  logic [$clog2(pkg_vliw::NUM_REGS)-1:0] write_addr_i [0:1],
-    input  logic [pkg_vliw::DATA_WIDTH-1:0] write_data_i [0:1],
+    input  logic [0:1][$clog2(pkg_vliw::NUM_REGS)-1:0] write_addr_i,
+    input  logic [0:1][pkg_vliw::DATA_WIDTH-1:0] write_data_i,
 
-    output logic write_enable_o [0:1],
+    output logic [0:1] write_enable_o,
     output logic auth_failed_o,
     output logic access_error_o,
-    output logic [$clog2(pkg_vliw::NUM_REGS)-1:0] write_addr_o [0:1],
-    output logic [pkg_vliw::DATA_WIDTH-1:0] write_data_o [0:1]
+    output logic [0:1][$clog2(pkg_vliw::NUM_REGS)-1:0] write_addr_o,
+    output logic [0:1][pkg_vliw::DATA_WIDTH-1:0] write_data_o
 );
 
     integer channel;

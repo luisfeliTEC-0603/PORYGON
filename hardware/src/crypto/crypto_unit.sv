@@ -41,9 +41,9 @@ module crypto_unit (
     input  logic [pkg_vliw::DATA_WIDTH-1:0] op_b_data_i,
 
     // Canal 0: L' hacia op_a_addr; canal 1: R' hacia op_b_addr.
-    output logic write_enable_o [0:1],
-    output logic [$clog2(pkg_vliw::NUM_REGS)-1:0] write_addr_o [0:1],
-    output logic [pkg_vliw::DATA_WIDTH-1:0] write_data_o [0:1],
+    output logic [0:1] write_enable_o,
+    output logic [0:1][$clog2(pkg_vliw::NUM_REGS)-1:0] write_addr_o,
+    output logic [0:1][pkg_vliw::DATA_WIDTH-1:0] write_data_o,
     // Estado vigente y eventos registrados para el futuro registro de estado.
     output logic authenticated_o,
     output logic auth_failed_o,
@@ -64,9 +64,9 @@ module crypto_unit (
 
     logic [pkg_vliw::DATA_WIDTH-1:0] round_left;
     logic [pkg_vliw::DATA_WIDTH-1:0] round_right;
-    logic write_enable_ex [0:1];
-    logic [$clog2(pkg_vliw::NUM_REGS)-1:0] write_addr_ex [0:1];
-    logic [pkg_vliw::DATA_WIDTH-1:0] write_data_ex [0:1];
+    logic [0:1] write_enable_ex;
+    logic [0:1][$clog2(pkg_vliw::NUM_REGS)-1:0] write_addr_ex;
+    logic [0:1][pkg_vliw::DATA_WIDTH-1:0] write_data_ex;
 
     assign authenticated_o = vault_authenticated;
 
