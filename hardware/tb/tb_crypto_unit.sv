@@ -19,9 +19,9 @@ module tb_crypto_unit;
     word_t op_a_data_i;
     word_t op_b_data_i;
 
-    logic write_enable_o [0:1];
-    reg_index_t write_addr_o [0:1];
-    word_t write_data_o [0:1];
+    logic [0:1] write_enable_o;
+    logic [0:1][$clog2(NUM_REGS)-1:0] write_addr_o;
+    logic [0:1][DATA_WIDTH-1:0] write_data_o;
     logic authenticated_o;
     logic auth_failed_o;
     logic access_error_o;

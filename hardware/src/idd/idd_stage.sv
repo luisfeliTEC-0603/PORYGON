@@ -85,14 +85,10 @@ module idd_stage #(
     // ------------------------------------------------------------------------
     // 1. Partir el bundle
     // ------------------------------------------------------------------------
-    bundle_splitter #(
-        .BUNDLE_WIDTH (BUNDLE_WIDTH),
-        .SLOT_WIDTH   (SLOT_WIDTH),
-        .NUM_SLOTS    (NUM_SLOTS)
-    ) u_splitter (
-        .bundle_i (bundle_i),
-        .slot_o   (slot_raw)
-    );
+    for (genvar slot_index = 0; slot_index < NUM_SLOTS; slot_index++) begin : g_split
+        assign slot_raw[slot_index] =
+            bundle_i[slot_index*SLOT_WIDTH +: SLOT_WIDTH];
+    end
 
     // ------------------------------------------------------------------------
     // 2. Selectores de inmediato con corte de cadena

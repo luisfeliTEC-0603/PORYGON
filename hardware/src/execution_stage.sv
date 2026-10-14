@@ -69,9 +69,9 @@ module execution_stage (
     reg_index_t load_destination;
     word_t load_data;
     lost_inst_t lsu_instruction;
-    wire crypto_enable [0:1];
-    wire reg_index_t crypto_destination [0:1];
-    wire word_t crypto_data [0:1];
+    wire [0:1] crypto_enable;
+    wire [0:1][$clog2(NUM_REGS)-1:0] crypto_destination;
+    wire [0:1][DATA_WIDTH-1:0] crypto_data;
     logic crypto_authenticated, crypto_auth_failed, crypto_access_error;
 
     assign lsu_instruction = lsu_i.instruction;
