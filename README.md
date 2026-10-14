@@ -35,12 +35,14 @@ Verilog:
 
 ```bash
 make sim PROG=programa.mem
-make sim PROG=hardware/tb/programs/crypto_integration.mem \
-  DATA=hardware/tb/programs/crypto_data.mem CYCLES=180
+make sim PROG=programa.mem DATA=datos.mem
 ```
 
-`CYCLES` vale 200 por defecto y `DATA` es opcional. Cada programa conserva
-`memory.dump.mem`, `waves.vcd`, `simulation.log` y `results.txt` en
+La simulación termina cuando BRUH ejecuta un salto tomado hacia el PC de esa
+misma instrucción, convención usada por el codegen para representar `halt`.
+`DATA` es opcional. Como protección ante programas que no alcanzan el halt,
+`MAX_CYCLES` configura un watchdog y vale 100000 por defecto. Cada programa
+conserva `memory.dump.mem`, `waves.vcd`, `simulation.log` y `results.txt` en
 `sim_output/<programa>/`; al terminar se imprimen las rutas absolutas de esos
 archivos. `make sim` sin `PROG` ejecuta la regresión predeterminada de ALU,
 SUPER-ALU y procesador completo (`sim-top`).
@@ -55,13 +57,13 @@ el runner avanzado:
 
 ```bash
 ./sim.sh programa.mem
-./sim.sh programa.mem 300 --data datos.mem
-./sim.sh programa.mem 300 --expect r1=10 --expect errors=0
+./sim.sh programa.mem --data datos.mem
+./sim.sh programa.mem --max-cycles 200000 --expect r1=10 --expect errors=0
 ```
 
-El segundo argumento es el presupuesto de ciclos. `--out directorio` cambia la
-ubicación de los artefactos. Sin expectativas se informa una ejecución
-completada, pero no se afirma corrección funcional.
+`--max-cycles` cambia el watchdog solo cuando el programa necesita un límite
+mayor. `--out directorio` cambia la ubicación de los artefactos. Sin expectativas
+se informa una ejecución completada, pero no se afirma corrección funcional.
 
 ## Extracción rápida
 

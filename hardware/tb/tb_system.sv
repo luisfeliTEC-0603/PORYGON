@@ -3,7 +3,8 @@
 /**
  * @brief Testbench configurable para ejecutar cualquier programa y datos en porygon_system.
  * 
- * Permite pasar rutas de archivos e iteraciones por linea de comandos (+INSTR=... +DATA=...).
+ * Permite pasar rutas de archivos y un watchdog por linea de comandos.
+ * La ejecucion normal termina al observar un salto tomado hacia su propio PC.
  */
 module tb_system;
     import pkg_vliw::*;
@@ -21,13 +22,18 @@ module tb_system;
     logic data_access_error;
     address_t data_access_error_pc;
 
-    integer max_cycles = 100;
+    localparam integer DEFAULT_MAX_CYCLES = 100000;
+
+    integer max_cycles = DEFAULT_MAX_CYCLES;
     integer cycle_count = 0;
     integer data_access_errors = 0;
     integer instruction_access_errors = 0;
     integer alignment_errors = 0;
     integer auth_failed_errors = 0;
     integer access_errors = 0;
+    logic halt_detected = 1'b0;
+    logic watchdog_expired = 1'b0;
+    address_t halt_pc = '0;
 
     reg [1023:0] instr_file = "";
     reg [1023:0] data_file = "";
@@ -55,7 +61,17 @@ module tb_system;
     );
 
     always @(posedge clk) begin
-        if (rst_n) begin
+        if (!rst_n) begin
+            cycle_count <= 0;
+            data_access_errors <= 0;
+            instruction_access_errors <= 0;
+            alignment_errors <= 0;
+            auth_failed_errors <= 0;
+            access_errors <= 0;
+            halt_detected <= 1'b0;
+            watchdog_expired <= 1'b0;
+            halt_pc <= '0;
+        end else if (!halt_detected && !watchdog_expired) begin
             cycle_count <= cycle_count + 1;
             if (data_access_error) begin
                 data_access_errors <= data_access_errors + 1;
@@ -66,13 +82,23 @@ module tb_system;
             if (invalid_address) alignment_errors <= alignment_errors + 1;
             if (auth_failed) auth_failed_errors <= auth_failed_errors + 1;
             if (access_error) access_errors <= access_errors + 1;
+
+            // El codegen representa halt como un salto tomado al PC del propio JUMP.
+            if (dut.u_processor.branch_taken &&
+                (dut.u_processor.branch_target ==
+                 dut.u_processor.u_execution.bruh_i.pc)) begin
+                halt_detected <= 1'b1;
+                halt_pc <= dut.u_processor.u_execution.bruh_i.pc;
+            end else if ((cycle_count + 1) >= max_cycles) begin
+                watchdog_expired <= 1'b1;
+            end
         end
     end
 
     initial begin
         void'($value$plusargs("INSTR=%s", instr_file));
         void'($value$plusargs("DATA=%s", data_file));
-        void'($value$plusargs("CYCLES=%d", max_cycles));
+        void'($value$plusargs("MAX_CYCLES=%d", max_cycles));
         void'($value$plusargs("VCD=%s", vcd_file));
         void'($value$plusargs("DUMP=%s", dump_file));
         void'($value$plusargs("RESULT=%s", result_file));
@@ -95,12 +121,16 @@ module tb_system;
         @(negedge clk);
         rst_n = 1'b1;
 
-        repeat (max_cycles) @(posedge clk);
+        wait (halt_detected || watchdog_expired);
         #1;
 
         $display("\n=======================================================");
         $display("  RESUMEN DE EJECUCION (tb_system) - %0d ciclos", cycle_count);
         $display("=======================================================");
+        if (halt_detected)
+            $display("Terminacion     : HALT por salto a si mismo en 0x%08h", halt_pc);
+        else
+            $display("Terminacion     : TIMEOUT (MAX_CYCLES=%0d)", max_cycles);
         $display("PC final        : 0x%08h", dut.instruction_address);
         $display("Authenticated   : %b", authenticated);
         $display("Eventos Error   : data_access=%0d, instr_access=%0d, align=%0d, auth_failed=%0d, access_err=%0d",
@@ -123,6 +153,10 @@ module tb_system;
                 $fatal(1, "No se pudo crear el archivo de resultados: %0s", result_file);
             end
             $fdisplay(result_fd, "cycles=%0d", cycle_count);
+            $fdisplay(result_fd, "max_cycles=%0d", max_cycles);
+            $fdisplay(result_fd, "halted=%0d", halt_detected);
+            $fdisplay(result_fd, "halt_pc=0x%08h", halt_pc);
+            $fdisplay(result_fd, "timeout=%0d", watchdog_expired);
             $fdisplay(result_fd, "pc=0x%08h", dut.instruction_address);
             $fdisplay(result_fd, "authenticated=%0d", authenticated);
             $fdisplay(result_fd, "data_access_errors=%0d", data_access_errors);

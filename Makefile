@@ -48,7 +48,7 @@ ifeq ($(strip $(PROG)),)
 sim: sim-alu sim-super-alu sim-top
 else
 sim:
-	@./sim.sh "$(PROG)" "$(if $(strip $(CYCLES)),$(CYCLES),200)" $(if $(strip $(DATA)),--data "$(DATA)")
+	@./sim.sh "$(PROG)" $(if $(strip $(DATA)),--data "$(DATA)") $(if $(strip $(MAX_CYCLES)),--max-cycles "$(MAX_CYCLES)")
 endif
 
 sim-top: $(BUILD_DIR)/top.vvp | $(WAVE_DIR)

@@ -4,18 +4,19 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Uso: ./sim.sh <programa.mem> [ciclos] [opciones]
+Uso: ./sim.sh <programa.mem> [opciones]
 
 Opciones:
   --data <datos.mem>       Inicializa la memoria de datos.
+  --max-cycles <ciclos>    Cambia el watchdog (por defecto: 100000).
   --out <directorio>       Guarda resultados en este directorio.
   --expect <clave=valor>   Verifica PC, errores o un registro r0-r7. Repetible.
   -h, --help               Muestra esta ayuda.
 
 Ejemplos:
   ./sim.sh programa.mem
-  ./sim.sh programa.mem 300 --data datos.mem
-  ./sim.sh programa.mem 300 --expect r1=10 --expect errors=0
+  ./sim.sh programa.mem --data datos.mem
+  ./sim.sh programa.mem --max-cycles 200000 --expect r1=10 --expect errors=0
 EOF
 }
 
@@ -38,20 +39,21 @@ root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 
 instruction_file=$(absolute_file "$1")
 shift
-cycles=200
-if [[ $# -gt 0 && $1 =~ ^[1-9][0-9]*$ ]]; then
-    cycles=$1
-    shift
-fi
-
 data_file=""
 output_dir=""
+max_cycles=100000
 expectations=()
 while [[ $# -gt 0 ]]; do
     case $1 in
         --data)
             [[ $# -ge 2 ]] || fail "--data requiere una ruta"
             data_file=$(absolute_file "$2")
+            shift 2
+            ;;
+        --max-cycles)
+            [[ $# -ge 2 ]] || fail "--max-cycles requiere un valor"
+            [[ $2 =~ ^[1-9][0-9]*$ ]] || fail "--max-cycles requiere un entero positivo"
+            max_cycles=$2
             shift 2
             ;;
         --out)
@@ -104,7 +106,7 @@ fi
 
 vvp_args=(
     "+INSTR=$instruction_file"
-    "+CYCLES=$cycles"
+    "+MAX_CYCLES=$max_cycles"
     "+DUMP=$dump_file"
     "+VCD=$vcd_file"
     "+RESULT=$result_file"
@@ -136,6 +138,7 @@ compare_values() {
 
 printf '\nPORYGON — resumen de simulación\n'
 printf '  ciclos : %s\n' "$(result_value cycles)"
+printf '  halt   : %s\n' "$(result_value halted)"
 printf '  PC     : %s\n' "$(result_value pc)"
 printf '  errores: %s\n' "$(result_value errors)"
 printf '  GPR    :'
@@ -145,8 +148,12 @@ done
 printf '\n'
 
 failed=0
+timed_out=$(result_value timeout)
 base_errors=$(result_value errors)
-if ! compare_values "$base_errors" 0; then
+if compare_values "$timed_out" 1; then
+    printf '  estado : TIMEOUT (watchdog de %s ciclos)\n' "$max_cycles" >&2
+    failed=1
+elif ! compare_values "$base_errors" 0; then
     printf '  estado : ERROR ARQUITECTÓNICO\n' >&2
     failed=1
 fi
