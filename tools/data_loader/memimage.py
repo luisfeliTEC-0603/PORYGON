@@ -1,4 +1,4 @@
-# Empaquetado y lectura de imágenes de memoria en formato $readmemh / $writememh
+# Empaquetado y lectura estricta de imágenes $readmemh / $writememh
 
 import re
 
@@ -6,7 +6,13 @@ WIDTHS = (8, 16, 32, 64)
 
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 _LINE_COMMENT = re.compile(r"//[^\n]*")
-_UNKNOWN_BITS = str.maketrans("xXzZ", "0000")
+
+
+class _UnknownCell:
+    """Marca una palabra que contiene bits x/z sin inventar un valor numérico."""
+
+
+UNKNOWN = _UnknownCell()
 
 
 def bytes_per_word(width):
@@ -45,23 +51,37 @@ def render(words, width, start_index, per_line=16):
 
 
 def parse(text, width):
-    # Reconstruye {índice: palabra}; cada directiva @ reposiciona el índice de escritura
+    # Reconstruye {índice: palabra}; UNKNOWN conserva explícitamente cualquier x/z.
     digits = hex_digits(width)
     text = _LINE_COMMENT.sub(" ", _BLOCK_COMMENT.sub(" ", text))
     cells = {}
     index = 0
     for token in text.split():
         if token.startswith("@"):
+            if not re.fullmatch(r"@[0-9a-fA-F]+", token):
+                raise ValueError(f"directiva de dirección inválida: '{token}'")
             index = int(token[1:], 16)
             continue
+        if not re.fullmatch(r"[0-9a-fA-FxXzZ]+", token):
+            raise ValueError(f"token hexadecimal inválido: '{token}'")
         if len(token) > digits:
             raise ValueError(f"el token '{token}' excede {digits} digitos: el ancho de palabra no coincide")
         # $writememh marca con x o z las posiciones que nunca se escribieron
-        cells[index] = int(token.translate(_UNKNOWN_BITS), 16)
+        cells[index] = UNKNOWN if re.search(r"[xXzZ]", token) else int(token, 16)
         index += 1
     return cells
 
 
-def extract(cells, start_index, count):
-    # Las posiciones ausentes del volcado se devuelven como cero
-    return [cells.get(start_index + i, 0) for i in range(count)]
+def extract(cells, start_index, count, allow_uninitialized=False):
+    """Extrae palabras sin ocultar huecos ni indeterminaciones de Verilog."""
+    words = []
+    for index in range(start_index, start_index + count):
+        if index not in cells:
+            if allow_uninitialized:
+                words.append(0)
+                continue
+            raise ValueError(f"la posición @0x{index:08X} no fue inicializada en el volcado")
+        if cells[index] is UNKNOWN:
+            raise ValueError(f"la posición @0x{index:08X} contiene bits indeterminados x/z")
+        words.append(cells[index])
+    return words
