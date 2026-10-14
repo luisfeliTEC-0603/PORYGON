@@ -28,7 +28,7 @@
 module key_vault #(
     parameter logic [127:0] INITIAL_PASSWORD =
         128'h1463_17bb_da48_db07_a9a6_7018_dff0_f76a,
-    parameter integer AUTH_TIMEOUT_CYCLES = 16
+    parameter integer AUTH_TIMEOUT_CYCLES = 32
 ) (
     input  logic clk_i,
     input  logic rst_ni,
