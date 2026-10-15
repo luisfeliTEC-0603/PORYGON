@@ -1,0 +1,350 @@
+# ISA – Procesador PORYGON
+
+PORYGON es un procesador VLIW (_Very Long Instruction Word_) con ISA propia, que incluye una unidad de cifrado por bloques Feistel4. El compilador empaqueta instrucciones en bundles de 64 bits (4 slots de 16 bits) que se ejecutan en paralelo.
+
+La ISA de PORYGON se organiza en cuatro formatos de instrucción que comparten un campo `opcode` de 2 bits:
+
+| `opcode` | Formato | Unidad funcional principal |
+|----------|---------|----------------------------|
+| `00`     | MATH    | ALU (general y especializada) |
+| `01`     | LOST    | LSU (load/store) |
+| `10`     | JUMP    | BRUH (control de flujo) |
+| `11`     | CRYPTO  | Unidad criptográfica Feistel4 + Bóveda de llaves |
+
+El direccionamiento de memoria es **registro-registro** (con offset), el ordenamiento de bits es **Little Endian**, y la arquitectura expone **8 registros de propósito general de 32 bits** y un **Program Counter (PC)**.
+
+## Organización
+
+### Mapa de memoria
+
+### Características generales
+
+| Característica | Valor |
+|----------------|-------|
+| Tamaño mínimo | 64 KB |
+| Direccionamiento | 32 bits |
+| Endianness | Little Endian |
+| Unidad mínima direccionable | 1 byte (8 bits) |
+| Palabra | 32 bits (4 bytes) |
+| Media palabra | 16 bits (2 bytes) |
+| Bundle | 64 bits (8 bytes) |
+
+### Segmentos de memoria
+
+| Segmento | Rango típico | Uso |
+|----------|--------------|-----|
+| Instrucciones (texto) | `0x00000000` – `0x0000FFFF` | Bundles de instrucciones |
+| Datos | `0x00010000` – `0x0001FFFF` | Datos generales, archivos cargados |
+| Pila | `0x0001F000` – `0x0001FFFF` | Pila del programa (crece hacia abajo) |
+| Reservado | resto | Reservado para expansión |
+
+### Unidades funcionales especializadas
+
+| Unidad | Descripción |
+|--------|-------------|
+| **ALU general (pipe 0)** | Suma, resta, AND, OR, XOR, NOT, comparaciones |
+| **ALU especializada (pipe 1)** | Multiplicaciones, desplazamientos lógicos y aritméticos |
+| **LSU** | Load y store (byte, media palabra, palabra) |
+| **BRUH** | Saltos condicionales e incondicionales |
+| **Crypto (Feistel4)** | Ronda Feistel4, escritura de subllaves, autenticación, cambio de contraseña, revocación; incluye una boveda de almacenamiento seguro de 4 llaves de 128 bits (16 subllaves de 32 bits) |
+
+> [!NOTE]
+>
+> PORYGON utiliza un esquema de asignación de slots, cualquier slot puede contener cualquier tipo de instrucción (MATH, LOST, JUMP o CRYPTO). La unidad de **DISPATCH** redirige con base en el `opcode` de cada slot, la instrucción a la unidad funcional correspondiente.
+
+## Convenciones de registros
+
+### Banco de registros de propósito general (GPR)
+
+PORYGON expone **8 registros de propósito general de 32 bits**:
+
+| Registro | Nombre | Uso | ¿Escribible? |
+|----------|--------|-----|--------------|
+| `r0`     | zero   | Siempre 0 | No |
+| `r1`     | —      | Propósito general | Sí |
+| `r2`     | —      | Propósito general | Sí |
+| `r3`     | —      | Propósito general | Sí |
+| `r4`     | —      | Propósito general | Sí |
+| `r5`     | —      | Propósito general | Sí |
+| `r6`     | —      | Propósito general | Sí |
+| `r7`     | —      | Propósito general | Sí |
+
+**Consideraciones:**
+- `r0` está conectado a *ground*: su valor es siempre `0x0` y **no puede sobrescribirse**. Cualquier intento de escritura en `r0` se ignora silenciosamente (no genera excepción).
+- Los registros `r1`–`r7` son de lectura/escritura y pueden almacenar cualquier valor de 32 bits.
+- Representación sin signo: rango `0` a `4,294,967,295` (2³² − 1).
+- Representación con signo (complemento a dos): rango `−2,147,483,648` a `2,147,483,647` (−2³¹ a 2³¹ − 1).
+
+### Registros internos de la bóveda
+
+La bóveda de llaves mantiene internamente los siguientes recursos:
+
+| Recurso | Ancho | Tipo | Descripción |
+|---------|-------|------|-------------|
+| `keys[0..3]` | 4 × 128 bits | R/W (solo `write`) | 4 llaves de 128 bits, cada una dividida en 4 subllaves de 32 bits |
+| `rsp` | 128 bits | R/W (solo `pwd`) | *Register for Stored Password*: almacena la contraseña de autenticación |
+| `rsa` | 128 bits | WO (solo `LOPW`) | *Register for Stored Authentication*: almacena temporalmente las cuatro palabras de la credencial candidata |
+| `rsa_valid` | 4 bits | R/W interno | Indica cuáles palabras de `rsa` fueron cargadas mediante `LOPW` |
+| `state` | 2 bits | R/W (FSM) | Estado de la FSM de autenticación |
+| `auth_timer` | Parametrizable | R/W interno | Temporizador de inactividad de la sesión autenticada |
+
+**Notas:**
+
+- `rsa` es un registro **write-only** propio de la unidad criptográfica. El programa **no puede leerlo**; solo se escribe mediante la instrucción `LOPW`.
+- `rsp` **no es legible** desde registros de propósito general. Solo se escribe mediante `pwd` (previa autenticación) y se compara internamente con `rsa`.
+- `rsp` se inicializa durante reset con una constante aleatoria de 128 bits definida directamente en SystemVerilog.
+- Las llaves `keys[0..3]` **nunca** se escriben en registros de propósito general ni en memoria general. Solo `feistel` las lee (como subllaves) y `write` las escribe.
+- El estado `state` controla el acceso a las operaciones privilegiadas.
+
+> [!WARNING]
+> 
+> Los recursos de esta unidad son **inaccesibles** como registros de propósito general o memoria tradicional.
+
+> [!TIP]
+>
+> **Comparación `rsa == rsp`**
+>
+> El mecanismo de autenticación opera de la siguiente manera:
+> 1. El programa divide una credencial de 128 bits en cuatro palabras de 32 bits.
+> 2. Ejecuta cuatro instrucciones `LOPW`, con índices de palabra 0, 1, 2 y 3, para construir `rsa`.
+> 3. Ejecuta `auth` sin operandos. La unidad criptográfica compara atómicamente `rsa` con `rsp`.
+> 4. Si las cuatro palabras están válidas y `rsa == rsp`, la FSM transiciona a `AUTHENTICATED`, el bit `AUTH` del registro de estado se pone en 1 y comienza el temporizador de inactividad.
+> 5. Si la credencial está incompleta o `rsa != rsp`, la FSM permanece en `LOCKED` y se genera la excepción `AUTENTICACION_FALLIDA`.
+> 6. Tras la comparación, `rsa` y `rsa_valid` son limpiados para no dejar la credencial residual.
+
+## Bundle
+
+Un **bundle** es una palabra de instrucción VLIW de **64 bits** compuesta por **4 slots de 16 bits** cada uno.
+
+```
+  Bit 63                                     Bit 0
+ ┌───────────┬───────────┬───────────┬───────────┐
+ │  Slot 3   │  Slot 2   │  Slot 1   │  Slot 0   │
+ │ [63:48]   │ [47:32]   │ [31:16]   │ [15:0]    │
+ └───────────┴───────────┴───────────┴───────────┘
+```
+
+> [!NOTE]
+> **Mecanismo de inmediato**
+>
+> El campo `imm` es un bit que indica si la instrucción consume el slot inmediatamente siguiente como inmediato de 16 bits. Por convención siempre va después del `opcode` (nunca en el bit 0).
+>
+> **- `imm = 1`**, el slot siguiente del bundle contiene el inmediato de 16 bits y no se decodifica como instrucción.
+> 
+> **- `imm = 0`**, el slot siguiente es una decodificado como una instrucción normal (o NOP).
+>
+> ```
+> ┌───────────┬───────────┬───────────┬───────────────┐
+> │  Slot 3   │  Slot 2   │  Slot 1   │  Slot 0       │
+> │ instrucc. │ instrucc. │ INMEDIATO │ instr (imm=1) │
+> └───────────┴───────────┴───────────┴───────────────┘
+>                               ▲             │
+>                               └─────────────┘
+>                     Slot 1 es el inmediato de Slot 0
+> ```
+
+## Instruction Reference Sheet
+
+A continuación se especifican la encodificación para los formatos escogidos.   
+
+> [!TIP]
+>
+> **Convención de codificación:** en todos los formatos, el `opcode` ocupa los bits **[1:0]**. El bit `imm` se ubica, en caso de ser necesario, **inmediatamente después** del opcode. Los campos restantes se distribuyen en los bits superiores.
+
+> [!NOTE]
+>
+> **Instrucciones NOP**
+>
+> Se codifica exclusivamente como `0x0`. Ocupa un slot, pero no se despacha a ninguna unidad funcional, no accede al banco de registros y no modifica el estado arquitectónico. El bundle continúa su avance normal. Los slots consumidos como literales no se interpretan como **NOP**, independientemente de su contenido.
+
+### Formato MATH
+
+#### Estructura interna (16 bits)
+
+| Bits    | Campo  | Ancho | Descripción |
+|---------|--------|-------|-------------|
+| [15:13] | `rs1`  | 3     | Registro fuente y destino (`Reg[rs1] ← Reg[rs1] op Reg[rs2]`) |
+| [12:10] | `rs2`  | 3     | Registro fuente |
+| [9:4]   | `funct`| 6     | Operación específica |
+| [3]     | `pipe` | 1     | 0 = ALU general, 1 = ALU especializada (mul/shift) |
+| [2]     | `imm`  | 1     | Bandera de inmediato en el siguiente slot |
+| [1:0]   | `opcode`| 2    | `00` = MATH |
+
+**Forma de uso:** `<instr> rs1, rs2` → `Reg[rs1] ← Reg[rs1] <op> Reg[rs2]`
+
+Con inmediato (`imm = 1`): `<instr> rs1, #imm` → `Reg[rs1] ← Reg[rs1] <op> imm`
+
+#### Tabla de instrucciones MATH
+
+| Instrucción | `funct` | `pipe` | `imm` | Descripción |
+|-------------|---------|--------|-------|-------------|
+| `nop`       | `000000`| 0      | 0     | No operación |
+| `mov`       | `000001`| `(0 o 1)`   | 0     | `rs1 ← rs2` |
+| `sum`       | `000010`| `(0 o 1)`    | 0     | `rs1 ← rs1 + rs2` |
+| `sumi`      | `000010`| `(0 o 1)`   | 1     | `rs1 ← rs1 + imm` |
+| `diff`       | `000011`| `(0 o 1)`  | 0     | `rs1 ← rs1 − rs2` |
+| `diffi`       | `000011`| `(0 o 1)`  | 1     | `rs1 ← rs1 − imm` |
+| `and`       | `000100`| `(0 o 1)`  | 0     | `rs1 ← rs1 & rs2` |
+| `andi`      | `000100`| `(0 o 1)`   | 1     | `rs1 ← rs1 & imm` |
+| `or`        | `000101`| `(0 o 1)`   | 0     | `rs1 ← rs1 \| rs2` |
+| `ori`       | `000101`| `(0 o 1)`  | 1     | `rs1 ← rs1 \| imm` |
+| `xor`       | `000110`| `(0 o 1)`   | 0     | `rs1 ← rs1 ^ rs2` |
+| `xori`      | `000110`| `(0 o 1)`  | 1     | `rs1 ← rs1 ^ imm` |
+| `not`       | `000111`| `(0 o 1)`  | 0     | `rs1 ← ~rs1` |
+| `shl`       | `001000`| 1      | 0     | `rs1 ← rs1 << rs2` (lógico) |
+| `shli`      | `001000`| 1      | 1     | `rs1 ← rs1 << imm` |
+| `shr`       | `001001`| 1      | 0     | `rs1 ← rs1 >> rs2` (lógico) |
+| `shri`      | `001001`| 1      | 1     | `rs1 ← rs1 >> imm` |
+| `sar`       | `001010`| 1      | 0     | `rs1 ← rs1 >>> rs2` (aritmético) |
+| `sari`      | `001010`| 1      | 1     | `rs1 ← rs1 >>> imm` |
+| `mul`       | `001011`| 1      | 0     | `rs1 ← rs1 × rs2` (parte baja) |
+| `muli`      | `001011`| 1      | 1     | `rs1 ← rs1 × imm` |
+| `gtn`       | `001100`| `(0 o 1)`  | 0     | `rs1 ← (rs1 > rs2) ? 1 : 0` |
+| `ltn`       | `001101`| `(0 o 1)` | 0     | `rs1 ← (rs1 < rs2) ? 1 : 0` |
+| `eor`       | `001110`| `(0 o 1)`  | 0     | `rs1 ← (rs1 == rs2) ? 1 : 0` |
+| `nez`       | `001111`| `(0 o 1)`  | 0     | `rs1 ← (rs1 != 0) ? 1 : 0` |
+| `mulh`      | `010000`| 1      | 0     | `rs1 ← rs1 × rs2[63:32]` (parte alta) |
+| `mulhi`     | `010000`| 1      | 1     | `rs1 ← rs1 × imm[63:32]` (parte alta con inmediato) |
+**Notas:**
+
+- Las operaciones con sufijo `i` (por ejemplo `sumi`) requieren `imm = 1` y consumen el slot siguiente como inmediato de 16 bits.
+- Las operaciones lógicas y comparaciones actualizan las banderas `Z`, `N`, `C`, `V` del registro de estado.
+- Las operaciones `pipe = 1` se ejecutan en la ALU especializada.
+
+### Formato LOST
+
+#### Estructura interna (16 bits)
+
+| Bits    | Campo  | Ancho | Descripción |
+|---------|--------|-------|-------------|
+| [15:13] | `rd`   | 3     | Registro destino (load) o fuente (store) |
+| [12:10] | `rs`   | 3     | Registro base para el cálculo de dirección |
+| [9:6]   | `funct`| 4     | Operación específica |
+| [5:3]   | `off`  | 3     | Offset corto con signo en complemento a dos (−4 a +3 bytes) |
+| [2]     | `imm`  | 1     | Bandera de inmediato en el siguiente slot |
+| [1:0]   | `opcode`| 2    | `01` = LOST |
+
+**Forma de uso:** `<instr> rd, off(rs)` → `Reg[rd] ← Mem[Reg[rs] + off]`
+
+Con inmediato (`imm = 1`): `<instr> rd, imm(rs)` → `Reg[rd] ← Mem[Reg[rs] + imm]`
+
+#### Tabla de instrucciones LOST
+
+| Instrucción | `funct` | `imm` | Descripción |
+|-------------|---------|-------|-------------|
+| `low`       | `0000`  | 0     | Carga palabra de 32 bits: `rd ← Mem[rs + off]` |
+| `lowi`      | `0000`  | 1     | Carga palabra de 32 bits: `rd ← Mem[rs + imm]` |
+| `lob`       | `0001`  | 0     | Carga byte con extensión de signo: `rd ← sext(Mem[rs + off])` |
+| `lobi`      | `0001`  | 1     | Carga byte con extensión de signo: `rd ← sext(Mem[rs + imm])` |
+| `lobu`      | `0010`  | 0     | Carga byte con extensión de ceros: `rd ← zext(Mem[rs + off])` |
+| `lobui`     | `0010`  | 1     | Carga byte con extensión de ceros: `rd ← zext(Mem[rs + imm])` |
+| `loh`       | `0011`  | 0     | Carga media palabra con signo: `rd ← sext(Mem[rs + off])` |
+| `lohi`      | `0011`  | 1     | Carga media palabra con signo: `rd ← sext(Mem[rs + imm])` |
+| `lohu`      | `0100`  | 0     | Carga media palabra con ceros: `rd ← zext(Mem[rs + off])` |
+| `lohui`     | `0100`  | 1     | Carga media palabra con ceros: `rd ← zext(Mem[rs + imm])` |
+| `stw`       | `0101`  | 0     | Almacena palabra: `Mem[rs + off] ← rd` |
+| `stwi`      | `0101`  | 1     | Almacena palabra: `Mem[rs + imm] ← rd` |
+| `stb`       | `0110`  | 0     | Almacena byte: `Mem[rs + off] ← rd[7:0]` |
+| `stbi`      | `0110`  | 1     | Almacena byte: `Mem[rs + imm] ← rd[7:0]` |
+| `sth`       | `0111`  | 0     | Almacena media palabra: `Mem[rs + off] ← rd[15:0]` |
+| `sthi`      | `0111`  | 1     | Almacena media palabra: `Mem[rs + imm] ← rd[15:0]` |
+
+**Notas:**
+
+- `off` se extiende con signo a 32 bits antes de sumarse a `Reg[rs]`.
+- Si `imm = 1`, se ignora `off`; el slot siguiente contiene un desplazamiento con signo de 16 bits (−32768 a +32767 bytes), que también se extiende con signo a 32 bits.
+- `sext` = extensión de signo; `zext` = extensión de ceros.
+- Un acceso desalineado genera `DIRECCION_INVALIDA`.
+
+### Formato JUMP
+
+#### Estructura interna (16 bits)
+
+| Bits    | Campo  | Ancho | Descripción |
+|---------|--------|-------|-------------|
+| [15:13] | `rd`   | 3     | Registro evaluado (condicional) o dirección (jr) |
+| [12:5]  | `off`  | 8     | Offset de salto (en bundles, múltiplo de 8 bytes) |
+| [4:3]   | `funct`| 2     | Tipo de salto |
+| [2]     | `imm`  | 1     | Bandera de inmediato en el siguiente slot |
+| [1:0]   | `opcode`| 2    | `10` = JUMP |
+
+**Forma de uso:** `<instr> rd, off` → modifica `PC` según la condición
+
+Con inmediato (`imm = 1`): `<instr> rd, imm` → usa el inmediato de 16 bits del slot siguiente como offset.
+
+#### Tabla de instrucciones JUMP
+
+| Instrucción | `funct` | `imm` | Descripción |
+|-------------|---------|-------|-------------|
+| `j`         | `00`    | 0     | Salto incondicional relativo: `PC ← PC + off` |
+| `ji`        | `00`    | 1     | Salto incondicional relativo: `PC ← PC + imm` |
+| `jz`        | `01`    | 0     | Salto condicional si `rd == 0`: `PC ← PC + off` |
+| `jzi`       | `01`    | 1     | Salto condicional si `rd == 0`: `PC ← PC + imm` |
+| `jnz`       | `10`    | 0     | Salto condicional si `rd != 0`: `PC ← PC + off` |
+| `jnzi`      | `10`    | 1     | Salto condicional si `rd != 0`: `PC ← PC + imm` |
+| `jr`        | `11`    | 0     | Salto indirecto: `PC ← Reg[rd]` |
+
+### Formato CRYPTO
+
+#### Estructura interna (16 bits)
+
+| Bits    | Campo              | Ancho | Descripción |
+|---------|--------------------|-------|-------------|
+| [15:13] | `rs1`              | 3     | Operando A (ver tabla de roles por instrucción) |
+| [12:10] | `rs2`              | 3     | Operando B (ver tabla de roles por instrucción) |
+| [9:7]   | `funct`            | 3     | Selector de operación crypto |
+| [6:5]   | `rnd_idx` / `sk_idx` / `word_idx` | 2 | Ronda Feistel, subllave destino o palabra de credencial (0–3) |
+| [4:3]   | `k_idx`            | 2     | Índice de llave en la bóveda (0–3) |
+| [2]     | `reserved`         | 1     | Reservado; debe codificarse siempre como `0` |
+| [1:0]   | `opcode`           | 2     | `11` = CRYPTO |
+
+> [!IMPORTANT]
+>
+> El formato de instrucción visto en la estructura anterior aplica en su totalidad, solamente, en la instrucción `feistel`. La encodificación especfica de cada una de las instrucciones del formato CRYPTO se puede ver en la siguiente tabla:
+>
+> | Instrucción | `rs1` | `rs2` | `funct` | `rnd_idx`/`sk_idx`/`word_idx` | `k_idx` |
+> |-------------|-------|-------|---------|--------------------------------|---------|
+> | `auth`      | —     | —     | `000`   | —                              | —       |
+> | `write`     | dato (subllave 32 bits) | — | `001` | subllave (0–3)       | llave (0–3) |
+> | `feistel`   | L (32 bits) | R (32 bits) | `010` | ronda (0–3)            | llave (0–3) |
+> | `pwd`       | —     | —     | `011`   | —                              | —       |
+> | `rvk`       | —     | —     | `100`   | —                              | —       |
+> | `LOPW`      | palabra de credencial (32 bits) | — | `101` | palabra (0–3)    | —       |
+>
+> **Leyenda:**
+> - **`—`** = campo no utilizado, se codifica como `000` o `00` según su ancho.
+> - **`rs1`** y **`rs2`** son siempre registros de propósito general (3 bits → 8 registros).
+> - **`rnd_idx`**, **`sk_idx`** y **`word_idx`** comparten el mismo campo [6:5]. El nombre cambia según la instrucción:
+>   - En `feistel` → `rnd_idx` (número de ronda, 0–3).
+>   - En `write` → `sk_idx` (número de subllave destino, 0–3).
+>   - En `LOPW` → `word_idx` (palabra de la credencial, 0–3).
+> - **`k_idx`** indica cuál de las 4 llaves de la bóveda se usa en `write` y `feistel`.
+> - El bit `reserved` ocupa la posición [2] utilizada como `imm` en los demás formatos. CRYPTO no consume slots inmediatos, por lo que este bit siempre debe ser `0`.
+
+#### Tabla de instrucciones CRYPTO
+
+| Instrucción | `funct` | Descripción |
+|-------------|---------|-------------|
+| `auth`      | `000`   | Compara atómicamente la credencial de 128 bits construida en `rsa` contra `rsp`. Si coincide y está completa, `AUTH ← 1` e inicia el temporizador. |
+| `write`     | `001`   | Almacena la subllave de 32 bits de `rs1` en la posición `k_idx` (llave 0–3), `sk_idx` (subllave 0–3). Requiere `AUTH = 1`. |
+| `feistel`   | `010`   | Ejecuta una ronda Feistel4: recibe L en `rs1`, R en `rs2`, usa la subllave `rnd_idx` de la llave `k_idx`. Devuelve nuevo L en `rs1` y nuevo R en `rs2`. Requiere `AUTH = 1`. |
+| `pwd`       | `011`   | Copia en `rsp` la credencial completa de 128 bits construida previamente mediante `LOPW`. Requiere `AUTH = 1` y revoca la sesión al completar el cambio. |
+| `rvk`       | `100`   | Revoca la autenticación: `AUTH ← 0`. |
+| `LOPW`      | `101`   | Escribe los 32 bits de `rs1` en la palabra `word_idx` de `rsa`; el índice 0 inicia una credencial nueva. |
+
+**Notas:**
+
+- `word_idx = 00`, `01`, `10` y `11` selecciona respectivamente `rsa[31:0]`, `rsa[63:32]`, `rsa[95:64]` y `rsa[127:96]`.
+- `LOPW` con `word_idx = 00` limpia primero `rsa` y `rsa_valid`, escribe la palabra menos significativa y deja `rsa_valid = 0001`. Los demás índices conservan las palabras cargadas y activan su bit correspondiente de `rsa_valid`.
+- `LOPW` no compara palabras individuales ni modifica `AUTH`.
+- `auth` requiere `rsa_valid = 1111`, produce un único resultado para los 128 bits y limpia `rsa` y `rsa_valid` después del intento.
+- Un `auth` exitoso carga el temporizador de inactividad. Cada operación protegida aceptada lo recarga; su expiración revoca la autenticación.
+- Para cambiar la contraseña, software autenticado ejecuta cuatro `LOPW` y luego `pwd`. La contraseña se actualiza atómicamente, se limpia el buffer temporal y la sesión pasa a `LOCKED`.
+
+---
+
+<div align="right">
+
+<img src="https://markdownviewer.pages.dev/api/image/0vHRcN0FG_gpvkRPJEdgWxjp" alt="porygon" width="50" height="50">
+
+</div>
