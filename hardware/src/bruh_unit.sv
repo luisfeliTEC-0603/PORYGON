@@ -5,10 +5,10 @@ import pkg_vliw::*;
  *
  * @details
  * Combinacional pura: evalua la condicion del salto y calcula el PC destino.
- * El vaciado del pipeline ante un salto tomado es responsabilidad de
- * vliw_processor; aqui no hay estado ni penalizacion oculta.
+ * El programa coloca dos bundles NOP despues de cada salto; no hay flush,
+ * estado local ni penalizacion oculta en esta unidad.
  *
- * Decisiones pendientes de confirmacion por el grupo:
+ * Contrato integrado:
  *   - El offset se interpreta en bundles (OFFSET_SHIFT = 3). isa.md describe
  *     el campo como "en bundles, multiplo de 8 bytes"; leerlo en bytes dejaria
  *     los tres bits bajos sin uso y un alcance de solo +-15 bundles.

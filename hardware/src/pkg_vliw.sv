@@ -11,6 +11,9 @@ package pkg_vliw;
     parameter integer BUNDLE_WIDTH      = 64;
     parameter integer MEMORY_BYTES      = 65536;
 
+    localparam logic [ADDR_WIDTH-1:0] TEXT_BASE_ADDRESS = 32'h0000_0000;
+    localparam logic [ADDR_WIDTH-1:0] DATA_BASE_ADDRESS = 32'h0001_0000;
+
     // Dispatcher has to know what units are busy in order to send NOP to unoccupied unit
     localparam logic [SLOT_WIDTH-1:0] NOP_ENCODING = 16'h0000;
 
@@ -19,6 +22,49 @@ package pkg_vliw;
     typedef logic [SLOT_WIDTH-1:0] slot_t;
     typedef logic [BUNDLE_WIDTH-1:0] bundle_t;
     typedef logic [$clog2(NUM_REGS)-1:0] reg_index_t;
+
+    localparam integer NUM_UNITS = 5;
+    localparam integer UNIT_ALU0 = 0;
+    localparam integer UNIT_ALU1 = 1;
+    localparam integer UNIT_LSU = 2;
+    localparam integer UNIT_BRUH = 3;
+    localparam integer UNIT_CRYPTO = 4;
+    localparam integer WB_ALU0 = 0;
+    localparam integer WB_ALU1 = 1;
+    localparam integer WB_LSU = 2;
+    localparam integer WB_CRYPTO_L = 3;
+    localparam integer WB_CRYPTO_R = 4;
+    localparam integer BUNDLE_BYTES = BUNDLE_WIDTH / 8;
+    // Dos bundles jovenes para instruction_memory combinacional + IF/ID + ID/EX.
+    localparam integer BRANCH_NOP_BUNDLES = 2;
+    localparam address_t RESET_PC = TEXT_BASE_ADDRESS;
+
+    /**
+     * @brief Operacion capturada en ID/EX desde el estado previo del RF.
+     * @details El slot conserva funciones y destinos, incluido el segundo
+     * destino Feistel. Los operandos dejan de depender del RF al emitir.
+     */
+    typedef struct packed {
+        logic valid;
+        slot_t instruction;
+        slot_t immediate;
+        word_t operand_a;
+        word_t operand_b;
+        address_t pc;
+    } issued_op_t;
+
+    /**
+     * @brief Canal de resultado con procedencia para WB y depuracion.
+     * @details valid califica dato, destino, instruccion y PC conjuntamente.
+     * No representa una solicitud que pueda esperar o ser arbitrada.
+     */
+    typedef struct packed {
+        logic valid;
+        reg_index_t destination;
+        word_t data;
+        address_t pc;
+        slot_t instruction;
+    } wb_channel_t;
 
     typedef enum logic [1:0] {
         OPCODE_MATH   = 2'b00,

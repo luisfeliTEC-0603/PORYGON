@@ -5,17 +5,17 @@ module tb_crypto_wb;
 
     logic clk_i;
     logic rst_ni;
-    logic write_enable_i [0:1];
+    logic [0:1] write_enable_i;
     logic auth_failed_i;
     logic access_error_i;
-    reg_index_t write_addr_i [0:1];
-    word_t write_data_i [0:1];
+    logic [0:1][$clog2(NUM_REGS)-1:0] write_addr_i;
+    logic [0:1][DATA_WIDTH-1:0] write_data_i;
 
-    logic write_enable_o [0:1];
+    logic [0:1] write_enable_o;
     logic auth_failed_o;
     logic access_error_o;
-    reg_index_t write_addr_o [0:1];
-    word_t write_data_o [0:1];
+    logic [0:1][$clog2(NUM_REGS)-1:0] write_addr_o;
+    logic [0:1][DATA_WIDTH-1:0] write_data_o;
 
     integer test_count;
     integer error_count;

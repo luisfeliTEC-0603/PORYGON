@@ -20,16 +20,64 @@
 Proyecto académico CE4301, desarrollado **100% por simulación** con Icarus
 Verilog o Verilator. No requiere síntesis ni implementación en FPGA.
 
-El repositorio contiene el skeleton inicial: los módulos SystemVerilog, los
-testbenches y el `Makefile` son archivos vacíos pendientes de implementación.
-Todavía no hay un flujo ejecutable de compilación o simulación. La herramienta de
-carga y extracción de archivos (`tools/data_loader/`) ya está implementada; el
-ensamblador propio (`tools/assembler/`) sigue pendiente. Los documentos de
-microarquitectura, simulación e integración con CE1108 también están pendientes
-de contenido.
+El repositorio contiene el procesador, sus memorias de simulación, testbenches,
+ensamblador, scheduler y herramientas de carga y extracción. El `Makefile`
+permite ejecutar pruebas unitarias y de sistema con Icarus Verilog; `sim.sh`
+ofrece la interfaz corta para cargar programas externos y conservar evidencia.
 
 La ISA define bundles de 64 bits, compuestos por cuatro slots de 16 bits,
 con asignación flexible de unidades funcionales.
+
+## Simulación rápida
+
+La interfaz habitual del proyecto evita escribir directamente los plusargs de
+Verilog:
+
+```bash
+make sim PROG=programa.mem
+make sim PROG=programa.mem DATA=datos.mem
+```
+
+La simulación termina cuando BRUH ejecuta un salto tomado hacia el PC de esa
+misma instrucción, convención usada por el codegen para representar `halt`.
+`DATA` es opcional. Como protección ante programas que no alcanzan el halt,
+`MAX_CYCLES` configura un watchdog y vale 100000 por defecto. Cada programa
+conserva `memory.dump.mem`, `waves.vcd`, `simulation.log` y `results.txt` en
+`sim_output/<programa>/`; al terminar se imprimen las rutas absolutas de esos
+archivos. `make sim` sin `PROG` ejecuta la regresión predeterminada de ALU,
+SUPER-ALU y procesador completo (`sim-top`).
+
+`top_integration.mem` pertenece a una prueba negativa que accede fuera del rango
+de datos de manera intencional. Para validar ese caso se usa `make sim` sin
+`PROG`; ejecutarlo directamente con `PROG` informa correctamente el evento como
+un error arquitectónico.
+
+Para validaciones reproducibles con resultados esperados se usa directamente
+el runner avanzado:
+
+```bash
+./sim.sh programa.mem
+./sim.sh programa.mem --data datos.mem
+./sim.sh programa.mem --max-cycles 200000 --expect r1=10 --expect errors=0
+```
+
+`--max-cycles` cambia el watchdog solo cuando el programa necesita un límite
+mayor. `--out directorio` cambia la ubicación de los artefactos. Sin expectativas
+se informa una ejecución completada, pero no se afirma corrección funcional.
+
+## Extracción rápida
+
+Después de `make sim`, el wrapper local recupera un rango del volcado sin pedir
+su ruta completa:
+
+```bash
+./extract.sh programa 0x10000 32 resultado.bin
+```
+
+El comando lee `sim_output/programa/memory.dump.mem` y guarda la salida como
+`sim_output/programa/resultado.bin`. El cuarto argumento es opcional y vale
+`resultado.bin` por defecto. También se puede pasar como primer argumento la
+ruta explícita a cualquier dump `.mem`.
 
 ## Estructura
 
