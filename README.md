@@ -1,8 +1,5 @@
 # PORYGON
 
-
-
-
 <div align="center">
 
 <img src="https://markdownviewer.pages.dev/api/image/0vHRcN0FG_gpvkRPJEdgWxjp" alt="porygon" width="200" height="200">
@@ -15,45 +12,20 @@
 
 </div>
 
-## Alcance y estado actual
+El repositorio contiene el procesador, sus memorias de simulación, testbenches, ensamblador, scheduler y herramientas de carga y extracción. El `Makefile` permite ejecutar pruebas unitarias y de sistema con Icarus Verilog; `sim.sh` ofrece la interfaz corta para cargar programas externos y conservar evidencia.
 
-Proyecto académico CE4301, desarrollado **100% por simulación** con Icarus
-Verilog o Verilator. No requiere síntesis ni implementación en FPGA.
-
-El repositorio contiene el procesador, sus memorias de simulación, testbenches,
-ensamblador, scheduler y herramientas de carga y extracción. El `Makefile`
-permite ejecutar pruebas unitarias y de sistema con Icarus Verilog; `sim.sh`
-ofrece la interfaz corta para cargar programas externos y conservar evidencia.
-
-La ISA define bundles de 64 bits, compuestos por cuatro slots de 16 bits,
-con asignación flexible de unidades funcionales.
+La ISA define bundles de 64 bits, compuestos por cuatro slots de 16 bits, con asignación flexible de unidades funcionales.
 
 ## Simulación rápida
-
-La interfaz habitual del proyecto evita escribir directamente los plusargs de
-Verilog:
 
 ```bash
 make sim PROG=programa.mem
 make sim PROG=programa.mem DATA=datos.mem
 ```
 
-La simulación termina cuando BRUH ejecuta un salto tomado hacia el PC de esa
-misma instrucción, convención usada por el codegen para representar `halt`.
-`DATA` es opcional. Como protección ante programas que no alcanzan el halt,
-`MAX_CYCLES` configura un watchdog y vale 100000 por defecto. Cada programa
-conserva `memory.dump.mem`, `waves.vcd`, `simulation.log` y `results.txt` en
-`sim_output/<programa>/`; al terminar se imprimen las rutas absolutas de esos
-archivos. `make sim` sin `PROG` ejecuta la regresión predeterminada de ALU,
-SUPER-ALU y procesador completo (`sim-top`).
+La simulación termina cuando BRUH ejecuta un salto tomado hacia el PC de esa misma instrucción, convención usada por el codegen para representar `halt`. Cada programa conserva `memory.dump.mem`, `waves.vcd`, `simulation.log` y `results.txt` en `sim_output/<programa>/`; al terminar se imprimen las rutas absolutas de esos archivos.
 
-`top_integration.mem` pertenece a una prueba negativa que accede fuera del rango
-de datos de manera intencional. Para validar ese caso se usa `make sim` sin
-`PROG`; ejecutarlo directamente con `PROG` informa correctamente el evento como
-un error arquitectónico.
-
-Para validaciones reproducibles con resultados esperados se usa directamente
-el runner avanzado:
+Existe también un script de simulación avanzado: 
 
 ```bash
 ./sim.sh programa.mem
@@ -61,23 +33,17 @@ el runner avanzado:
 ./sim.sh programa.mem --max-cycles 200000 --expect r1=10 --expect errors=0
 ```
 
-`--max-cycles` cambia el watchdog solo cuando el programa necesita un límite
-mayor. `--out directorio` cambia la ubicación de los artefactos. Sin expectativas
-se informa una ejecución completada, pero no se afirma corrección funcional.
+`--max-cycles` cambia el watchdog solo cuando el programa necesita un límite mayor. `--out directorio` cambia la ubicación de los artefactos. Sin expectativas se informa una ejecución completada, pero no se afirma corrección funcional.
 
 ## Extracción rápida
 
-Después de `make sim`, el wrapper local recupera un rango del volcado sin pedir
-su ruta completa:
+Después de `make sim`, el wrapper local recupera un rango del volcado sin pedir su ruta completa:
 
 ```bash
 ./extract.sh programa 0x10000 32 resultado.bin
 ```
 
-El comando lee `sim_output/programa/memory.dump.mem` y guarda la salida como
-`sim_output/programa/resultado.bin`. El cuarto argumento es opcional y vale
-`resultado.bin` por defecto. También se puede pasar como primer argumento la
-ruta explícita a cualquier dump `.mem`.
+El comando lee `sim_output/programa/memory.dump.mem` y guarda la salida como `sim_output/programa/resultado.bin`. El cuarto argumento es opcional y vale `resultado.bin` por defecto. También se puede pasar como primer argumento la ruta explícita a cualquier dump `.mem`.
 
 ## Estructura
 
@@ -94,22 +60,15 @@ ruta explícita a cualquier dump `.mem`.
 
 ## Referencias
 
-- [Enunciado del proyecto](docs/EnunciadoArqui.md): requisitos oficiales.
+- [Enunciado del proyecto](docs/project-description.md): requisitos oficiales.
 - [ISA](docs/isa.md): formatos, instrucciones y codificación.
-- [Guía de implementación](docs/GUIA.md): planificación auxiliar del desarrollo.
 - [Microarquitectura](docs/microarchitecture.md): pendiente de documentar.
 - [Simulación](docs/simulation.md): pendiente de documentar.
 - [Integración con CE1108](docs/compiler-integration.md): pendiente de documentar.
-- [Directrices para agentes](agents.md): autorización, alcance y convenciones.
-
-En caso de conflicto, las instrucciones del usuario prevalecen sobre el enunciado,
-y el enunciado sobre la ISA. La guía es material auxiliar.
 
 ## Herramienta de carga y extracción de archivos
 
-Inyecta archivos de cualquier formato (texto, imágenes, binarios) en la memoria de
-la simulación y recupera los datos procesados. Requiere únicamente Python 3.8 o
-superior, sin dependencias externas.
+Inyecta archivos de cualquier formato (texto, imágenes, binarios) en la memoria de la simulación y recupera los datos procesados. Requiere únicamente Python 3.8 o superior, sin dependencias externas.
 
 | Archivo | Función |
 |---------|---------|
@@ -136,10 +95,7 @@ python tools/data_loader/load_file.py --input archivo.txt --output memory.mem --
 | `--no-pad` | — | No rellenar el último bloque |
 | `--append` | — | Agrega el bloque a un `.mem` existente en lugar de sobrescribirlo |
 
-La salida arranca con una directiva `@`, de modo que `$readmemh` deposita los datos
-en la posición correcta sin necesidad de emitir las posiciones previas. El reporte
-indica el tamaño original, el relleno aplicado, el rango de direcciones ocupado y
-los argumentos exactos que hay que pasarle después a `extract_data.py`.
+La salida arranca con una directiva `@`, de modo que `$readmemh` deposita los datos en la posición correcta sin necesidad de emitir las posiciones previas. El reporte indica el tamaño original, el relleno aplicado, el rango de direcciones ocupado y los argumentos exactos que hay que pasarle después a `extract_data.py`.
 
 ### Extracción
 
@@ -157,9 +113,7 @@ python tools/data_loader/extract_data.py --memory memory_dump.mem --address 0x80
 | `--endian` | `little` | Orden de bytes dentro de la palabra |
 | `--mem-base` | `0x0` | Dirección que corresponde a la posición 0 del arreglo |
 
-Acepta comentarios `//` y `/* */`, directivas `@` y posiciones marcadas con `x` o
-`z`, que se interpretan como cero. Las palabras ausentes del volcado se rellenan con
-cero y se reporta cuántas fueron.
+Acepta comentarios `//` y `/* */`, directivas `@` y posiciones marcadas con `x` o `z`, que se interpretan como cero. Las palabras ausentes del volcado se rellenan con cero y se reporta cuántas fueron.
 
 ### Ejemplo completo
 
@@ -184,18 +138,3 @@ Varios archivos en una misma imagen de memoria:
 python tools/data_loader/load_file.py --input texto.txt  --output data.mem --address 0x8000
 python tools/data_loader/load_file.py --input imagen.bmp --output data.mem --address 0x8100 --append
 ```
-
-## Cobertura prevista de testbenches
-
-Todos los archivos siguientes son placeholders vacíos; esta tabla describe
-la cobertura por implementar, no pruebas ya ejecutadas.
-
-| Archivo | Cobertura prevista |
-|---------|--------------------|
-| `tb_pkg.sv` | Utilidades compartidas de simulación |
-| `tb_alu.sv` | Operaciones aritméticas y lógicas de la ISA |
-| `tb_regfile.sv` | Lecturas y escrituras simultáneas e inmutabilidad de `r0` |
-| `tb_lost.sv` | Cargas, almacenamientos, alineación y extensiones de signo/ceros |
-| `tb_bruh.sv` | Saltos condicionales e incondicionales, destino y `branch_taken` |
-| `tb_crypto.sv` | Ronda Feistel4 y bóveda: cuatro llaves, autenticación válida/fallida, escritura, cambio de contraseña, revocación y rechazo de accesos no autorizados; aislamiento de llaves frente a registros y memoria generales |
-| `tb_top.sv` | Integración del procesador, bundles mixtos y cifrado/descifrado completo contra la referencia |
