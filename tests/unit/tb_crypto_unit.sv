@@ -8,6 +8,7 @@ module tb_crypto_unit;
     localparam logic [127:0] NEW_PASSWORD =
         128'hcafe_babe_1357_9bdf_2468_ace0_dead_beef;
     localparam word_t TEST_SUBKEY = 32'h0f1e_2d3c;
+    localparam integer EXPECTED_AUTH_TIMEOUT_CYCLES = 32;
 
     logic clk_i;
     logic rst_ni;
@@ -607,7 +608,8 @@ module tb_crypto_unit;
         authenticate(NEW_PASSWORD, 1'b1,
                      "new password authenticates");
 
-        for (idle_index = 0; idle_index < 15; idle_index = idle_index + 1) begin
+        for (idle_index = 0; idle_index < EXPECTED_AUTH_TIMEOUT_CYCLES - 1;
+             idle_index = idle_index + 1) begin
             idle_cycle();
         end
         expect_bit(authenticated_o, 1'b1,
