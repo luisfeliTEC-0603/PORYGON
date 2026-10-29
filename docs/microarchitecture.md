@@ -44,8 +44,8 @@ En cada flanco de reloj, el PC avanza ocho bytes (`BUNDLE_BYTES`) o toma el dest
 > [!IMPORTANT]
 >
 > **Consideración sobre saltos:**
-> 
-> Un salto no invalida IF/ID. Los bundles jóvenes que ya entraron al pipeline deben ser NOPs insertados por el software. 
+>
+> Un salto no invalida IF/ID. Los bundles jóvenes que ya entraron al pipeline deben ser NOPs insertados por el software.
 > El ISA no define un mecanismo de flush por hardware.
 
 > [!TIP]
@@ -58,7 +58,7 @@ En cada flanco de reloj, el PC avanza ocho bytes (`BUNDLE_BYTES`) o toma el dest
 
 ### Decode/Dispatch (ID)
 
-**Módulo:** `idd_stage.sv` (con submódulos en `hardware/src/idd/`)
+**Módulo:** `idd_stage.sv` (con submódulos en `rtl/core/decode/`)
 
 Separa el bundle de 64 bits en cuatro slots de 16 bits, decodifica cada slot, detecta NOPs, gestiona los inmediatos y genera las direcciones de lectura del banco de registros.
 La asignación de slots a unidades funcionales es **flexible**: cualquier slot puede contener cualquier tipo de instrucción, y el dispatcher redirige cada operación a la unidad correspondiente según su opcode.
@@ -91,9 +91,9 @@ La convención es que el inmediato siempre va después del opcode.
 ```
 
 > [!NOTE]
-> 
+>
 > **Salidas hacia ID/EX:**
-> 
+>
 > El dispatcher produce, para cada unidad, un `issued_op_t` que contiene la instrucción, el inmediato, los operandos leídos del banco de registros y el PC del bundle.
 > Estos datos se capturan en registros de frontera ID/EX.
 
@@ -238,8 +238,8 @@ Nuevo R = L XOR F(R, k)
 ```
 
 > [!IMPORTANT]
-> 
-> **Bóveda de llaves (`crypto/key_vault.sv`):**
+>
+> **Bóveda de llaves (`rtl/core/crypto/key_vault.sv`):**
 >
 > Almacena cuatro llaves de 128 bits (16 subllaves de 32 bits).
 > Mantiene los registros internos `rsp` (contraseña de 128 bits), `rsa` (credencial candidata de 128 bits, write-only), `rsa_valid` (4 bits), `state` (FSM de autenticación) y `auth_timer`.
@@ -258,7 +258,7 @@ Nuevo R = L XOR F(R, k)
 >
 > **Puertos de lectura:**
 >
-> 10 puertos asíncronos de 3 bits de dirección y 32 bits de datos. 
+> 10 puertos asíncronos de 3 bits de dirección y 32 bits de datos.
 
 Cada unidad despachada consume dos puertos (operando A y operando B). La asignación es:
 
@@ -423,28 +423,28 @@ El hardware **no** resuelve dependencias de control. El scheduler debe garantiza
 
 | Módulo | Responsabilidad | Archivo |
 |--------|-----------------|---------|
-| `porygon_system` | Sistema completo (procesador + memorias) | `hardware/src/porygon_system.sv` |
-| `vliw_processor` | Núcleo VLIW (IF/ID/EX/WB) | `hardware/src/vliw_processor.sv` |
-| `fetch_stage` | PC y frontera IF/ID | `hardware/src/fetch_stage.sv` |
-| `idd_stage` | Decodificación y despacho | `hardware/src/idd/idd_stage.sv` |
-| `bundle_splitter` | División del bundle en slots | `hardware/src/idd/bundle_splitter.sv` |
-| `nop_detector` | Detección de NOPs | `hardware/src/idd/nop_detector.sv` |
-| `imm_mux` | Reemplazo de inmediatos por NOP | `hardware/src/idd/imm_mux.sv` |
-| `imm_router` | Cálculo del inmediato por pipe | `hardware/src/idd/imm_router.sv` |
-| `pipe_gate` | Enrutamiento a unidad funcional | `hardware/src/idd/pipe_gate.sv` |
-| `rf_addr_gen` | Direcciones de lectura del RF | `hardware/src/idd/rf_addr_gen.sv` |
-| `register_file` | Banco de registros | `hardware/src/register_file.sv` |
-| `execution_stage` | Integración de unidades | `hardware/src/execution_stage.sv` |
-| `alu_unit` | ALU general | `hardware/src/alu_unit.sv` |
-| `super_alu_unit` | ALU especializada | `hardware/src/super_alu_unit.sv` |
-| `lost_unit` | Load/Store Unit | `hardware/src/lost_unit.sv` |
-| `bruh_unit` | Branch Unit | `hardware/src/bruh_unit.sv` |
-| `crypto_unit` | Unidad criptográfica | `hardware/src/crypto/crypto_unit.sv` |
-| `key_vault` | Bóveda de llaves | `hardware/src/crypto/key_vault.sv` |
-| `feistel_round_logic` | Ronda Feistel4 | `hardware/src/crypto/feistel_round_logic.sv` |
-| `crypto_decode` | Decodificación CRYPTO | `hardware/src/crypto/crypto_decode.sv` |
-| `crypto_wb` | Frontera EX/WB de Crypto | `hardware/src/crypto/crypto_wb.sv` |
-| `writeback_stage` | Arbitraje de escritura | `hardware/src/writeback_stage.sv` |
-| `instruction_memory` | Memoria de instrucciones | `hardware/src/instruction_memory.sv` |
-| `memory_sp_ram` | Memoria de datos | `hardware/src/memory_sp_ram.sv` |
-| `pkg_vliw` | Tipos y constantes | `hardware/src/pkg_vliw.sv` |
+| `porygon_system` | Sistema completo (procesador + memorias) | `rtl/porygon_system.sv` |
+| `vliw_processor` | Núcleo VLIW (IF/ID/EX/WB) | `rtl/core/vliw_processor.sv` |
+| `fetch_stage` | PC y frontera IF/ID | `rtl/core/fetch_stage.sv` |
+| `idd_stage` | Decodificación y despacho | `rtl/core/decode/idd_stage.sv` |
+| `bundle_splitter` | División del bundle en slots | `rtl/core/decode/bundle_splitter.sv` |
+| `nop_detector` | Detección de NOPs | `rtl/core/decode/nop_detector.sv` |
+| `imm_mux` | Reemplazo de inmediatos por NOP | `rtl/core/decode/imm_mux.sv` |
+| `imm_router` | Cálculo del inmediato por pipe | `rtl/core/decode/imm_router.sv` |
+| `pipe_gate` | Enrutamiento a unidad funcional | `rtl/core/decode/pipe_gate.sv` |
+| `rf_addr_gen` | Direcciones de lectura del RF | `rtl/core/decode/rf_addr_gen.sv` |
+| `register_file` | Banco de registros | `rtl/core/register_file.sv` |
+| `execution_stage` | Integración de unidades | `rtl/core/execution_stage.sv` |
+| `alu_unit` | ALU general | `rtl/core/alu_unit.sv` |
+| `super_alu_unit` | ALU especializada | `rtl/core/super_alu_unit.sv` |
+| `lost_unit` | Load/Store Unit | `rtl/core/lost_unit.sv` |
+| `bruh_unit` | Branch Unit | `rtl/core/bruh_unit.sv` |
+| `crypto_unit` | Unidad criptográfica | `rtl/core/crypto/crypto_unit.sv` |
+| `key_vault` | Bóveda de llaves | `rtl/core/crypto/key_vault.sv` |
+| `feistel_round_logic` | Ronda Feistel4 | `rtl/core/crypto/feistel_round_logic.sv` |
+| `crypto_decode` | Decodificación CRYPTO | `rtl/core/crypto/crypto_decode.sv` |
+| `crypto_wb` | Frontera EX/WB de Crypto | `rtl/core/crypto/crypto_wb.sv` |
+| `writeback_stage` | Arbitraje de escritura | `rtl/core/writeback_stage.sv` |
+| `instruction_memory` | Memoria de instrucciones | `rtl/memory/instruction_memory.sv` |
+| `memory_sp_ram` | Memoria de datos | `rtl/memory/memory_sp_ram.sv` |
+| `pkg_vliw` | Tipos y constantes | `rtl/pkg_vliw.sv` |

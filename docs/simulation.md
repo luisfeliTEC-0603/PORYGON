@@ -7,10 +7,10 @@ archivos. La codificación de instrucciones está en [isa.md](isa.md).
 
 ## 1. Qué constituye el sistema simulado
 
-`hardware/src/porygon_system.sv` conecta tres módulos: `vliw_processor`,
+`rtl/porygon_system.sv` conecta tres módulos: `vliw_processor`,
 `instruction_memory` y `memory_sp_ram`. El procesador conserva puertos de
 instrucciones y datos independientes; el *wrapper* les conecta las memorias
-concretas de simulación. `hardware/tb/tb_system.sv` genera reloj y reset, carga
+concretas de simulación. `tests/integration/tb_system.sv` genera reloj y reset, carga
 las imágenes `.mem`, observa la terminación y escribe el volcado de RAM y un
 resumen. El reloj del testbench invierte su valor cada 5 ns; su período es
 10 ns. Ese tiempo es una escala de simulación, no una medición de frecuencia
@@ -42,7 +42,7 @@ El PC avanza **8 bytes** por bundle. Un slot puede contener una instrucción
 `MATH`, `LOST`, `JUMP` o `CRYPTO`, independientemente de su posición. Si la
 instrucción activa `imm`, el slot inmediatamente siguiente es su literal de
 16 bits y **no** se ejecuta como otra instrucción. `0x0000` es el NOP. El
-despachador `hardware/src/idd/idd_stage.sv` limpia los literales, selecciona
+despachador `rtl/core/decode/idd_stage.sv` limpia los literales, selecciona
 una operación para cada unidad, enruta el literal correspondiente y produce
 las direcciones de lectura del banco de registros. Cuando más de un slot
 solicita la misma unidad en un bundle, `pipe_gate.sv` elige el de **menor
@@ -104,7 +104,7 @@ fin de programa un salto tomado hacia el PC de su propia instrucción.
 
 ## 2. Banco de registros y estado criptográfico
 
-`hardware/src/register_file.sv` modela **ocho GPR de 32 bits** (`r0`–`r7`),
+`rtl/core/register_file.sv` modela **ocho GPR de 32 bits** (`r0`–`r7`),
 con diez puertos de lectura combinacional y cinco puertos de escritura
 síncrona. Los diez puertos corresponden a dos operandos para cada una de las
 cinco unidades; los cinco canales WB corresponden a ALU0, ALU1, load y las
@@ -113,7 +113,7 @@ forma asíncrona. `r0` siempre entrega cero y se ignoran sus escrituras. PC y
 estado de autenticación son estados separados; la bóveda no forma parte del
 arreglo de GPR.
 
-`hardware/src/crypto/key_vault.sv` mantiene cuatro llaves de 128 bits,
+`rtl/core/crypto/key_vault.sv` mantiene cuatro llaves de 128 bits,
 divididas en cuatro subllaves de 32 bits cada una, más la credencial temporal,
 la contraseña almacenada, el estado de autenticación y un temporizador de
 inactividad de **32 ciclos** por defecto. El reset de esta bóveda es síncrono:
@@ -188,7 +188,7 @@ pueden requerir unos bytes adicionales de relleno entre ellas. Los
 parámetros que representan arreglos guardan una dirección de 4 bytes en la
 pila, mientras que los elementos del arreglo conservan su ancho declarado.
 
-## 4. Ensamblador propio y generación de instrucciones
+## 4. Toolchain de PIPER-COMPILER y generación de instrucciones
 
 El ensamblador utilizado está en el repositorio del compilador `PIPER-COMPILER`, en
 `porygon_assembler/`, y trabaja junto con `scheduler/`. Forma parte de la ruta
@@ -198,6 +198,11 @@ que convierte un programa Piper (`.rwt`) en instrucciones para este simulador:
 fuente.rwt → generación de ASM lineal → parser y codificador PORYGON
            → scheduler y verificador → programa.mem → $readmemh
 ```
+
+PORYGON conserva el RTL, sus pruebas y las herramientas de ejecución y memoria.
+La implementación del ensamblador y del scheduler se mantiene únicamente en
+PIPER-COMPILER, junto con sus pruebas; este repositorio consume su `.mem` de
+salida sin compilar ni copiar esas herramientas.
 
 `bin/pipoc mem fuente.rwt -o programa.mem` ejecuta esa ruta completa. También
 se puede comenzar con ASM PORYGON escrito a mano mediante
@@ -232,9 +237,10 @@ mnemónicos exige verificar cada instrucción de la ISA por separado.
 
 ## 5. Carga, ejecución y extracción de archivos
 
-`tools/data_loader/load_file.py` lee bytes sin interpretar su formato. Por
+`tools/memory/load_file.py` lee bytes sin interpretar su formato. Por
 defecto emite una imagen de **8 bits por posición**, relativa a base `0x10000`,
-con `@` y hasta 65 536 bytes. Verifica que dirección, relleno y longitud
+con `@` y hasta 65 536 bytes. `--address` es obligatorio y expresa una dirección
+física del segmento de datos. Verifica que dirección, relleno y longitud
 quepan en RAM; avisa si se invade la pila. Añade ceros hasta un múltiplo de
 ocho bytes para bloques Feistel, salvo `--no-pad`. Informa tanto la longitud
 original como la longitud escrita; para recuperar el archivo original debe
@@ -246,21 +252,25 @@ reconfigura el arreglo de bytes de `memory_sp_ram.sv`.
 Ejemplo desde la raíz de PORYGON (las rutas de programa y archivo son ejemplos):
 
 ```sh
-python3 tools/data_loader/load_file.py --input entrada.bin \
+python3 tools/memory/load_file.py --input entrada.bin \
   --output datos.mem --address 0x10000
 make sim PROG=programa.mem DATA=datos.mem MAX_CYCLES=200000
-python3 tools/data_loader/extract_data.py \
-  --memory sim_output/programa/memory.dump.mem \
+python3 tools/memory/extract_data.py \
+  --memory build/sim/programa/memory.dump.mem \
   --address 0x10000 --size 1234 --output salida.bin
 ```
 
 El testbench carga las imágenes mediante `$readmemh` y al terminar llama
 `$writememh` para volcar los **65 536 bytes** de RAM. `extract_data.py` analiza
 directivas `@` y comentarios del volcado, reconstruye el rango solicitado y
-rechaza posiciones ausentes o con `x/z` por defecto; `--allow-uninitialized`
-solo permite completar huecos ausentes con cero. `sim.sh`/`make sim PROG=...`
+rechaza posiciones ausentes o con `x/z` en el rango solicitado;
+`--allow-uninitialized` solo permite completar huecos ausentes con cero y
+siempre rechaza `x/z`. `tools/sim.sh`/`make sim PROG=...`
 generan `results.txt`, `simulation.log`, `memory.dump.mem` y `waves.vcd`;
-el watchdog es 100 000 ciclos por defecto. Un `halted=1` solo dice que se vio
+el destino por defecto es `build/sim/<programa>/` y el watchdog es
+100 000 ciclos. `--out` permite elegir otro directorio. El wrapper
+`tools/memory/extract.sh programa dirección tamaño [salida]` recupera un rango
+del volcado por el nombre de la simulación. Un `halted=1` solo dice que se vio
 un salto al propio PC; `errors=0` solo cubre los eventos que el testbench
 cuenta. Estas cifras no certifican por sí solas el valor de una operación.
 Cuando el código generado por Piper detecta un índice de arreglo fuera de

@@ -42,6 +42,10 @@ flowchart TD
 
 El ensamblador y scheduler usados en esta integración están en
 `PIPER-COMPILER/porygon_assembler/` y `PIPER-COMPILER/scheduler/`.
+Su código y sus pruebas se mantienen en ese repositorio. PORYGON conserva
+el RTL en `rtl/`, la verificación del hardware en `tests/` y las herramientas
+de ejecución y memoria en `tools/`. Los programas de prueba del procesador
+pueden consumir imágenes generadas por Piper sin duplicar su toolchain.
 
 ## 3. Contrato de salida del compilador
 
@@ -208,10 +212,11 @@ eventos del simulador; estas llamadas no producen un booleano en Piper.
 ## 5. Carga, ejecución y observación
 
 1. `pipoc mem` genera la imagen de instrucciones calendarizada y verificada.
-2. Opcionalmente, `load_file.py` convierte un archivo en una imagen de datos
-   de ocho bits por posición. El índice cero de esa imagen corresponde a
-   la dirección física `0x10000`: `@00000020` carga desde `0x10020`.
-3. `sim.sh` construye el sistema y entrega las imágenes a `tb_system`.
+2. Opcionalmente, `tools/memory/load_file.py` convierte un archivo en una
+   imagen de datos de ocho bits por posición. Requiere la dirección física
+   en `--address`; la base del arreglo es `0x10000` por defecto:
+   `@00000020` carga desde `0x10020`.
+3. `tools/sim.sh` construye el sistema y entrega las imágenes a `tb_system`.
    El testbench las carga con `$readmemh` y aplica el reset.
 4. Fetch obtiene un bundle; decode separa instrucciones y literales y lee
    operandos; execute activa las unidades; writeback actualiza los GPR.
@@ -226,9 +231,12 @@ eventos del simulador; estas llamadas no producen un booleano en Piper.
 | `memory.dump.mem` | Bytes finales de toda la RAM; no incluye GPR ni instrucciones. |
 | `waves.vcd` | Evolución temporal de señales para depuración. |
 
-Los resultados aritméticos se ven en GPR; para aparecer en el volcado deben
-almacenarse en RAM. `extract_data.py` recupera un rango por dirección física
-y longitud. Si el loader añadió relleno para completar bloques de ocho bytes,
+Las salidas se guardan por defecto en `build/sim/<programa>/`. Los resultados
+aritméticos se ven en GPR; para aparecer en el volcado deben almacenarse en
+RAM. `tools/memory/extract_data.py` recupera un rango por dirección física y
+longitud. Rechaza posiciones ausentes y valores `x/z` en el rango solicitado;
+`--allow-uninitialized` permite completar únicamente los huecos ausentes con
+cero. Si el loader añadió relleno para completar bloques de ocho bytes,
 se usa la longitud original al extraer el archivo.
 
 ## 6. Evidencia de validación: factorial
@@ -315,6 +323,11 @@ Revisiones de referencia de la implementación:
 
 El resumen de registros y eventos se conserva en
 [factorial.results.txt](evidence/compiler-integration/factorial.results.txt).
+Esta evidencia corresponde a las revisiones anteriores y conserva sus
+resultados originales; la reorganización de carpetas no constituye una
+nueva validación funcional. En esas revisiones las salidas se escribían en
+`PORYGON/sim_output/factorial/`; los comandos actuales usan
+`PORYGON/build/sim/factorial/`.
 
 | Indicador | Esperado | Observado |
 | --- | --- | --- |
@@ -326,8 +339,8 @@ El resumen de registros y eventos se conserva en
 | Ciclos ejecutados | Menos de 1000 | 625 |
 | PC de terminación, `halt_pc` | Final normal generado para esta imagen | `0x000006D8` |
 
-La ejecución genera los siguientes archivos en
-`PORYGON/sim_output/factorial/`:
+Con la organización actual, la ejecución genera los siguientes archivos en
+`PORYGON/build/sim/factorial/`:
 
 | Archivo | Uso en esta prueba |
 | --- | --- |
