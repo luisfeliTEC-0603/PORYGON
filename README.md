@@ -48,10 +48,16 @@ Los programas `.mem` incluidos se pueden ejecutar sin instalar el compilador Pip
 
 ## Ejecución
 
-Ejecutar las pruebas básicas de ALU, SuperALU e integración del procesador:
+Ejecutar la simulación de integración del procesador (`tb_top`):
 
 ```bash
 make sim
+```
+
+Ejecutar las pruebas unitarias disponibles de ALU, SuperALU, registros, LOST, BRUH y CRYPTO, junto con las herramientas de memoria:
+
+```bash
+make test
 ```
 
 Para ejecutar un programa, indicar su imagen de instrucciones y, opcionalmente, su imagen de datos:

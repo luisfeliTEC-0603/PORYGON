@@ -42,18 +42,23 @@ $(BUILD_DIR)/vliw_processor.vvp: $(RTL_SOURCES)
 	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s vliw_processor -o $@ $^
 
-.PHONY: all sim sim-alu sim-super-alu sim-regfile sim-bruh sim-feistel \
+.PHONY: all sim test test-tools sim-alu sim-super-alu sim-regfile sim-lost sim-bruh sim-feistel \
 	sim-crypto-decode sim-key-vault sim-crypto-wb sim-crypto-unit sim-crypto \
 	sim-top sim-system clean
 
 all: sim
 
 ifeq ($(strip $(PROG)),)
-sim: sim-alu sim-super-alu sim-top
+sim: sim-top
 else
 sim:
 	@./tools/sim.sh "$(PROG)" $(if $(strip $(DATA)),--data "$(DATA)") $(if $(strip $(MAX_CYCLES)),--max-cycles "$(MAX_CYCLES)")
 endif
+
+test: sim-alu sim-super-alu sim-regfile sim-lost sim-bruh sim-crypto test-tools
+
+test-tools:
+	sh tests/tools/test_loader.sh
 
 sim-top: $(BUILD_DIR)/top.vvp | $(WAVE_DIR)
 	$(VVP) $<
