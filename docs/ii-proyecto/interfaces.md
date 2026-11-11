@@ -9,13 +9,13 @@ flowchart TB
         L1 -->|No| RES["Reservar entrada de L1<br/>Consultar write buffer"]
         RES --> WB{"¿Estado de la línea en WB?"}
         WB -->|Disponible| FWD["Forwarding de línea completa<br/>Conservar dirty"]
-        WB -->|En servicio| WAIT_WB["Esperar confirmación<br/>de instalación en L2"]
+        WB -->|En servicio| WAIT_WB["Esperar consumo de confirmación<br/>de instalación en L2"]
         WB -->|Ausente| GET["Solicitar línea a L2"]
         WAIT_WB --> GET
         GET --> L2{"¿Hit en L2?"}
         L2 -->|Sí| HIT["Ofrecer línea completa<br/>Conservar dirty"]
         L2 -->|No| EB{"¿Conflicto en eviction buffer?"}
-        EB -->|Sí| WAIT_EB["Esperar confirmación<br/>de escritura de esa línea"]
+        EB -->|Sí| WAIT_EB["Esperar consumo de confirmación<br/>de escritura sin error de esa línea"]
         EB -->|No| READ["Controlador: iniciar lectura<br/>y cruce al reloj de memoria"]
         WAIT_EB --> READ
         READ --> BURST["Memoria: completar burst<br/>de ocho palabras"]
@@ -31,12 +31,12 @@ flowchart TB
     subgraph DESALOJOS["Desalojos y drenado de buffers"]
         V1["Víctima de L1<br/>Limpia o sucia"] --> PUSH_WB["Write buffer acepta la línea<br/>L1 libera su vía"]
         PUSH_WB --> DRAIN_WB["Drenado FIFO hacia L2"]
-        DRAIN_WB --> INST_L2["L2 instala y confirma<br/>WB libera su entrada"]
+        DRAIN_WB --> INST_L2["L2 instala y confirma<br/>WB consume confirmación y libera entrada"]
         V2["Víctima de L2"] --> DIRTY{"¿Está sucia?"}
         DIRTY -->|No| DISCARD(["Invalidar y liberar vía de L2"])
         DIRTY -->|Sí| PUSH_EB["Eviction buffer acepta la línea<br/>L2 libera su vía"]
         PUSH_EB --> WRITE["Drenado FIFO al controlador<br/>Burst de escritura a memoria"]
-        WRITE --> ACK(["Memoria confirma las ocho palabras<br/>EB libera su entrada"])
+        WRITE --> ACK(["Memoria confirma las ocho palabras<br/>EB consume confirmación sin error y libera entrada"])
     end
 ```
 
@@ -109,14 +109,15 @@ entrada por `id`; retirar una entrada no altera el orden de las restantes.
 
 **Aceptación y finalización.** `wb_push_valid && wb_push_ready` entrega la
 víctima al buffer: L1 invalida su vía en ese flanco. No hay confirmación posterior
-hacia L1. El buffer conserva la entrada hasta instalarla en L2 o entregarla por
-forwarding. La capacidad por defecto es `WRITE_BUFFER_DEPTH=4`.
+hacia L1. El buffer conserva la entrada hasta consumir `wb_done` de L2 o hasta
+`wb_fwd_valid && wb_fwd_ready`. La capacidad por defecto es `WRITE_BUFFER_DEPTH=4`.
 
 La consulta no tiene handshake ni encola una operación. Con `wb_probe_valid=1`,
 `hit/busy` describen el estado actual para esa base. L1 mantiene la consulta
 mientras espera una coincidencia ocupada o su forwarding. Si no hay hit,
 puede solicitar la línea a L2. Si hay hit libre, el buffer presenta `wb_fwd_valid`;
-si está ocupado, L1 espera la confirmación de instalación y vuelve a consultar.
+si está ocupado, L1 espera el consumo de la confirmación de instalación por WB
+y vuelve a consultar.
 
 **Espera e identificación.** La entrada elegida para forwarding queda reservada
 hasta `wb_fwd_valid && wb_fwd_ready`; entonces se retira conservando dirty.
@@ -169,7 +170,9 @@ de instalar la línea en su vía y antes de responder a la CPU.
 **Aceptación y finalización.** Aceptar `wb_install` ocupa una posición de L2;
 no libera la entrada del write buffer. L2 instala la línea cuando dispone de
 vía y resuelve el desalojo necesario. Después presenta `wb_done_valid`.
-Al consumir `wb_done`, el buffer retira la entrada y L2 libera el `id`.
+Solo `wb_done_valid && wb_done_ready` retira la entrada del buffer y libera el
+`id` de L2. La instalación ya terminada conserva ambos ocupados mientras su
+confirmación no se consuma.
 
 **Espera e identificación.** Hasta aceptar la instalación, el buffer conserva
 su oferta completa. Después conserva la entrada en servicio y asocia el `id`
@@ -316,7 +319,7 @@ cuatro búsquedas simultáneas ni el número de bancos o puertos físicos.
 | Caso | Comportamiento esperado |
 | --- | --- |
 | WB contiene `[A, B, C]`; L1 pide B libre | `wb_fwd` entrega B y su dirty; quedan `[A, C]`. No se acepta `l2_get` para B. |
-| B se ofrece a L2 y `wb_install_ready=0`; L1 pide B | B ya está en servicio; espera aceptación y `wb_done`, después se pide a L2. |
+| B se ofrece a L2 y `wb_install_ready=0`; L1 pide B | B ya está en servicio; espera aceptación y consumo de `wb_done`, después se pide a L2. |
 | Un hit L2 vuelve con la vía destino de L1 ocupada | L1 acepta en su entrada; L2 invalida y libera el `id`; la víctima de L1 puede seguir esperando WB. |
 | EB contiene A en servicio; L2 necesita leer A | No se acepta `mem_rd_req` hasta consumir la confirmación de escritura de A. Otras líneas no exigen vaciar EB. |
 | EB lleno y L2 necesita desalojar una víctima sucia | `eb_push` permanece estable; EB y controlador continúan drenando. Operaciones independientes pueden avanzar. |

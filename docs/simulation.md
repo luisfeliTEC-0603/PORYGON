@@ -101,6 +101,14 @@ firmados en unidades de bundle; `jr` usa la dirección absoluta del registro.
 No hay *flush*. El programa debe colocar **dos bundles NOP después del salto**
 para cubrir los bundles jóvenes ya encaminados. El testbench reconoce como
 fin de programa un salto tomado hacia el PC de su propia instrucción.
+En la iteración 1 cierra el conteo en esa detección y observa las salidas tras
+`#1`, sin esperar explícitamente operaciones anteriores pendientes. Para la
+integración de Proyecto II, reconocer el marcador detendrá fetch y admisión e
+invalidará los bundles posteriores ya capturados. El pipeline seguirá avanzando
+hasta completar el bundle marcador y todas las operaciones anteriores, según el
+[contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#parada-del-programa-y-vaciado-del-pipeline).
+La medición cerrará en esa última finalización; el drenado posterior de líneas
+dirty queda fuera de esa ventana, según el [contrato de métricas](ii-proyecto/metrics.md#2-periodo-de-medición).
 
 ## 2. Banco de registros y estado criptográfico
 
@@ -116,9 +124,9 @@ arreglo de GPR.
 `rtl/core/crypto/key_vault.sv` mantiene cuatro llaves de 128 bits,
 divididas en cuatro subllaves de 32 bits cada una, más la credencial temporal,
 la contraseña almacenada, el estado de autenticación y un temporizador de
-inactividad de **32 ciclos** por defecto. El reset de esta bóveda es síncrono:
-limpia las llaves y la credencial temporal, restaura la contraseña inicial y
-cierra la sesión. `lopw` carga palabras de la credencial; `auth` la compara;
+inactividad de **32 ciclos del reloj de CPU** por defecto. El reset de esta
+bóveda es síncrono: limpia las llaves y la credencial temporal, restaura la
+contraseña inicial y cierra la sesión. `lopw` carga palabras de la credencial; `auth` la compara;
 `write`, `feistel` y `pwd` requieren autorización; `rvk` la revoca. Una ronda
 autorizada usa internamente
 `F(R,k) = (ROL32(R,5) + k) XOR ROL32(R,13)` y produce `L' = R`,
@@ -128,6 +136,12 @@ fallida y acceso rechazado son **eventos de diagnóstico**; el procesador actual
 no implementa un registro de estado arquitectónico general ni una trampa que
 desvíe el PC por esos eventos. Esto distingue al modelo implementado de las
 aspiraciones descritas en la ISA y el enunciado.
+
+Para Proyecto II, el temporizador seguirá contando ciclos reales aunque el
+pipeline esté congelado por memoria y podrá revocar la sesión durante esa
+espera. Las instrucciones criptográficas retenidas no se aceptarán ni recargarán
+la sesión hasta avanzar. La regla completa se define en el
+[contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#temporizador-de-autenticación).
 
 ## 3. Memorias y direcciones efectivas
 

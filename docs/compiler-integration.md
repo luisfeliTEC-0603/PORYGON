@@ -104,7 +104,15 @@ con literal de 16 bits. `jr` recibe una dirección absoluta en bytes, alineada
 a ocho. Después de cada salto se reservan **dos bundles NOP**, porque el
 pipeline no hace flush de los bundles recientes.
 
-No existe una instrucción `halt` en el procesador: el codegen emite un salto a su propia etiqueta. `tb_system` detecta ese salto tomado y termina la simulación, el halt es impementado por software.
+No existe una instrucción `halt` en el procesador: el codegen emite un salto a
+su propia etiqueta. En la iteración 1, `tb_system` cierra el conteo al detectar
+ese salto tomado y observa las salidas tras `#1`. Para Proyecto II, ese salto
+marca el final del programa: al aceptarlo en EX se detienen fetch y admisión,
+se invalidan los bundles posteriores ya capturados y se permite completar su
+bundle y todas las operaciones anteriores. Los NOPs posteriores al marcador
+no se ejecutan; los demás saltos conservan sus dos bundles de retardo. La regla
+se define en el [contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#parada-del-programa-y-vaciado-del-pipeline)
+y el cierre de medición, en el [contrato de métricas](ii-proyecto/metrics.md#2-periodo-de-medición).
 
 ## 4. Contratos del codegen
 
@@ -199,11 +207,14 @@ limpia el buffer tras el intento. Las subllaves permanecen dentro de la bóveda.
 El reset las pone en cero y restaura la contraseña de simulación
 `0x146317BBDA48DB07A9A67018DFF0F76A`.
 
-La sesión expira tras **32 ciclos** de inactividad en el RTL por defecto;
-una operación protegida aceptada recarga el temporizador. El programa debe
-autenticar de nuevo cuando la separación entre operaciones lo requiera,
+La sesión expira tras **32 ciclos del reloj de CPU** de inactividad por defecto;
+la actividad autorizada de `write`, `feistel` y `lopw` recarga el temporizador.
+El programa debe autenticar de nuevo cuando la separación entre operaciones lo requiera,
 considerando también los NOPs insertados. El scheduler conserva el orden del
-estado criptográfico, pero no inserta reautenticación.
+estado criptográfico, pero no inserta reautenticación. En Proyecto II, las
+esperas de memoria también consumen ese tiempo: el temporizador continúa con
+el pipeline detenido. Una instrucción retenida no recarga la sesión; se valida
+al aceptarse, según el [contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#temporizador-de-autenticación).
 
 La instrucción `pwd` existe en la ISA y el RTL, pero **no tiene intrínseca
 Piper** en esta versión. Un fallo de autenticación se observa mediante los

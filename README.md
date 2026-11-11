@@ -95,6 +95,7 @@ El archivo queda en `build/sim/kit_texto_corto/`. `make clean` elimina el conten
 
 ## Documentación
 
+- [Instrucciones para agentes y aprobación de diseños](AGENTS.md)
 - [Descripción del proyecto](docs/project-description.md)
 - [ISA](docs/isa.md)
 - [Microarquitectura](docs/microarchitecture.md)

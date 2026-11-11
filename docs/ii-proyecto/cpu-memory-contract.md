@@ -144,14 +144,76 @@ estaba en L2, se obtiene de memoria principal.
 - **Respuesta sin consumir:** con `rsp_valid=1` y `rsp_ready=0`, L1 conserva
   valid, dato y error hasta que la CPU pueda capturarlos.
 - **Pipeline detenido:** se conservan PC, registros, resultados y metadatos;
-  se inhiben escrituras al RF, saltos y operaciones sobre la bóveda. La lógica
-  de solicitud pendiente, las cachés y los buffers siguen funcionando.
+  se inhiben escrituras al RF, saltos y aceptación de instrucciones criptográficas.
+  La lógica de solicitud pendiente, las cachés y los buffers siguen funcionando.
+  El temporizador de autenticación y su expiración siguen activos, según la
+  regla siguiente.
 - **Acceso inválido:** la LSU rechaza desalineación; L1 responde con error a
   direcciones fuera de rango. Se emite un diagnóstico único y se suprime el WB
   del load. Los otros slots continúan al avanzar.
 - **Reset activo:** no hay transferencias y se cancelan operaciones pendientes.
 - **Timeout de memoria:** se informa error y se detiene la simulación según la
   [política de timeout](hierarchy.md#timeout).
+
+### Parada del programa y vaciado del pipeline
+
+La condición de parada es un salto tomado hacia el PC del propio salto. Se
+reconoce una sola vez, en el flanco en que el bundle avanza efectivamente desde
+EX. Un salto retenido por un stall no activa la parada hasta poder avanzar.
+
+- En ese mismo flanco se detienen el fetch y la admisión de bundles nuevos.
+  Los bundles posteriores al marcador que ya estén en IF o ID se invalidan;
+  no llegan a ejecutarse, emitir solicitudes de memoria ni producir efectos
+  o eventos de finalización, incluidos los NOPs de retardo del salto final.
+- El bundle del marcador y todos los anteriores continúan hasta completar
+  todas sus operaciones. El pipeline recibe burbujas inválidas en lugar de
+  bundles nuevos; no se congela globalmente por haber solicitado la parada.
+  Si una operación pendiente espera memoria, se aplican los stalls habituales
+  y se reanuda al recibir su respuesta.
+- El pipeline termina de vaciarse cuando no quedan bundles válidos del programa,
+  resultados por escribir ni solicitudes del núcleo por completar. Esta condición
+  se evalúa incluyendo las finalizaciones del flanco actual y determina el cierre
+  de medición definido en [Métricas](metrics.md#2-periodo-de-medición).
+- La admisión permanece deshabilitada hasta reset del núcleo. Los buffers y el
+  controlador pueden seguir drenando; no es necesario escribir todas las líneas
+  dirty a memoria para considerar terminado el programa.
+
+Esta parada es propia del marcador de terminación. Los demás saltos conservan
+sus dos bundles de retardo y su comportamiento actual.
+
+| Caso | Comportamiento esperado |
+| --- | --- |
+| Se reconoce el marcador y hay bundles posteriores en IF e ID | Se invalidan y no se admite otro bundle, tampoco en ese flanco. |
+| Una multiplicación anterior todavía tiene un resultado pendiente | Continúa hasta escribirlo; la medición sigue activa hasta incluir esa finalización. |
+| El bundle del marcador tiene otra operación aún pendiente | Se completa también esa operación antes de declarar el pipeline vacío. |
+
+### Temporizador de autenticación
+
+El temporizador cuenta **ciclos reales del reloj de CPU**, incluidos todos los
+ciclos de congelamiento por memoria. No se pausa con el pipeline ni con los
+contadores de rendimiento. Mientras la sesión está autenticada, cada flanco
+sin actividad que la recargue reduce en uno el tiempo restante; al pasar de uno
+a cero se revoca la autenticación y se limpia la credencial temporal, aunque el
+núcleo esté detenido.
+
+Se conservan las reglas de la bóveda: `auth` exitoso carga 32 ciclos por defecto;
+`write`, `feistel` y `lopw` aceptados durante una sesión autenticada recargan ese
+valor. `rvk`, `pwd` exitoso y reset cierran la sesión. Una recarga aceptada tiene
+prioridad sobre el decremento del mismo flanco. Sin recargas, una sesión cargada
+en `E0` expira en `E32`.
+
+Una instrucción criptográfica se acepta una sola vez, al avanzar efectivamente
+desde EX. Mantenerla durante un stall no ejecuta su operación ni recarga el
+temporizador. La autorización se evalúa al aceptarla: si expiró durante la
+espera, una operación que la requiere se rechaza con el diagnóstico existente
+y sin modificar llaves ni producir un resultado autorizado. Los resultados de
+operaciones ya aceptadas se conservan durante el congelamiento.
+
+| Caso | Comportamiento esperado |
+| --- | --- |
+| Quedan 32 ciclos de sesión y comienza una espera de memoria de 47 ciclos, sin recargas | La sesión expira durante la espera, tras 32 ciclos reales. |
+| Una instrucción protegida permanece en EX durante esa espera | No actúa ni recarga la sesión; al reanudar se valida con la autorización vigente. |
+| Queda un ciclo y se acepta una operación que recarga la sesión | Se acepta con la autorización previa al flanco y se recarga; no expira en ese flanco. |
 
 ## 5. Tiempos de referencia
 

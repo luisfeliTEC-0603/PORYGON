@@ -39,21 +39,24 @@ dirty siguen las reglas de exclusividad y write-back.
 
 ## 4. Buffers
 
-Ambos buffers drenan en orden FIFO y su capacidad es parametrizable en número
-de líneas. Cada entrada conserva dirección base, 32 bytes de datos y dirty.
+Ambos buffers presentan sus entradas para drenado en orden FIFO y su capacidad
+es parametrizable en número de líneas. Cada entrada conserva dirección base,
+32 bytes de datos y dirty. Tras aceptar una solicitud puede presentarse la
+siguiente; las confirmaciones pueden consumirse fuera de orden, identificando
+cada entrada sin alterar el orden relativo de las restantes.
 
 | Buffer | Parámetro | Valor por defecto | Entrega completada |
 | --- | --- | --- | --- |
-| Write buffer L1 → L2 | `WRITE_BUFFER_DEPTH` | 4 entradas | L2 instala la línea o L1 la recupera por forwarding. |
-| Eviction buffer L2 → memoria | `EVICTION_BUFFER_DEPTH` | 8 entradas | Memoria confirma la escritura completa. |
+| Write buffer L1 → L2 | `WRITE_BUFFER_DEPTH` | 4 entradas | Se consume la confirmación de instalación de L2, o L1 acepta la línea por forwarding. |
+| Eviction buffer L2 → memoria | `EVICTION_BUFFER_DEPTH` | 8 entradas | Se consume la confirmación de escritura completa sin error. |
 
 - **Write buffer:** forwarding de la línea completa hacia L1, conservando dirty.
   Permite buscar y retirar una entrada por dirección sin alterar el orden de las
-  restantes. Si ya está en servicio hacia L2, se espera su instalación y se recupera
-  desde allí, evitando una doble entrega.
-- **Eviction buffer:** esperar la confirmación de escritura de la línea en
-  conflicto antes de leerla de memoria. La búsqueda incluye entradas en servicio
-  y no exige vaciar todo el buffer.
+  restantes. Si ya está en servicio hacia L2, se espera el consumo de su
+  confirmación de instalación y se recupera desde allí, evitando una doble entrega.
+- **Eviction buffer:** esperar el consumo de la confirmación de escritura sin
+  error de la línea en conflicto antes de leerla de memoria. La búsqueda incluye
+  entradas en servicio y no exige vaciar todo el buffer.
 
 La selección entre forwarding y drenado se define en
 [Movimiento de líneas](line-transfers.md#2-transferencia-y-espacio-disponible).
@@ -61,16 +64,19 @@ La selección entre forwarding y drenado se define en
 ## 5. Avance y arbitraje
 
 L2 puede atender operaciones independientes mientras un miss espera memoria.
-El núcleo permanece congelado hasta recibir la respuesta de su acceso.
+El pipeline del núcleo permanece congelado hasta consumir la respuesta de su
+acceso. El temporizador de autenticación sigue contando ciclos reales de CPU,
+según el [contrato CPU–memoria](cpu-memory-contract.md#temporizador-de-autenticación).
 
 | Parámetro | Valor por defecto | Rango |
 | --- | --- | --- |
 | `L2_MAX_INFLIGHT` | 4 operaciones | 1–4 |
 
-Cada solicitud aceptada por L2 ocupa una posición hasta confirmar la entrega de
-su resultado o la instalación de su línea. El límite incluye solicitudes de L1
-e instalaciones del write buffer; las entradas aún encoladas y no aceptadas por
-L2 no lo consumen. El núcleo mantiene una sola solicitud de demanda pendiente.
+Cada solicitud aceptada por L2 ocupa una posición hasta consumir la entrega de
+su resultado o la confirmación de instalación de su línea. El límite incluye
+solicitudes de L1 e instalaciones del write buffer; las entradas aún encoladas
+y no aceptadas por L2 no lo consumen. El núcleo mantiene una sola solicitud de
+demanda pendiente.
 
 Al alcanzar el límite, L2 deja de aceptar solicitudes nuevas. Las operaciones
 ya aceptadas y las respuestas pendientes continúan avanzando según sus recursos
@@ -101,7 +107,7 @@ el drenado de buffers, salvo el forwarding ya definido para una misma entrada.
 | A necesita desalojar una línea sucia y el eviction buffer está lleno | A espera; el buffer continúa drenando y otras operaciones independientes pueden avanzar. |
 | Dos operaciones necesitan la misma vía reservada | La segunda espera hasta que termine la reserva. |
 | Una lectura y una escritura de líneas distintas esperan memoria | Elegir la más antigua que pueda avanzar; una transferencia ya iniciada completa su burst. |
-| Una lectura coincide con una línea del eviction buffer | Completar la escritura de esa línea antes de emitir la lectura. |
+| Una lectura coincide con una línea del eviction buffer | Consumir la confirmación de escritura sin error de esa línea antes de emitir la lectura. |
 
 ## 6. Memoria principal
 
@@ -131,8 +137,8 @@ Con los valores por defecto, el modelo es simétrico: ambas operaciones duran
 Los tiempos se cuentan desde la aceptación de la transferencia por el controlador
 e incluyen el cruce de relojes. Las esperas previas por arbitraje o recursos se
 contabilizan aparte. La lectura queda disponible al completar la línea; la
-escritura se confirma cuando sus ocho palabras quedan almacenadas. Esa
-confirmación permite liberar la entrada correspondiente del eviction buffer.
+escritura se confirma cuando sus ocho palabras quedan almacenadas. Consumir
+esa confirmación sin error libera la entrada correspondiente del eviction buffer.
 
 ### Timeout
 

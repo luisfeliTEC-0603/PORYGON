@@ -36,12 +36,33 @@ imágenes de programa y datos. Incluye inicialización por software y llenado de
 pipeline. El final se reconoce mediante el salto de terminación a sí mismo;
 `perf_stop` se emite después de completar ese bundle y todas sus operaciones
 anteriores. Los bundles posteriores al marcador quedan fuera del programa
-medido. Detectar el salto en EX no basta para cerrar los contadores.
+medido. La parada y el vaciado siguen el
+[contrato CPU–memoria](cpu-memory-contract.md#parada-del-programa-y-vaciado-del-pipeline):
+al reconocer el marcador se detiene la admisión de bundles, se invalidan los
+posteriores ya capturados y se permite completar el trabajo del programa.
+Detectar el salto en EX no basta para cerrar los contadores.
+
+Completar una operación significa haber aplicado su efecto arquitectónico o
+emitido su diagnóstico de error: escritura de resultado al RF, respuesta de
+store consumida, salto resuelto o instrucción criptográfica terminada. Los
+bundles invalidados, incluidos los NOPs posteriores al marcador, no generan
+eventos de finalización. Se siguen contando ciclos y eventos de las operaciones
+del programa hasta su última finalización. `perf_stop` se
+muestrea en ese último flanco, incluyendo sus eventos; si el marcador es la
+última operación pendiente, puede cerrarse al completarlo. No se impone un
+número fijo de ciclos adicionales ni se cambia el retardo de los saltos ordinarios.
 
 Al cerrar pueden quedar desalojos o escrituras de fondo pendientes. Se conserva
 su estado en el reporte. Recuperar datos desde líneas dirty o realizar un
 drenado posterior conserva la instantánea de ejecución y se informa por
 separado. Las comparaciones usan la misma política de inicio y cierre.
+
+En la iteración 1, `tb_system` detiene su conteo al detectar el salto a sí mismo
+en EX y observa las salidas tras `#1`, sin esperar explícitamente operaciones
+anteriores pendientes. Para Proyecto II, el núcleo debe impedir la admisión y
+ejecución de bundles posteriores al marcador; el entorno espera el vaciado
+definido arriba y entonces emite `perf_stop`. Este
+cambio está previsto para la integración; no está implementado por los skeletons.
 
 ## 3. Eventos y muestras
 
