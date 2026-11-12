@@ -71,80 +71,167 @@ module write_buffer #(
     logic install_valid_internal;
     logic done_ready_internal;
     logic wb_push_handshake;
+    logic wb_fwd_handshake;
 
     assign wb_push_ready_o = rst_ni && push_ready_internal;
     assign wb_fwd_valid_o = rst_ni && fwd_valid_internal;
     assign wb_install_valid_o = rst_ni && install_valid_internal;
     assign wb_done_ready_o = rst_ni && done_ready_internal;
     assign wb_push_handshake = wb_push_valid_i && wb_push_ready_o;
+    assign wb_fwd_handshake = wb_fwd_valid_o && wb_fwd_ready_i;
 
-    /**
-     * @brief Almacenamiento ordenado de entradas (indice 0 = mas antigua).
-     * @details entry_inflight_q indica que la entrada ya se presento en
-     * wb_install_valid_o (aun sin ready) o ya fue aceptada por L2;
-     * entry_id_valid_q indica que ya tiene un l2_id asociado tras el handshake.
-     */
-    logic entry_valid_q [0:WRITE_BUFFER_DEPTH-1];
+    /** @brief Vectores empaquetados por profundidad para evitar warnings en Icarus. */
+    logic [WRITE_BUFFER_DEPTH-1:0] entry_valid_q;
     pkg_memory::address_t entry_base_q [0:WRITE_BUFFER_DEPTH-1];
     pkg_memory::line_t entry_data_q [0:WRITE_BUFFER_DEPTH-1];
-    logic entry_dirty_q [0:WRITE_BUFFER_DEPTH-1];
-    logic entry_inflight_q [0:WRITE_BUFFER_DEPTH-1];
-    logic entry_id_valid_q [0:WRITE_BUFFER_DEPTH-1];
+    logic [WRITE_BUFFER_DEPTH-1:0] entry_dirty_q;
+    logic [WRITE_BUFFER_DEPTH-1:0] entry_inflight_q;
+    logic [WRITE_BUFFER_DEPTH-1:0] entry_id_valid_q;
     logic [L2_ID_W-1:0] entry_l2_id_q [0:WRITE_BUFFER_DEPTH-1];
     logic [COUNT_W-1:0] count_q;
 
-    /** @brief Control combinacional de capacidad, aceptacion y metricas (WB-2). */
+    /** @brief Retencion de oferta de forwarding mientras !wb_fwd_ready_i. */
+    logic fwd_active_q;
+    logic [IDX_W-1:0] fwd_held_idx_q;
+
+    /** @brief Senales combinacionales de busqueda probe y seleccion forwarding. */
+    logic probe_hit;
+    logic probe_busy;
+    logic [IDX_W-1:0] probe_idx;
+    logic [IDX_W-1:0] fwd_idx;
+
+    always_comb begin
+        probe_hit = 1'b0;
+        probe_busy = 1'b0;
+        probe_idx = '0;
+        if (wb_probe_valid_i) begin
+            for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
+                if (!probe_hit && entry_valid_q[idx] &&
+                    (entry_base_q[idx] == wb_probe_base_i)) begin
+                    probe_hit = 1'b1;
+                    probe_busy = entry_inflight_q[idx];
+                    for (integer bit_i = 0; bit_i < IDX_W; bit_i++) begin
+                        probe_idx[bit_i] = idx[bit_i];
+                    end
+                end
+            end
+        end
+    end
+
+    /** @brief Control combinacional de capacidad, probe, forwarding y metricas (WB-2/WB-3). */
     always_comb begin
         push_ready_internal = (count_q < COUNT_W'(WRITE_BUFFER_DEPTH));
         fwd_valid_internal = 1'b0;
         install_valid_internal = 1'b0;
         done_ready_internal = 1'b0;
 
-        wb_probe_hit_o = 1'b0;
-        wb_probe_busy_o = 1'b0;
+        wb_probe_hit_o = rst_ni && probe_hit;
+        wb_probe_busy_o = rst_ni && probe_hit && probe_busy;
         wb_fwd_base_o = 32'b0;
         wb_fwd_data_o = '0;
         wb_fwd_dirty_o = 1'b0;
         wb_install_base_o = 32'b0;
         wb_install_data_o = '0;
         wb_install_dirty_o = 1'b0;
+        fwd_idx = '0;
+
+        if (fwd_active_q) begin
+            fwd_valid_internal = 1'b1;
+            fwd_idx = fwd_held_idx_q;
+            wb_fwd_base_o = entry_base_q[fwd_held_idx_q];
+            wb_fwd_data_o = entry_data_q[fwd_held_idx_q];
+            wb_fwd_dirty_o = entry_dirty_q[fwd_held_idx_q];
+        end else if (probe_hit && !probe_busy) begin
+            fwd_valid_internal = 1'b1;
+            fwd_idx = probe_idx;
+            wb_fwd_base_o = entry_base_q[probe_idx];
+            wb_fwd_data_o = entry_data_q[probe_idx];
+            wb_fwd_dirty_o = entry_dirty_q[probe_idx];
+        end
 
         perf_events_o = '0;
         perf_events_o.state.occupancy = {{(32 - COUNT_W){1'b0}}, count_q};
         perf_events_o.state.capacity = WRITE_BUFFER_DEPTH;
         perf_events_o.state.push_wait = wb_push_valid_i && !wb_push_ready_o;
+        perf_events_o.state.raw_wait = wb_probe_valid_i && probe_hit && probe_busy;
 
         if (wb_push_handshake) begin
             perf_events_o.enqueued.valid = 1'b1;
             perf_events_o.enqueued.base = wb_push_base_i;
             perf_events_o.enqueued.dirty = wb_push_dirty_i;
         end
-    end
-
-    /** @brief Reset asincrono e insercion FIFO de victimas limpias y sucias. */
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-            count_q <= '0;
-            for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
-                entry_valid_q[idx] <= 1'b0;
-                entry_base_q[idx] <= 32'b0;
-                entry_data_q[idx] <= '0;
-                entry_dirty_q[idx] <= 1'b0;
-                entry_inflight_q[idx] <= 1'b0;
-                entry_id_valid_q[idx] <= 1'b0;
-                entry_l2_id_q[idx] <= '0;
-            end
-        end else if (wb_push_handshake) begin
-            entry_valid_q[count_q[IDX_W-1:0]] <= 1'b1;
-            entry_base_q[count_q[IDX_W-1:0]] <= wb_push_base_i;
-            entry_data_q[count_q[IDX_W-1:0]] <= wb_push_data_i;
-            entry_dirty_q[count_q[IDX_W-1:0]] <= wb_push_dirty_i;
-            entry_inflight_q[count_q[IDX_W-1:0]] <= 1'b0;
-            entry_id_valid_q[count_q[IDX_W-1:0]] <= 1'b0;
-            entry_l2_id_q[count_q[IDX_W-1:0]] <= '0;
-            count_q <= count_q + COUNT_W'(1);
+        if (wb_fwd_handshake) begin
+            perf_events_o.forwarded.valid = 1'b1;
+            perf_events_o.forwarded.base = wb_fwd_base_o;
+            perf_events_o.forwarded.dirty = wb_fwd_dirty_o;
         end
     end
 
-    // Siguiente paso: implementar WB-3 (consulta wb_probe y forwarding wb_fwd con compactacion).
+    /** @brief Actualizacion sincrona: reset, retencion fwd, compactacion e insercion. */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            count_q <= '0;
+            fwd_active_q <= 1'b0;
+            fwd_held_idx_q <= '0;
+            entry_valid_q <= '0;
+            entry_dirty_q <= '0;
+            entry_inflight_q <= '0;
+            entry_id_valid_q <= '0;
+            for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
+                entry_base_q[idx] <= 32'b0;
+                entry_data_q[idx] <= '0;
+                entry_l2_id_q[idx] <= '0;
+            end
+        end else begin
+            logic [COUNT_W-1:0] next_count;
+            next_count = count_q;
+
+            if (wb_fwd_handshake) begin
+                fwd_active_q <= 1'b0;
+            end else if (wb_fwd_valid_o && !wb_fwd_ready_i && !fwd_active_q) begin
+                fwd_active_q <= 1'b1;
+                fwd_held_idx_q <= probe_idx;
+            end
+
+            if (wb_fwd_handshake) begin
+                for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
+                    if (idx >= integer'(fwd_idx)) begin
+                        if ((idx + 1) < WRITE_BUFFER_DEPTH) begin
+                            entry_valid_q[idx] <= entry_valid_q[idx + 1];
+                            entry_base_q[idx] <= entry_base_q[idx + 1];
+                            entry_data_q[idx] <= entry_data_q[idx + 1];
+                            entry_dirty_q[idx] <= entry_dirty_q[idx + 1];
+                            entry_inflight_q[idx] <= entry_inflight_q[idx + 1];
+                            entry_id_valid_q[idx] <= entry_id_valid_q[idx + 1];
+                            entry_l2_id_q[idx] <= entry_l2_id_q[idx + 1];
+                        end else begin
+                            entry_valid_q[idx] <= 1'b0;
+                            entry_base_q[idx] <= 32'b0;
+                            entry_data_q[idx] <= '0;
+                            entry_dirty_q[idx] <= 1'b0;
+                            entry_inflight_q[idx] <= 1'b0;
+                            entry_id_valid_q[idx] <= 1'b0;
+                            entry_l2_id_q[idx] <= '0;
+                        end
+                    end
+                end
+                next_count = next_count - COUNT_W'(1);
+            end
+
+            if (wb_push_handshake) begin
+                entry_valid_q[next_count[IDX_W-1:0]] <= 1'b1;
+                entry_base_q[next_count[IDX_W-1:0]] <= wb_push_base_i;
+                entry_data_q[next_count[IDX_W-1:0]] <= wb_push_data_i;
+                entry_dirty_q[next_count[IDX_W-1:0]] <= wb_push_dirty_i;
+                entry_inflight_q[next_count[IDX_W-1:0]] <= 1'b0;
+                entry_id_valid_q[next_count[IDX_W-1:0]] <= 1'b0;
+                entry_l2_id_q[next_count[IDX_W-1:0]] <= '0;
+                next_count = next_count + COUNT_W'(1);
+            end
+
+            count_q <= next_count;
+        end
+    end
+
+    // Siguiente paso: implementar WB-4 (drenado FIFO wb_install, prioridad fwd y wb_done fuera de orden).
 endmodule
