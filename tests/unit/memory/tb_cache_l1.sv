@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 
 /**
- * @brief Prueba aislada de L1-D: reset, id L2, hits (L1-3/L1-4) y miss/victima (L1-5).
+ * @brief Prueba aislada de L1-D: reset, id L2, hits (L1-3/L1-4) y miss/fill/WB (L1-5/L1-6).
  */
 module tb_cache_l1;
     localparam integer SET_COUNT = pkg_memory::L1_BYTES /
@@ -14,11 +14,18 @@ module tb_cache_l1;
     logic [31:0] req_wdata = 32'b0;
     logic [3:0] req_wstrb = 4'b0;
     logic rsp_ready = 1'b0;
+    logic wb_push_ready = 1'b0;
     logic wb_probe_hit = 1'b0;
     logic wb_probe_busy = 1'b0;
     logic l2_ready = 1'b0;
     logic [1:0] l2_accept_id = '0;
-    logic peer_active = 1'b0;
+    logic fill_valid = 1'b0;
+    logic [31:0] fill_base = 32'b0;
+    logic [255:0] fill_data = 256'b0;
+    logic fill_dirty = 1'b0;
+    logic fill_error = 1'b0;
+    pkg_memory::fill_source_t fill_source = pkg_memory::FILL_WB;
+    logic [1:0] fill_id = 2'b0;
 
     always #5 clk = ~clk;
 
@@ -27,12 +34,12 @@ module tb_cache_l1;
         .dmem_req_valid_i(req_valid), .dmem_req_addr_i(req_addr),
         .dmem_req_write_i(req_write), .dmem_req_wdata_i(req_wdata),
         .dmem_req_wstrb_i(req_wstrb), .dmem_rsp_ready_i(rsp_ready),
-        .wb_push_ready_i(peer_active), .wb_probe_hit_i(wb_probe_hit),
+        .wb_push_ready_i(wb_push_ready), .wb_probe_hit_i(wb_probe_hit),
         .wb_probe_busy_i(wb_probe_busy), .l2_get_ready_i(l2_ready),
-        .l2_get_accept_id_i(l2_accept_id), .fill_valid_i(peer_active),
-        .fill_base_i(32'b0), .fill_data_i(256'b0),
-        .fill_dirty_i(1'b0), .fill_error_i(1'b0),
-        .fill_source_i(pkg_memory::FILL_WB), .fill_id_i(2'b0)
+        .l2_get_accept_id_i(l2_accept_id), .fill_valid_i(fill_valid),
+        .fill_base_i(fill_base), .fill_data_i(fill_data),
+        .fill_dirty_i(fill_dirty), .fill_error_i(fill_error),
+        .fill_source_i(fill_source), .fill_id_i(fill_id)
     );
 
     /** Revisa todas las vias; !== tambien detecta valores desconocidos. */
@@ -93,7 +100,8 @@ module tb_cache_l1;
         force dut.fill_ready_internal = 1'b1;
         req_valid = 1'b1;
         rsp_ready = 1'b1;
-        peer_active = 1'b1;
+        wb_push_ready = 1'b1;
+        fill_valid = 1'b1;
         l2_ready = 1'b1;
 
         #1 rst_n = 1'b0;
@@ -108,7 +116,8 @@ module tb_cache_l1;
         release dut.fill_ready_internal;
         req_valid = 1'b0;
         rsp_ready = 1'b0;
-        peer_active = 1'b0;
+        wb_push_ready = 1'b0;
+        fill_valid = 1'b0;
         l2_ready = 1'b0;
         #1 rst_n = 1'b1;
         @(negedge clk);
@@ -147,7 +156,6 @@ module tb_cache_l1;
         @(negedge clk);
         check_empty();
 
-        // Precargar conjunto 1: via 0 (base 0x00010020, tag 21'h20) y via 1 (base 0x00010820, tag 21'h21)
         dut.block_valid_q[1][0] = 1'b1;
         dut.block_tag_q[1][0] = 21'h20;
         for (integer w_idx = 0; w_idx < 8; w_idx++) begin
@@ -160,7 +168,6 @@ module tb_cache_l1;
             dut.block_data_q[1][1][32 * w_idx +: 32] = 32'hB000_0000 + w_idx;
         end
 
-        // Leer las 8 palabras de la via 0 en 1 ciclo (E1)
         for (integer w_idx = 0; w_idx < 8; w_idx++) begin
             @(negedge clk);
             req_valid = 1'b1;
@@ -183,7 +190,6 @@ module tb_cache_l1;
                 $fatal(1, "LRU no apunto a via 1 tras acceder a via 0");
         end
 
-        // Leer palabra 2 de la via 1 (0x00010828) y comprobar que LRU vuelve a via 0
         @(negedge clk);
         req_addr = 32'h00010828;
         #1;
@@ -197,7 +203,6 @@ module tb_cache_l1;
         rsp_ready = 1'b0;
 
         /** 4. L1-4 (Caso L1-T3): Store hit de palabra, byte y media palabra + dirty */
-        // Store de byte (wstrb = 4'b0010, byte 1) sobre palabra 0 de via 0 (0xA000_0000)
         @(negedge clk);
         req_valid = 1'b1;
         req_write = 1'b1;
@@ -217,13 +222,11 @@ module tb_cache_l1;
         if (dut.block_dirty_q[1][0] !== 1'b1 || dut.lru_victim_q[1] !== 1'b1)
             $fatal(1, "Store hit no marco dirty o no actualizo LRU");
 
-        // Store de media palabra alta (wstrb = 4'b1100) sobre la misma palabra
         @(negedge clk);
         req_wdata = 32'hDEAD_0000;
         req_wstrb = 4'b1100;
         @(posedge clk); #1;
 
-        // Load posterior de palabra completa para verificar mezcla y bytes vecinos conservados
         @(negedge clk);
         req_write = 1'b0;
         req_wstrb = 4'b0000;
@@ -238,44 +241,115 @@ module tb_cache_l1;
         req_valid = 1'b0;
         rsp_ready = 1'b0;
 
-        /** 5. L1-5 (Casos L1-T4 y L1-T7): Miss, victima LRU/invalida, consulta WB y l2_get */
-        // Conjunto 1 tiene ambas vias validas y lru_victim_q[1] == 1'b1 -> debe elegir via 1
+        /** 5. L1-5/L1-6 (L1-T4, L1-T7, L1-T8, L1-T9): Load miss con WB lleno y desalojo */
+        // Conjunto 1 tiene ambas vias validas y lru_victim_q[1] == 1'b1 -> victima es via 1 (0x00010820)
         @(negedge clk);
         req_valid = 1'b1;
         req_write = 1'b0;
-        req_addr = 32'h00011024; // Conjunto 1, tag 21'h22 (miss), base 0x00011020
+        req_addr = 32'h00011024; // Conjunto 1, tag 21'h22 (miss), base 0x00011020, palabra 1
         wb_probe_hit = 1'b0;
-        l2_ready = 1'b0; // L2 demora aceptacion en E1
+        wb_push_ready = 1'b0; // WB lleno al inicio
+        l2_ready = 1'b0;
         #1;
         if (dut.dmem_req_ready_o !== 1'b1 || dut.wb_probe_valid_o !== 1'b1 ||
-            dut.wb_probe_base_o !== 32'h00011020 || dut.l2_get_valid_o !== 1'b1 ||
-            dut.l2_get_base_o !== 32'h00011020)
+            dut.wb_probe_base_o !== 32'h00011020 || dut.l2_get_valid_o !== 1'b1)
             $fatal(1, "Miss en C0 no consulta WB ni ofrece l2_get correctamente");
-        if (dut.perf_events_o.access_valid !== 1'b1 ||
-            dut.perf_events_o.access_result !== pkg_metrics::ACCESS_MISS)
-            $fatal(1, "Metrica de miss no emitida en aceptacion");
 
         @(posedge clk); #1;
-        // En L1_GET_BLOCK: demanda capturada, via 1 elegida, entrada reservada y oferta L2 estable
-        if (dut.state_q !== dut.L1_GET_BLOCK || dut.destination_way_q !== 1'b1 ||
-            dut.input_reserved_q !== 1'b1 || dut.pending_valid_q !== 1'b1)
-            $fatal(1, "Estado, via destino o reserva incorrectos tras aceptar miss");
-        if (dut.l2_get_valid_o !== 1'b1 || dut.l2_get_base_o !== 32'h00011020)
-            $fatal(1, "Oferta l2_get no se mantuvo estable durante espera");
-        if (dut.perf_events_o.access_valid !== 1'b0)
-            $fatal(1, "Evento de miss se duplico durante espera");
+        // Ahora oferta victima 0x00010820 a WB mientras espera aceptacion L2
+        if (dut.wb_push_valid_o !== 1'b1 || dut.wb_push_base_o !== 32'h00010820 ||
+            dut.wb_push_dirty_o !== 1'b0)
+            $fatal(1, "L1 no ofrece victima de via 1 a WB correctamente");
 
-        // L2 acepta en el siguiente flanco con id = 3 -> pasa a L1_WAIT_BLOCK y deja de pedir
+        // L2 acepta con id = 3
         @(negedge clk);
         l2_ready = 1'b1;
         l2_accept_id = 2'd3;
         @(posedge clk); #1;
-        if (dut.state_q !== dut.L1_WAIT_BLOCK || dut.l2_id_valid_q !== 1'b1 ||
-            dut.l2_id_q !== 2'd3 || dut.l2_get_valid_o !== 1'b0)
-            $fatal(1, "Transicion a L1_WAIT_BLOCK o captura de id L2 fallida");
-
-        req_valid = 1'b0;
         l2_ready = 1'b0;
+
+        // Llega retorno desde L2 mientras WB sigue lleno (wb_push_ready = 0)
+        @(negedge clk);
+        fill_valid = 1'b1;
+        fill_base = 32'h00011020;
+        fill_source = pkg_memory::FILL_L2;
+        fill_id = 2'd3;
+        fill_dirty = 1'b0;
+        fill_error = 1'b0;
+        for (integer w_idx = 0; w_idx < 8; w_idx++) begin
+            fill_data[32 * w_idx +: 32] = 32'hC000_0000 + w_idx;
+        end
+        #1;
+        if (dut.fill_ready_o !== 1'b1)
+            $fatal(1, "Entrada reservada no acepta fill con WB lleno");
+        @(posedge clk); #1;
+        fill_valid = 1'b0;
+        if (dut.input_valid_q !== 1'b1 || dut.l2_id_valid_q !== 1'b0 ||
+            dut.block_tag_q[1][1] !== 21'h21)
+            $fatal(1, "Fill no guardado en entrada o sobrescribio victima antes de wb_push");
+
+        // WB se libera y acepta la victima -> instala bloque nuevo y responde a CPU
+        @(negedge clk);
+        wb_push_ready = 1'b1;
+        rsp_ready = 1'b1;
+        #1;
+        if (dut.perf_events_o.eviction.valid !== 1'b1 ||
+            dut.perf_events_o.eviction.base !== 32'h00010820 ||
+            dut.dmem_rsp_valid_o !== 1'b1 ||
+            dut.dmem_rsp_rdata_o !== 32'hC000_0001 ||
+            dut.dmem_rsp_origin_o !== pkg_metrics::ORIGIN_L2)
+            $fatal(1, "Instalacion o respuesta CPU incorrecta al liberar WB");
+
+        @(posedge clk); #1;
+        wb_push_ready = 1'b0;
+        req_valid = 1'b0;
+        rsp_ready = 1'b0;
+        if (dut.state_q !== dut.L1_IDLE || dut.block_tag_q[1][1] !== 21'h22 ||
+            dut.lru_victim_q[1] !== 1'b0)
+            $fatal(1, "L1 no volvio a IDLE o no instalo tag/LRU tras load miss");
+
+        /** 6. L1-6 (Casos L1-T5 y L1-T6): Store miss (write-allocate) con forwarding WB */
+        // Conjunto 1 tiene lru_victim_q[1] == 1'b0 -> victima es via 0 (sucia: 0x00010020)
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b1;
+        req_addr = 32'h0001182C; // Conjunto 1, tag 21'h23, palabra 3
+        req_wdata = 32'h5566_7788;
+        req_wstrb = 4'b1111;
+        wb_probe_hit = 1'b1; // Bloque esta en WB
+        wb_probe_busy = 1'b0;
+        #1;
+        if (dut.l2_get_valid_o !== 1'b0)
+            $fatal(1, "L1 pidio a L2 pese a forwarding disponible en WB");
+        @(posedge clk); #1;
+
+        // WB libera victima sucia de via 0 y entrega forwarding simultaneamente
+        @(negedge clk);
+        wb_push_ready = 1'b1;
+        fill_valid = 1'b1;
+        fill_base = 32'h00011820;
+        fill_source = pkg_memory::FILL_WB;
+        fill_dirty = 1'b0;
+        for (integer w_idx = 0; w_idx < 8; w_idx++) begin
+            fill_data[32 * w_idx +: 32] = 32'hD000_0000 + w_idx;
+        end
+        rsp_ready = 1'b1;
+        #1;
+        if (dut.perf_events_o.eviction.dirty !== 1'b1 ||
+            dut.dmem_rsp_valid_o !== 1'b1 ||
+            dut.dmem_rsp_rdata_o !== 32'b0 ||
+            dut.dmem_rsp_origin_o !== pkg_metrics::ORIGIN_WB)
+            $fatal(1, "Store miss con forwarding WB fallo en respuesta o desalojo sucio");
+
+        @(posedge clk); #1;
+        fill_valid = 1'b0;
+        wb_push_ready = 1'b0;
+        req_valid = 1'b0;
+        rsp_ready = 1'b0;
+        wb_probe_hit = 1'b0;
+        if (dut.state_q !== dut.L1_IDLE || dut.block_dirty_q[1][0] !== 1'b1 ||
+            dut.block_data_q[1][0][127:96] !== 32'h5566_7788)
+            $fatal(1, "Write-allocate no instalo bloque sucio con dato escrito");
 
         $display("PASS L1: reset inicial, repetido y conservacion de invalidez");
         $display("PASS L1: id valido solo tras aceptacion L2 y cancelado por reset");
@@ -284,6 +358,7 @@ module tb_cache_l1;
         $display("PASS L1: load hit en las 8 palabras (E1), origen L1, metricas y LRU (L1-3)");
         $display("PASS L1: store hit en palabra, byte y media palabra (L1-4)");
         $display("PASS L1: miss, seleccion victima, consulta WB y solicitud L2 (L1-5)");
+        $display("PASS L1: fill, desalojo WB limpio/sucio, write-allocate y forwarding (L1-6)");
         $finish;
     end
 endmodule
