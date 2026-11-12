@@ -59,6 +59,7 @@ module write_buffer #(
 );
     localparam integer L2_ID_W = pkg_memory::id_width(L2_MAX_INFLIGHT);
     localparam integer COUNT_W = $clog2(WRITE_BUFFER_DEPTH + 1);
+    localparam integer IDX_W = (WRITE_BUFFER_DEPTH > 1) ? $clog2(WRITE_BUFFER_DEPTH) : 1;
 
     /**
      * @brief Frontera de reset para las ofertas y aceptaciones del Write Buffer.
@@ -69,11 +70,13 @@ module write_buffer #(
     logic fwd_valid_internal;
     logic install_valid_internal;
     logic done_ready_internal;
+    logic wb_push_handshake;
 
     assign wb_push_ready_o = rst_ni && push_ready_internal;
     assign wb_fwd_valid_o = rst_ni && fwd_valid_internal;
     assign wb_install_valid_o = rst_ni && install_valid_internal;
     assign wb_done_ready_o = rst_ni && done_ready_internal;
+    assign wb_push_handshake = wb_push_valid_i && wb_push_ready_o;
 
     /**
      * @brief Almacenamiento ordenado de entradas (indice 0 = mas antigua).
@@ -90,9 +93,9 @@ module write_buffer #(
     logic [L2_ID_W-1:0] entry_l2_id_q [0:WRITE_BUFFER_DEPTH-1];
     logic [COUNT_W-1:0] count_q;
 
-    /** @brief Salidas por defecto en WB-1 (se completan en WB-2..WB-4). */
+    /** @brief Control combinacional de capacidad, aceptacion y metricas (WB-2). */
     always_comb begin
-        push_ready_internal = 1'b0;
+        push_ready_internal = (count_q < COUNT_W'(WRITE_BUFFER_DEPTH));
         fwd_valid_internal = 1'b0;
         install_valid_internal = 1'b0;
         done_ready_internal = 1'b0;
@@ -109,9 +112,16 @@ module write_buffer #(
         perf_events_o = '0;
         perf_events_o.state.occupancy = {{(32 - COUNT_W){1'b0}}, count_q};
         perf_events_o.state.capacity = WRITE_BUFFER_DEPTH;
+        perf_events_o.state.push_wait = wb_push_valid_i && !wb_push_ready_o;
+
+        if (wb_push_handshake) begin
+            perf_events_o.enqueued.valid = 1'b1;
+            perf_events_o.enqueued.base = wb_push_base_i;
+            perf_events_o.enqueued.dirty = wb_push_dirty_i;
+        end
     end
 
-    /** @brief Reset asincrono activo bajo de todas las entradas y asociaciones. */
+    /** @brief Reset asincrono e insercion FIFO de victimas limpias y sucias. */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             count_q <= '0;
@@ -124,8 +134,17 @@ module write_buffer #(
                 entry_id_valid_q[idx] <= 1'b0;
                 entry_l2_id_q[idx] <= '0;
             end
+        end else if (wb_push_handshake) begin
+            entry_valid_q[count_q[IDX_W-1:0]] <= 1'b1;
+            entry_base_q[count_q[IDX_W-1:0]] <= wb_push_base_i;
+            entry_data_q[count_q[IDX_W-1:0]] <= wb_push_data_i;
+            entry_dirty_q[count_q[IDX_W-1:0]] <= wb_push_dirty_i;
+            entry_inflight_q[count_q[IDX_W-1:0]] <= 1'b0;
+            entry_id_valid_q[count_q[IDX_W-1:0]] <= 1'b0;
+            entry_l2_id_q[count_q[IDX_W-1:0]] <= '0;
+            count_q <= count_q + COUNT_W'(1);
         end
     end
 
-    // Siguiente paso: implementar WB-2 (insercion FIFO wb_push y limite de capacidad).
+    // Siguiente paso: implementar WB-3 (consulta wb_probe y forwarding wb_fwd con compactacion).
 endmodule

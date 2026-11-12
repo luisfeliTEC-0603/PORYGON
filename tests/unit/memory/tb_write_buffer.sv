@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 
 /**
- * @brief Prueba aislada del Write Buffer: reset inicial/repetido y frontera de canales (WB-1).
+ * @brief Prueba aislada del Write Buffer: reset (WB-1) e insercion/capacidad (WB-2).
  */
 module tb_write_buffer;
     localparam integer DEPTH = pkg_memory::WRITE_BUFFER_DEPTH_DEFAULT;
@@ -95,7 +95,47 @@ module tb_write_buffer;
         @(negedge clk);
         check_empty();
 
+        /** 2. WB-2: Insercion FIFO de 4 victimas (limpias/sucias) y limite de capacidad */
+        for (integer i = 0; i < DEPTH; i++) begin
+            @(negedge clk);
+            push_valid = 1'b1;
+            push_base = 32'h0001_1000 + (i * 32);
+            push_data = {8{32'h1111_0000 + i}};
+            push_dirty = i[0]; // Alterna limpia (0) y sucia (1)
+            #1;
+            if (dut.wb_push_ready_o !== 1'b1 || dut.perf_events_o.enqueued.valid !== 1'b1 ||
+                dut.perf_events_o.enqueued.base !== push_base ||
+                dut.perf_events_o.enqueued.dirty !== push_dirty)
+                $fatal(1, "Fallo en aceptacion o metrica al encolar entrada %0d", i);
+            @(posedge clk); #1;
+        end
+
+        // Al llenar las 4 entradas: wb_push_ready_o debe bajar a 0 y activar push_wait
+        @(negedge clk);
+        push_valid = 1'b1;
+        push_base = 32'h0001_9900;
+        push_data = {8{32'hDEAD_BEEF}};
+        push_dirty = 1'b1;
+        #1;
+        if (dut.wb_push_ready_o !== 1'b0 || dut.perf_events_o.state.push_wait !== 1'b1 ||
+            dut.perf_events_o.enqueued.valid !== 1'b0)
+            $fatal(1, "WB lleno no bloqueo push_ready o emitio enqueued invalido");
+        @(posedge clk); #1;
+        push_valid = 1'b0;
+
+        // Verificar que las 4 entradas originales siguen intactas y en orden FIFO
+        if (dut.count_q !== 3'd4)
+            $fatal(1, "count_q alterado al rechazar 5ta entrada");
+        for (integer i = 0; i < DEPTH; i++) begin
+            if (dut.entry_valid_q[i] !== 1'b1 ||
+                dut.entry_base_q[i] !== (32'h0001_1000 + (i * 32)) ||
+                dut.entry_data_q[i] !== {8{32'h1111_0000 + i}} ||
+                dut.entry_dirty_q[i] !== i[0])
+                $fatal(1, "Entrada %0d alterada o fuera de orden", i);
+        end
+
         $display("PASS WB: reset inicial, repetido y frontera de canales (WB-1)");
+        $display("PASS WB: insercion FIFO limpia/sucia y limite de capacidad (WB-2)");
         $finish;
     end
 endmodule
