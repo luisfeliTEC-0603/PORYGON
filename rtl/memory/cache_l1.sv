@@ -1,5 +1,5 @@
 /**
- * @brief Skeleton L1-D: 4 KiB, dos vias, LRU, write-back y write-allocate.
+ * @brief L1-D en implementacion: 4 KiB, dos vias, LRU y write-back/allocate.
  * @param L2_MAX_INFLIGHT Limite 1..4; determina el ancho de ids L2.
  * @input clk_i, rst_ni Reloj CPU y reset activo bajo.
  * @details Una demanda CPU pendiente. Hit en EX de un ciclo; req y rsp pueden
@@ -46,7 +46,7 @@ module cache_l1 #(
     input logic wb_probe_hit_i,
     input logic wb_probe_busy_i,
 
-    /** @brief Demanda de linea; accept_id solo es valido al aceptar l2_get. */
+    /** @brief Demanda de bloque; accept_id solo es valido al aceptar l2_get. */
     output logic l2_get_valid_o,
     input logic l2_get_ready_i,
     output pkg_memory::address_t l2_get_base_o,
@@ -69,5 +69,55 @@ module cache_l1 #(
     /** @brief Eventos CPU-domain de aceptacion, victima y errores propios. */
     output pkg_metrics::l1_events_t perf_events_o
 );
-    // TODO P2-06: almacenamiento, reemplazo y control de acceso/traslados.
+    /**
+     * @brief Geometria derivada de los parametros compartidos.
+     * @details Cada conjunto contiene L1_WAYS bloques de LINE_BYTES bytes.
+     * La direccion se divide en tag, indice de conjunto y offset de bloque;
+     * con la configuracion actual son 21, 6 y 5 bits respectivamente.
+     */
+    localparam integer SET_COUNT = pkg_memory::L1_BYTES /
+        (pkg_memory::L1_WAYS * pkg_memory::LINE_BYTES);
+    localparam integer BLOCK_OFFSET_W = $clog2(pkg_memory::LINE_BYTES);
+    localparam integer SET_INDEX_W = $clog2(SET_COUNT);
+    localparam integer TAG_W = $bits(pkg_memory::address_t) -
+        SET_INDEX_W - BLOCK_OFFSET_W;
+
+    /**
+     * @brief Datos y metadatos registrados, indexados por conjunto y via.
+     * @details valid autoriza el uso de tag/datos; dirty indica cambios que
+     * deben conservarse al desalojar. La victima permanecera en su propia via
+     * hasta que WB la acepte, sin duplicarla en otro registro de bloque.
+     * lru_victim identifica la via a reemplazar cuando ambas estan validas:
+     * acceder a via 0 dejara victima 1 y acceder a via 1 dejara victima 0.
+     * La lectura combinacional y las actualizaciones se incorporan despues.
+     */
+    pkg_memory::line_t block_data_q [0:SET_COUNT-1][0:pkg_memory::L1_WAYS-1];
+    logic [TAG_W-1:0] block_tag_q [0:SET_COUNT-1][0:pkg_memory::L1_WAYS-1];
+    logic block_valid_q [0:SET_COUNT-1][0:pkg_memory::L1_WAYS-1];
+    logic block_dirty_q [0:SET_COUNT-1][0:pkg_memory::L1_WAYS-1];
+    logic lru_victim_q [0:SET_COUNT-1];
+
+    /**
+     * @brief Reset asincrono activo bajo de la validez y el reemplazo.
+     * @details Invalidar todas las vias deja la cache vacia sin borrar datos
+     * ni tags: estos no podran usarse hasta instalar un bloque valido.
+     * Dirty se limpia para facilitar inspeccion. LRU inicia en via 0, pero
+     * la seleccion futura debe preferir siempre una via invalida.
+     * Por ahora, fuera de reset estos registros conservan su valor; aun no
+     * hay aceptacion de accesos, instalacion ni actualizacion de reemplazo.
+     */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            for (integer set_index = 0; set_index < SET_COUNT; set_index++) begin
+                lru_victim_q[set_index] <= 1'b0;
+                for (integer way = 0; way < pkg_memory::L1_WAYS; way++) begin
+                    block_valid_q[set_index][way] <= 1'b0;
+                    block_dirty_q[set_index][way] <= 1'b0;
+                end
+            end
+        end
+    end
+
+    // TODO P2-06: demanda, entrada reservada, respuesta y control de accesos.
+    // Las salidas del skeleton todavia no tienen comportamiento funcional.
 endmodule
