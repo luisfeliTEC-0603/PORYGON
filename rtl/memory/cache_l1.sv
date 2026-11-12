@@ -135,11 +135,7 @@ module cache_l1 #(
     } l1_state_t;
 
     l1_state_t state_q;
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-            state_q <= L1_IDLE;
-        end
-    end
+    l1_state_t next_state;
 
     /** @brief Una demanda pendiente y su via destino. */
     logic pending_valid_q;
@@ -148,6 +144,7 @@ module cache_l1 #(
     pkg_memory::word_t pending_wdata_q;
     pkg_memory::byte_mask_t pending_wstrb_q;
     logic [WAY_INDEX_W-1:0] destination_way_q;
+    logic l2_offered_q;
 
     /** @brief Identificador recibido exclusivamente al aceptar L2 la solicitud. */
     logic [L2_ID_W-1:0] l2_id_q;
@@ -165,32 +162,40 @@ module cache_l1 #(
     pkg_metrics::demand_origin_t response_origin_q;
 
     /**
-     * @brief Decodificacion de direccion y busqueda combinacional de hit.
+     * @brief Decodificacion de direccion y busqueda combinacional de hit/victima.
      * @details Extrae conjunto [10:5], tag [31:11] y palabra [4:2]. Compara
      * tags en paralelo en ambas vias mediante asignaciones continuas para
-     * resolver hits en E1 sin ciclos extra ni avisos de seleccion constante.
+     * resolver hits en E1 sin ciclos extra. Elige via invalida antes que LRU.
      */
     logic [SET_INDEX_W-1:0] req_set;
     logic [TAG_W-1:0] req_tag;
     logic [2:0] req_word_idx;
+    pkg_memory::address_t req_block_base;
+    pkg_memory::address_t pending_block_base;
     logic req_addr_in_range;
     logic [pkg_memory::L1_WAYS-1:0] way_hit;
     logic hit_any;
     logic [WAY_INDEX_W-1:0] hit_way;
+    logic [WAY_INDEX_W-1:0] victim_way;
     pkg_memory::line_t hit_block_data;
     pkg_memory::word_t hit_word;
     pkg_memory::word_t merged_store_word;
     logic load_hit_now;
     logic store_hit_now;
+    logic miss_now;
     logic dmem_req_handshake;
+    logic l2_get_handshake;
 
     assign req_set = dmem_req_addr_i[BLOCK_OFFSET_W +: SET_INDEX_W];
     assign req_tag = dmem_req_addr_i[BLOCK_OFFSET_W + SET_INDEX_W +: TAG_W];
     assign req_word_idx = dmem_req_addr_i[4:2];
+    assign req_block_base = {dmem_req_addr_i[31:BLOCK_OFFSET_W], {BLOCK_OFFSET_W{1'b0}}};
+    assign pending_block_base = {pending_addr_q[31:BLOCK_OFFSET_W], {BLOCK_OFFSET_W{1'b0}}};
     assign req_addr_in_range =
         (dmem_req_addr_i >= pkg_memory::DATA_BASE_ADDRESS) &&
         (dmem_req_addr_i < (pkg_memory::DATA_BASE_ADDRESS + pkg_memory::MEMORY_BYTES));
     assign dmem_req_handshake = dmem_req_valid_i && dmem_req_ready_o;
+    assign l2_get_handshake = l2_get_valid_o && l2_get_ready_i;
 
     assign way_hit[0] = block_valid_q[req_set][0] &&
                         (block_tag_q[req_set][0] == req_tag);
@@ -198,6 +203,8 @@ module cache_l1 #(
                         (block_tag_q[req_set][1] == req_tag);
     assign hit_any = |way_hit;
     assign hit_way = way_hit[1] ? 1'b1 : 1'b0;
+    assign victim_way = !block_valid_q[req_set][0] ? 1'b0 :
+                        (!block_valid_q[req_set][1] ? 1'b1 : lru_victim_q[req_set]);
 
     always_comb begin
         hit_block_data = block_data_q[req_set][hit_way];
@@ -211,13 +218,14 @@ module cache_l1 #(
                        !dmem_req_write_i && req_addr_in_range && hit_any;
         store_hit_now = (state_q == L1_IDLE) && dmem_req_valid_i &&
                         dmem_req_write_i && req_addr_in_range && hit_any;
+        miss_now = (state_q == L1_IDLE) && dmem_req_valid_i &&
+                   req_addr_in_range && !hit_any;
     end
 
     /**
-     * @brief Control combinacional de salidas e intenciones (L1-3/L1-4: hits).
-     * @details Valores por defecto inactivos evitan latches. En L1_IDLE, un
-     * hit valido dentro de rango ofrece aceptacion y respuesta E1 (dato cero
-     * en store).
+     * @brief Control combinacional de salidas, intenciones y proximo estado (L1-3..L1-5).
+     * @details Valores por defecto inactivos evitan latches. En L1_IDLE, un hit
+     * responde en E1; un miss consulta WB y ofrece l2_get en C0 si WB no acierta.
      */
     always_comb begin
         req_ready_internal = 1'b0;
@@ -236,36 +244,83 @@ module cache_l1 #(
         wb_probe_base_o = 32'b0;
         l2_get_base_o = 32'b0;
         perf_events_o = '0;
+        next_state = state_q;
 
-        if (load_hit_now) begin
-            req_ready_internal = 1'b1;
-            rsp_valid_internal = 1'b1;
-            dmem_rsp_rdata_o = hit_word;
-            dmem_rsp_origin_o = pkg_metrics::ORIGIN_L1;
-
-            if (dmem_req_handshake) begin
-                perf_events_o.access_valid = 1'b1;
-                perf_events_o.access_write = 1'b0;
-                perf_events_o.access_result = pkg_metrics::ACCESS_HIT;
+        case (state_q)
+            L1_IDLE: begin
+                if (load_hit_now) begin
+                    req_ready_internal = 1'b1;
+                    rsp_valid_internal = 1'b1;
+                    dmem_rsp_rdata_o = hit_word;
+                    if (dmem_req_handshake) begin
+                        perf_events_o.access_valid = 1'b1;
+                        perf_events_o.access_write = 1'b0;
+                        perf_events_o.access_result = pkg_metrics::ACCESS_HIT;
+                    end
+                end else if (store_hit_now) begin
+                    req_ready_internal = 1'b1;
+                    rsp_valid_internal = 1'b1;
+                    if (dmem_req_handshake) begin
+                        perf_events_o.access_valid = 1'b1;
+                        perf_events_o.access_write = 1'b1;
+                        perf_events_o.access_result = pkg_metrics::ACCESS_HIT;
+                    end
+                end else if (miss_now) begin
+                    req_ready_internal = 1'b1;
+                    wb_probe_valid_internal = 1'b1;
+                    wb_probe_base_o = req_block_base;
+                    if (!wb_probe_hit_i) begin
+                        l2_get_valid_internal = 1'b1;
+                        l2_get_base_o = req_block_base;
+                    end
+                    if (dmem_req_handshake) begin
+                        perf_events_o.access_valid = 1'b1;
+                        perf_events_o.access_write = dmem_req_write_i;
+                        perf_events_o.access_result = pkg_metrics::ACCESS_MISS;
+                        if (!wb_probe_hit_i && l2_get_handshake) begin
+                            next_state = L1_WAIT_BLOCK;
+                        end else begin
+                            next_state = L1_GET_BLOCK;
+                        end
+                    end
+                end
             end
-        end else if (store_hit_now) begin
-            req_ready_internal = 1'b1;
-            rsp_valid_internal = 1'b1;
-            dmem_rsp_rdata_o = 32'b0;
-            dmem_rsp_origin_o = pkg_metrics::ORIGIN_L1;
 
-            if (dmem_req_handshake) begin
-                perf_events_o.access_valid = 1'b1;
-                perf_events_o.access_write = 1'b1;
-                perf_events_o.access_result = pkg_metrics::ACCESS_HIT;
+            L1_GET_BLOCK: begin
+                wb_probe_valid_internal = !l2_offered_q;
+                wb_probe_base_o = pending_block_base;
+                if (l2_offered_q || !wb_probe_hit_i) begin
+                    l2_get_valid_internal = 1'b1;
+                    l2_get_base_o = pending_block_base;
+                    if (l2_get_handshake) begin
+                        next_state = L1_WAIT_BLOCK;
+                    end
+                end
             end
+
+            L1_WAIT_BLOCK: begin
+                // Espera retorno de L2/memoria; recepcion e instalacion en L1-6.
+            end
+
+            L1_COMPLETE_ACCESS: begin
+                // Resolucion de victima, instalacion y respuesta en L1-6/L1-7.
+            end
+        endcase
+    end
+
+    /** @brief Registro de fase del control con reset asincrono a L1_IDLE. */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            state_q <= L1_IDLE;
+        end else begin
+            state_q <= next_state;
         end
     end
 
     /**
-     * @brief Inicializacion del seguimiento y captura del id en el flanco.
-     * @details Reset domina incluso con valid/ready activos. Tras el handshake
-     * de l2_get se conservan id y validez durante la espera.
+     * @brief Inicializacion del seguimiento, captura de miss e id L2 en el flanco.
+     * @details Reset domina incluso con valid/ready activos. Al aceptar un miss
+     * captura demanda, via destino y reserva entrada; captura l2_id al aceptar L2.
      */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -275,6 +330,7 @@ module cache_l1 #(
             pending_wdata_q <= '0;
             pending_wstrb_q <= '0;
             destination_way_q <= '0;
+            l2_offered_q <= 1'b0;
             l2_id_q <= '0;
             l2_id_valid_q <= 1'b0;
             input_reserved_q <= 1'b0;
@@ -286,9 +342,25 @@ module cache_l1 #(
             response_data_q <= '0;
             response_error_q <= 1'b0;
             response_origin_q <= pkg_metrics::ORIGIN_L1;
-        end else if (l2_get_valid_o && l2_get_ready_i) begin
-            l2_id_q <= l2_get_accept_id_i;
-            l2_id_valid_q <= 1'b1;
+        end else begin
+            if (dmem_req_handshake && miss_now) begin
+                pending_valid_q <= 1'b1;
+                pending_addr_q <= dmem_req_addr_i;
+                pending_write_q <= dmem_req_write_i;
+                pending_wdata_q <= dmem_req_wdata_i;
+                pending_wstrb_q <= dmem_req_wstrb_i;
+                destination_way_q <= victim_way;
+                input_reserved_q <= 1'b1;
+                l2_offered_q <= l2_get_valid_o && !l2_get_ready_i;
+            end else if (state_q == L1_GET_BLOCK && l2_get_valid_o && !l2_get_ready_i) begin
+                l2_offered_q <= 1'b1;
+            end
+
+            if (l2_get_handshake) begin
+                l2_id_q <= l2_get_accept_id_i;
+                l2_id_valid_q <= 1'b1;
+                l2_offered_q <= 1'b0;
+            end
         end
     end
 
@@ -317,5 +389,5 @@ module cache_l1 #(
         end
     end
 
-    // Siguiente paso aprobado: implementar L1-5 (preferencia por via invalida y seleccion LRU).
+    // Siguiente paso: implementar L1-6 (recepcion fill, desalojo WB e instalacion).
 endmodule

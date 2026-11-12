@@ -1,9 +1,7 @@
 `timescale 1ns/1ps
 
 /**
- * @brief Prueba aislada de L1-D: reset, proteccion de canales, id L2 y load hit (L1-3).
- * @details Precarga bloques en las vias mediante acceso jerarquico para
- * verificar la busqueda combinacional, seleccion de palabra y LRU en E1.
+ * @brief Prueba aislada de L1-D: reset, id L2, hits (L1-3/L1-4) y miss/victima (L1-5).
  */
 module tb_cache_l1;
     localparam integer SET_COUNT = pkg_memory::L1_BYTES /
@@ -16,6 +14,8 @@ module tb_cache_l1;
     logic [31:0] req_wdata = 32'b0;
     logic [3:0] req_wstrb = 4'b0;
     logic rsp_ready = 1'b0;
+    logic wb_probe_hit = 1'b0;
+    logic wb_probe_busy = 1'b0;
     logic l2_ready = 1'b0;
     logic [1:0] l2_accept_id = '0;
     logic peer_active = 1'b0;
@@ -27,8 +27,8 @@ module tb_cache_l1;
         .dmem_req_valid_i(req_valid), .dmem_req_addr_i(req_addr),
         .dmem_req_write_i(req_write), .dmem_req_wdata_i(req_wdata),
         .dmem_req_wstrb_i(req_wstrb), .dmem_rsp_ready_i(rsp_ready),
-        .wb_push_ready_i(peer_active), .wb_probe_hit_i(1'b0),
-        .wb_probe_busy_i(1'b0), .l2_get_ready_i(l2_ready),
+        .wb_push_ready_i(peer_active), .wb_probe_hit_i(wb_probe_hit),
+        .wb_probe_busy_i(wb_probe_busy), .l2_get_ready_i(l2_ready),
         .l2_get_accept_id_i(l2_accept_id), .fill_valid_i(peer_active),
         .fill_base_i(32'b0), .fill_data_i(256'b0),
         .fill_dirty_i(1'b0), .fill_error_i(1'b0),
@@ -44,7 +44,7 @@ module tb_cache_l1;
                        dut.l2_get_valid_o, dut.fill_ready_o} !== 6'b0)
             $fatal(1, "Reset permite oferta/aceptacion de L1");
         if ({dut.pending_valid_q, dut.l2_id_valid_q, dut.input_reserved_q,
-             dut.input_valid_q, dut.response_valid_q} !== 5'b0)
+             dut.input_valid_q, dut.response_valid_q, dut.l2_offered_q} !== 6'b0)
             $fatal(1, "Reset incompleto: seguimiento o reservas activos");
         if ({dut.pending_addr_q, dut.pending_write_q, dut.pending_wdata_q,
              dut.pending_wstrb_q, dut.destination_way_q, dut.l2_id_q,
@@ -238,12 +238,52 @@ module tb_cache_l1;
         req_valid = 1'b0;
         rsp_ready = 1'b0;
 
+        /** 5. L1-5 (Casos L1-T4 y L1-T7): Miss, victima LRU/invalida, consulta WB y l2_get */
+        // Conjunto 1 tiene ambas vias validas y lru_victim_q[1] == 1'b1 -> debe elegir via 1
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b0;
+        req_addr = 32'h00011024; // Conjunto 1, tag 21'h22 (miss), base 0x00011020
+        wb_probe_hit = 1'b0;
+        l2_ready = 1'b0; // L2 demora aceptacion en E1
+        #1;
+        if (dut.dmem_req_ready_o !== 1'b1 || dut.wb_probe_valid_o !== 1'b1 ||
+            dut.wb_probe_base_o !== 32'h00011020 || dut.l2_get_valid_o !== 1'b1 ||
+            dut.l2_get_base_o !== 32'h00011020)
+            $fatal(1, "Miss en C0 no consulta WB ni ofrece l2_get correctamente");
+        if (dut.perf_events_o.access_valid !== 1'b1 ||
+            dut.perf_events_o.access_result !== pkg_metrics::ACCESS_MISS)
+            $fatal(1, "Metrica de miss no emitida en aceptacion");
+
+        @(posedge clk); #1;
+        // En L1_GET_BLOCK: demanda capturada, via 1 elegida, entrada reservada y oferta L2 estable
+        if (dut.state_q !== dut.L1_GET_BLOCK || dut.destination_way_q !== 1'b1 ||
+            dut.input_reserved_q !== 1'b1 || dut.pending_valid_q !== 1'b1)
+            $fatal(1, "Estado, via destino o reserva incorrectos tras aceptar miss");
+        if (dut.l2_get_valid_o !== 1'b1 || dut.l2_get_base_o !== 32'h00011020)
+            $fatal(1, "Oferta l2_get no se mantuvo estable durante espera");
+        if (dut.perf_events_o.access_valid !== 1'b0)
+            $fatal(1, "Evento de miss se duplico durante espera");
+
+        // L2 acepta en el siguiente flanco con id = 3 -> pasa a L1_WAIT_BLOCK y deja de pedir
+        @(negedge clk);
+        l2_ready = 1'b1;
+        l2_accept_id = 2'd3;
+        @(posedge clk); #1;
+        if (dut.state_q !== dut.L1_WAIT_BLOCK || dut.l2_id_valid_q !== 1'b1 ||
+            dut.l2_id_q !== 2'd3 || dut.l2_get_valid_o !== 1'b0)
+            $fatal(1, "Transicion a L1_WAIT_BLOCK o captura de id L2 fallida");
+
+        req_valid = 1'b0;
+        l2_ready = 1'b0;
+
         $display("PASS L1: reset inicial, repetido y conservacion de invalidez");
         $display("PASS L1: id valido solo tras aceptacion L2 y cancelado por reset");
         $display("PASS L1: reset bloquea canales con vecinos e intenciones activos");
         $display("PASS L1: control vuelve a LIBRE tras reset inicial y repetido");
-        $display("PASS L1: store hit en palabra, byte y media palabra (L1-4)");
         $display("PASS L1: load hit en las 8 palabras (E1), origen L1, metricas y LRU (L1-3)");
+        $display("PASS L1: store hit en palabra, byte y media palabra (L1-4)");
+        $display("PASS L1: miss, seleccion victima, consulta WB y solicitud L2 (L1-5)");
         $finish;
     end
 endmodule
