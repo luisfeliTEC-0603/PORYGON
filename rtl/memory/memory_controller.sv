@@ -82,5 +82,32 @@ module memory_controller #(
     /** @brief Eventos de palabras/completitud y estados, todos en reloj CPU. */
     output pkg_metrics::mem_events_t perf_events_o
 );
+
+    /**
+     * @brief Divide el reloj CPU para generar el reloj continuo de RAM.
+     * @details MEM_CLOCK_DIV indica los ciclos CPU por ciclo de RAM.
+     * El reset deja ram_clk_o en cero. La primera subida ocurre en el
+     * primer flanco CPU tras liberar reset; las siguientes, cada
+     * MEM_CLOCK_DIV flancos. El reloj sigue activo sin solicitudes.
+     */
+    localparam integer DIV_COUNT_W =
+        (MEM_CLOCK_DIV > 1) ? $clog2(MEM_CLOCK_DIV) : 1;
+    localparam integer RAM_HIGH_CYCLES = (MEM_CLOCK_DIV + 1) / 2;
+
+    logic [DIV_COUNT_W-1:0] divider_count_q;
+
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            divider_count_q <= MEM_CLOCK_DIV - 1;
+            ram_clk_o <= 1'b0;
+        end else if (divider_count_q == MEM_CLOCK_DIV - 1) begin
+            divider_count_q <= '0;
+            ram_clk_o <= 1'b1;
+        end else begin
+            divider_count_q <= divider_count_q + 1'b1;
+            if (divider_count_q == RAM_HIGH_CYCLES - 1)
+                ram_clk_o <= 1'b0;
+        end
+    end
     // TODO P2-03: arbitraje, temporizacion, bursts, CDC y timeout diagnosticado.
 endmodule
