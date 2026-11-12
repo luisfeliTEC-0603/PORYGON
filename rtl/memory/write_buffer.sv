@@ -1,12 +1,15 @@
+`timescale 1ns/1ps
+
 /**
- * @brief Skeleton de FIFO L1 -> L2 con forwarding por direccion base.
+ * @brief Buffer FIFO L1 -> L2 con forwarding por direccion base y drenado identificado.
  * @param WRITE_BUFFER_DEPTH Capacidad en lineas; cuatro por defecto.
  * @param L2_MAX_INFLIGHT Limite 1..4; determina el ancho de ids de instalacion.
- * @details Una entrada entra en servicio al presentar wb_install_valid, aun
- * antes de ready. Forwarding gana si ambos intentan iniciar sobre una entrada
- * libre; una entrada en servicio espera wb_done. Los campos ofrecidos quedan
- * estables durante esperas. Reset cancela entradas y asociaciones pendientes.
+ * @details Las entradas validas ocupan posiciones contiguas [0 .. count_q-1] en
+ * orden FIFO (indice 0 es la mas antigua). Una entrada entra en servicio al
+ * presentar wb_install_valid_o, aun antes de ready. Forwarding gana si ambos
+ * intentan iniciar sobre una entrada libre; una entrada en servicio espera wb_done.
  * @see docs/ii-proyecto/interfaces.md secciones 2 y 4.
+ * @see docs/ii-proyecto/line-transfers.md seccion 2.
  */
 module write_buffer #(
     parameter integer WRITE_BUFFER_DEPTH = pkg_memory::WRITE_BUFFER_DEPTH_DEFAULT,
@@ -54,5 +57,75 @@ module write_buffer #(
     /** @brief Pulsos de entrega y estado de ocupacion, siempre en reloj CPU. */
     output pkg_metrics::wb_events_t perf_events_o
 );
-    // TODO P2-05: entradas, orden, consultas, forwarding e ids en servicio.
+    localparam integer L2_ID_W = pkg_memory::id_width(L2_MAX_INFLIGHT);
+    localparam integer COUNT_W = $clog2(WRITE_BUFFER_DEPTH + 1);
+
+    /**
+     * @brief Frontera de reset para las ofertas y aceptaciones del Write Buffer.
+     * @details Con rst_ni=0, WB baja su lado de cada canal para impedir
+     * transferencias aunque el vecino este activo.
+     */
+    logic push_ready_internal;
+    logic fwd_valid_internal;
+    logic install_valid_internal;
+    logic done_ready_internal;
+
+    assign wb_push_ready_o = rst_ni && push_ready_internal;
+    assign wb_fwd_valid_o = rst_ni && fwd_valid_internal;
+    assign wb_install_valid_o = rst_ni && install_valid_internal;
+    assign wb_done_ready_o = rst_ni && done_ready_internal;
+
+    /**
+     * @brief Almacenamiento ordenado de entradas (indice 0 = mas antigua).
+     * @details entry_inflight_q indica que la entrada ya se presento en
+     * wb_install_valid_o (aun sin ready) o ya fue aceptada por L2;
+     * entry_id_valid_q indica que ya tiene un l2_id asociado tras el handshake.
+     */
+    logic entry_valid_q [0:WRITE_BUFFER_DEPTH-1];
+    pkg_memory::address_t entry_base_q [0:WRITE_BUFFER_DEPTH-1];
+    pkg_memory::line_t entry_data_q [0:WRITE_BUFFER_DEPTH-1];
+    logic entry_dirty_q [0:WRITE_BUFFER_DEPTH-1];
+    logic entry_inflight_q [0:WRITE_BUFFER_DEPTH-1];
+    logic entry_id_valid_q [0:WRITE_BUFFER_DEPTH-1];
+    logic [L2_ID_W-1:0] entry_l2_id_q [0:WRITE_BUFFER_DEPTH-1];
+    logic [COUNT_W-1:0] count_q;
+
+    /** @brief Salidas por defecto en WB-1 (se completan en WB-2..WB-4). */
+    always_comb begin
+        push_ready_internal = 1'b0;
+        fwd_valid_internal = 1'b0;
+        install_valid_internal = 1'b0;
+        done_ready_internal = 1'b0;
+
+        wb_probe_hit_o = 1'b0;
+        wb_probe_busy_o = 1'b0;
+        wb_fwd_base_o = 32'b0;
+        wb_fwd_data_o = '0;
+        wb_fwd_dirty_o = 1'b0;
+        wb_install_base_o = 32'b0;
+        wb_install_data_o = '0;
+        wb_install_dirty_o = 1'b0;
+
+        perf_events_o = '0;
+        perf_events_o.state.occupancy = {{(32 - COUNT_W){1'b0}}, count_q};
+        perf_events_o.state.capacity = WRITE_BUFFER_DEPTH;
+    end
+
+    /** @brief Reset asincrono activo bajo de todas las entradas y asociaciones. */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            count_q <= '0;
+            for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
+                entry_valid_q[idx] <= 1'b0;
+                entry_base_q[idx] <= 32'b0;
+                entry_data_q[idx] <= '0;
+                entry_dirty_q[idx] <= 1'b0;
+                entry_inflight_q[idx] <= 1'b0;
+                entry_id_valid_q[idx] <= 1'b0;
+                entry_l2_id_q[idx] <= '0;
+            end
+        end
+    end
+
+    // Siguiente paso: implementar WB-2 (insercion FIFO wb_push y limite de capacidad).
 endmodule
