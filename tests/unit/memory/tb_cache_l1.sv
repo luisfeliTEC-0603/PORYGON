@@ -1,28 +1,32 @@
 `timescale 1ns/1ps
 
 /**
- * @brief Prueba aislada de L1-2: invalidacion por reset, captura de id y bloqueo de canales.
- * @details No genera accesos CPU ni modela vecinos todavia. La preparacion
- * jerarquica de metadatos representa bloques ocupados solo para comprobar un
- * segundo reset; no constituye una instalacion funcional de cache.
+ * @brief Prueba aislada de L1-D: reset, proteccion de canales, id L2 y load hit (L1-3).
+ * @details Precarga bloques en las vias mediante acceso jerarquico para
+ * verificar la busqueda combinacional, seleccion de palabra y LRU en E1.
  */
 module tb_cache_l1;
     localparam integer SET_COUNT = pkg_memory::L1_BYTES /
         (pkg_memory::L1_WAYS * pkg_memory::LINE_BYTES);
     logic clk = 1'b0;
     logic rst_n = 1'b1;
+    logic req_valid = 1'b0;
+    logic [31:0] req_addr = 32'b0;
+    logic req_write = 1'b0;
+    logic [31:0] req_wdata = 32'b0;
+    logic [3:0] req_wstrb = 4'b0;
+    logic rsp_ready = 1'b0;
     logic l2_ready = 1'b0;
     logic [1:0] l2_accept_id = '0;
     logic peer_active = 1'b0;
 
     always #5 clk = ~clk;
 
-    /** Entradas inactivas: los canales funcionales siguen pendientes. */
     cache_l1 dut (
         .clk_i(clk), .rst_ni(rst_n),
-        .dmem_req_valid_i(peer_active), .dmem_req_addr_i(32'b0),
-        .dmem_req_write_i(1'b0), .dmem_req_wdata_i(32'b0),
-        .dmem_req_wstrb_i(4'b0), .dmem_rsp_ready_i(peer_active),
+        .dmem_req_valid_i(req_valid), .dmem_req_addr_i(req_addr),
+        .dmem_req_write_i(req_write), .dmem_req_wdata_i(req_wdata),
+        .dmem_req_wstrb_i(req_wstrb), .dmem_rsp_ready_i(rsp_ready),
         .wb_push_ready_i(peer_active), .wb_probe_hit_i(1'b0),
         .wb_probe_busy_i(1'b0), .l2_get_ready_i(l2_ready),
         .l2_get_accept_id_i(l2_accept_id), .fill_valid_i(peer_active),
@@ -60,7 +64,7 @@ module tb_cache_l1;
     endtask
 
     initial begin
-        /** El reset y su comprobacion ocurren antes del primer flanco. */
+        /** 1. Reset inicial y repetido */
         #1 rst_n = 1'b0;
         #1 check_empty();
         #1 rst_n = 1'b1;
@@ -72,7 +76,6 @@ module tb_cache_l1;
                 dut.block_dirty_q[s][w] = 1'b1;
             end
         end
-        /** Preparacion jerarquica de ocupacion; aun no hay captura funcional. */
         dut.pending_valid_q = 1'b1;
         dut.input_reserved_q = 1'b1;
         dut.input_valid_q = 1'b1;
@@ -80,37 +83,38 @@ module tb_cache_l1;
         dut.pending_addr_q = 32'h00010020;
         dut.input_data_q = '1;
         dut.response_error_q = 1'b1;
-        /** Representar una espera anterior; no es una transicion funcional. */
         dut.state_q = dut.L1_WAIT_BLOCK;
-        /** Simular intenciones activas: probar las puertas, no el control futuro. */
+
         force dut.req_ready_internal = 1'b1;
         force dut.rsp_valid_internal = 1'b1;
         force dut.wb_push_valid_internal = 1'b1;
         force dut.wb_probe_valid_internal = 1'b1;
         force dut.l2_get_valid_internal = 1'b1;
         force dut.fill_ready_internal = 1'b1;
+        req_valid = 1'b1;
+        rsp_ready = 1'b1;
         peer_active = 1'b1;
         l2_ready = 1'b1;
-        /** Segundo reset entre flancos: debe invalidar sin esperar posedge. */
+
         #1 rst_n = 1'b0;
         #1 check_empty();
         @(posedge clk); #1 check_empty();
+
         release dut.req_ready_internal;
         release dut.rsp_valid_internal;
         release dut.wb_push_valid_internal;
         release dut.wb_probe_valid_internal;
         release dut.l2_get_valid_internal;
         release dut.fill_ready_internal;
+        req_valid = 1'b0;
+        rsp_ready = 1'b0;
         peer_active = 1'b0;
         l2_ready = 1'b0;
         #1 rst_n = 1'b1;
         @(negedge clk);
         check_empty();
-        /**
-         * Instrumentacion aislada: la generacion real de solicitudes aun no
-         * existe. Forzar su oferta permite probar solo el registro de id;
-         * no demuestra un miss ni una solicitud funcional emitida por L1.
-         */
+
+        /** 2. Captura aislada de id L2 */
         force dut.l2_get_valid_internal = 1'b0;
         l2_ready = 1'b1;
         l2_accept_id = 2'd2;
@@ -137,10 +141,66 @@ module tb_cache_l1;
         #1 rst_n = 1'b0;
         #1 check_empty();
         release dut.l2_get_valid_internal;
+
+        /** 3. L1-3 (Caso L1-T2): Load hit en las 8 palabras y actualizacion LRU */
+        #1 rst_n = 1'b1;
+        @(negedge clk);
+        check_empty();
+
+        // Precargar conjunto 1: via 0 (base 0x00010020, tag 21'h20) y via 1 (base 0x00010820, tag 21'h21)
+        dut.block_valid_q[1][0] = 1'b1;
+        dut.block_tag_q[1][0] = 21'h20;
+        for (integer w_idx = 0; w_idx < 8; w_idx++) begin
+            dut.block_data_q[1][0][32 * w_idx +: 32] = 32'hA000_0000 + w_idx;
+        end
+
+        dut.block_valid_q[1][1] = 1'b1;
+        dut.block_tag_q[1][1] = 21'h21;
+        for (integer w_idx = 0; w_idx < 8; w_idx++) begin
+            dut.block_data_q[1][1][32 * w_idx +: 32] = 32'hB000_0000 + w_idx;
+        end
+
+        // Leer las 8 palabras de la via 0 en 1 ciclo (E1)
+        for (integer w_idx = 0; w_idx < 8; w_idx++) begin
+            @(negedge clk);
+            req_valid = 1'b1;
+            req_write = 1'b0;
+            req_addr = 32'h00010020 + (w_idx * 4);
+            rsp_ready = 1'b1;
+            #1;
+            if (dut.dmem_req_ready_o !== 1'b1 || dut.dmem_rsp_valid_o !== 1'b1)
+                $fatal(1, "Load hit palabra %0d no responde en E1", w_idx);
+            if (dut.dmem_rsp_rdata_o !== (32'hA000_0000 + w_idx))
+                $fatal(1, "Dato incorrecto en palabra %0d: %h", w_idx, dut.dmem_rsp_rdata_o);
+            if (dut.dmem_rsp_error_o !== 1'b0 || dut.dmem_rsp_origin_o !== pkg_metrics::ORIGIN_L1)
+                $fatal(1, "Error u origen incorrecto en load hit");
+            if (dut.perf_events_o.access_valid !== 1'b1 ||
+                dut.perf_events_o.access_write !== 1'b0 ||
+                dut.perf_events_o.access_result !== pkg_metrics::ACCESS_HIT)
+                $fatal(1, "Metrica incorrecta en load hit palabra %0d", w_idx);
+            @(posedge clk); #1;
+            if (dut.lru_victim_q[1] !== 1'b1)
+                $fatal(1, "LRU no apunto a via 1 tras acceder a via 0");
+        end
+
+        // Leer palabra 2 de la via 1 (0x00010828) y comprobar que LRU vuelve a via 0
+        @(negedge clk);
+        req_addr = 32'h00010828;
+        #1;
+        if (dut.dmem_rsp_rdata_o !== 32'hB000_0002)
+            $fatal(1, "Dato incorrecto en via 1: %h", dut.dmem_rsp_rdata_o);
+        @(posedge clk); #1;
+        if (dut.lru_victim_q[1] !== 1'b0)
+            $fatal(1, "LRU no apunto a via 0 tras acceder a via 1");
+
+        req_valid = 1'b0;
+        rsp_ready = 1'b0;
+
         $display("PASS L1: reset inicial, repetido y conservacion de invalidez");
         $display("PASS L1: id valido solo tras aceptacion L2 y cancelado por reset");
         $display("PASS L1: reset bloquea canales con vecinos e intenciones activos");
         $display("PASS L1: control vuelve a LIBRE tras reset inicial y repetido");
+        $display("PASS L1: load hit en las 8 palabras (E1), origen L1, metricas y LRU (L1-3)");
         $finish;
     end
 endmodule

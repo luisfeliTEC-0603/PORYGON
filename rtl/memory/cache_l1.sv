@@ -1,3 +1,5 @@
+`timescale 1ns/1ps
+
 /**
  * @brief L1-D en implementacion: 4 KiB, dos vias, LRU y write-back/allocate.
  * @param L2_MAX_INFLIGHT Limite 1..4; determina el ancho de ids L2.
@@ -91,9 +93,6 @@ module cache_l1 #(
      * en el flanco positivo transfieren una operacion. Con rst_ni=0, L1 baja
      * su lado de cada canal y evita transferencias aunque el vecino lo active.
      * La consulta WB no tiene handshake, pero tambien se desactiva en reset.
-     * Estas senales internas recibiran la logica funcional en los siguientes
-     * incrementos; aun no tienen productor. No se fija comportamiento normal
-     * mediante valores por defecto que simulen una cache funcional.
      */
     logic req_ready_internal;
     logic rsp_valid_internal;
@@ -116,7 +115,6 @@ module cache_l1 #(
      * hasta que WB la acepte, sin duplicarla en otro registro de bloque.
      * lru_victim identifica la via a reemplazar cuando ambas estan validas:
      * acceder a via 0 dejara victima 1 y acceder a via 1 dejara victima 0.
-     * La lectura combinacional y las actualizaciones se incorporan despues.
      */
     pkg_memory::line_t block_data_q [0:SET_COUNT-1][0:pkg_memory::L1_WAYS-1];
     logic [TAG_W-1:0] block_tag_q [0:SET_COUNT-1][0:pkg_memory::L1_WAYS-1];
@@ -126,11 +124,8 @@ module cache_l1 #(
 
     /**
      * @brief Fase de la demanda atendida por L1, no estado de un bloque.
-     * @details El enum da nombres a cuatro valores de dos bits. Las fases
-     * describen el recorrido aprobado: libre, conseguir bloque, esperar su
-     * retorno tras aceptar L2 y completar el acceso. No son etapas de pipeline
-     * ni obligan a gastar un ciclo en cada una. El hit de un ciclo podra
-     * completarse en L1_IDLE sin recorrer las fases de miss.
+     * @details El enum da nombres a cuatro valores de dos bits. El hit de un
+     * ciclo se completa en L1_IDLE sin recorrer las fases de miss.
      */
     typedef enum logic [1:0] {
         L1_IDLE,             /** Sin demanda; permite comenzar una busqueda. */
@@ -139,12 +134,6 @@ module cache_l1 #(
         L1_COMPLETE_ACCESS   /** Resolver instalacion y respuesta pendientes. */
     } l1_state_t;
 
-    /**
-     * @brief Registro que recuerda la fase entre flancos de reloj.
-     * @details Reset empieza en L1_IDLE: no queda una busqueda anterior activa.
-     * Las transiciones y salidas de control se conectaran al implementar
-     * aceptacion y busqueda en los siguientes incrementos.
-     */
     l1_state_t state_q;
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -152,13 +141,7 @@ module cache_l1 #(
         end
     end
 
-    /**
-     * @brief Una demanda pendiente y su via destino.
-     * @details pending_valid calificara los campos capturados al aceptar un
-     * miss. La direccion conserva tambien la palabra dentro del bloque.
-     * Dato/mascara se necesitan para completar un store tras recibirlo.
-     * La captura de la demanda y la eleccion de via quedan pendientes.
-     */
+    /** @brief Una demanda pendiente y su via destino. */
     logic pending_valid_q;
     pkg_memory::address_t pending_addr_q;
     logic pending_write_q;
@@ -166,22 +149,11 @@ module cache_l1 #(
     pkg_memory::byte_mask_t pending_wstrb_q;
     logic [WAY_INDEX_W-1:0] destination_way_q;
 
-    /**
-     * @brief Identificador recibido exclusivamente al aceptar L2 la solicitud.
-     * @details El valor del puerto accept_id fuera del handshake no se usa.
-     * Esta validez no es la validez de un bloque de cache. La finalizacion
-     * liberara el id en el control de miss futuro; reset lo cancela ahora.
-     */
+    /** @brief Identificador recibido exclusivamente al aceptar L2 la solicitud. */
     logic [L2_ID_W-1:0] l2_id_q;
     logic l2_id_valid_q;
 
-    /**
-     * @brief Espacio de un bloque y resultado CPU retenido: recursos distintos.
-     * @details input_reserved comprometera espacio antes de pedir el bloque;
-     * input_valid indicara que ya llegaron sus datos. response_valid calificara
-     * una respuesta pendiente de consumo. Sus capturas/liberaciones funcionales
-     * se incorporaran con los accesos; por ahora solo se define su reset.
-     */
+    /** @brief Espacio de un bloque y resultado CPU retenido: recursos distintos. */
     logic input_reserved_q;
     logic input_valid_q;
     pkg_memory::line_t input_data_q;
@@ -193,10 +165,86 @@ module cache_l1 #(
     pkg_metrics::demand_origin_t response_origin_q;
 
     /**
+     * @brief Decodificacion de direccion y busqueda combinacional de hit.
+     * @details Extrae conjunto [10:5], tag [31:11] y palabra [4:2]. Compara
+     * tags en paralelo en ambas vias mediante asignaciones continuas para
+     * resolver hits en E1 sin ciclos extra ni avisos de seleccion constante.
+     */
+    logic [SET_INDEX_W-1:0] req_set;
+    logic [TAG_W-1:0] req_tag;
+    logic [2:0] req_word_idx;
+    logic req_addr_in_range;
+    logic [pkg_memory::L1_WAYS-1:0] way_hit;
+    logic hit_any;
+    logic [WAY_INDEX_W-1:0] hit_way;
+    pkg_memory::line_t hit_block_data;
+    pkg_memory::word_t hit_word;
+    logic load_hit_now;
+    logic dmem_req_handshake;
+
+    assign req_set = dmem_req_addr_i[BLOCK_OFFSET_W +: SET_INDEX_W];
+    assign req_tag = dmem_req_addr_i[BLOCK_OFFSET_W + SET_INDEX_W +: TAG_W];
+    assign req_word_idx = dmem_req_addr_i[4:2];
+    assign req_addr_in_range =
+        (dmem_req_addr_i >= pkg_memory::DATA_BASE_ADDRESS) &&
+        (dmem_req_addr_i < (pkg_memory::DATA_BASE_ADDRESS + pkg_memory::MEMORY_BYTES));
+    assign dmem_req_handshake = dmem_req_valid_i && dmem_req_ready_o;
+
+    assign way_hit[0] = block_valid_q[req_set][0] &&
+                        (block_tag_q[req_set][0] == req_tag);
+    assign way_hit[1] = block_valid_q[req_set][1] &&
+                        (block_tag_q[req_set][1] == req_tag);
+    assign hit_any = |way_hit;
+    assign hit_way = way_hit[1] ? 1'b1 : 1'b0;
+
+    always_comb begin
+        hit_block_data = block_data_q[req_set][hit_way];
+        hit_word = hit_block_data[32 * req_word_idx +: 32];
+        load_hit_now = (state_q == L1_IDLE) && dmem_req_valid_i &&
+                       !dmem_req_write_i && req_addr_in_range && hit_any;
+    end
+
+    /**
+     * @brief Control combinacional de salidas e intenciones (L1-3: load hit).
+     * @details Valores por defecto inactivos evitan latches. En L1_IDLE, un
+     * load valido dentro de rango con acierto ofrece aceptacion y respuesta E1.
+     */
+    always_comb begin
+        req_ready_internal = 1'b0;
+        rsp_valid_internal = 1'b0;
+        wb_push_valid_internal = 1'b0;
+        wb_probe_valid_internal = 1'b0;
+        l2_get_valid_internal = 1'b0;
+        fill_ready_internal = 1'b0;
+
+        dmem_rsp_rdata_o = 32'b0;
+        dmem_rsp_error_o = 1'b0;
+        dmem_rsp_origin_o = pkg_metrics::ORIGIN_L1;
+        wb_push_base_o = 32'b0;
+        wb_push_data_o = '0;
+        wb_push_dirty_o = 1'b0;
+        wb_probe_base_o = 32'b0;
+        l2_get_base_o = 32'b0;
+        perf_events_o = '0;
+
+        if (load_hit_now) begin
+            req_ready_internal = 1'b1;
+            rsp_valid_internal = 1'b1;
+            dmem_rsp_rdata_o = hit_word;
+            dmem_rsp_origin_o = pkg_metrics::ORIGIN_L1;
+
+            if (dmem_req_handshake) begin
+                perf_events_o.access_valid = 1'b1;
+                perf_events_o.access_write = 1'b0;
+                perf_events_o.access_result = pkg_metrics::ACCESS_HIT;
+            end
+        end
+    end
+
+    /**
      * @brief Inicializacion del seguimiento y captura del id en el flanco.
-     * @details Reset domina incluso con valid/ready activos. Con ready solo
-     * no hay aceptacion; con valid solo, L2 aun no asigno un id utilizable.
-     * Tras el handshake se conservan id y validez durante la espera.
+     * @details Reset domina incluso con valid/ready activos. Tras el handshake
+     * de l2_get se conservan id y validez durante la espera.
      */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -224,11 +272,10 @@ module cache_l1 #(
     end
 
     /**
-     * @brief Reset asincrono activo bajo de la validez y el reemplazo.
+     * @brief Reset asincrono activo bajo de validez/reemplazo y actualizacion LRU.
      * @details Invalidar todas las vias deja la cache vacia sin borrar datos
-     * ni tags: estos no podran usarse hasta instalar un bloque valido.
-     * Dirty se limpia para facilitar inspeccion. LRU inicia en via 0, pero
-     * la seleccion futura debe preferir siempre una via invalida.
+     * ni tags. En un load hit aceptado en el flanco, actualiza lru_victim_q
+     * hacia la via contraria (~hit_way).
      */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -239,8 +286,10 @@ module cache_l1 #(
                     block_dirty_q[set_index][way] <= 1'b0;
                 end
             end
+        end else if (dmem_req_handshake && load_hit_now) begin
+            lru_victim_q[req_set] <= ~hit_way;
         end
     end
 
-    // Siguiente paso aprobado: implementar L1-3 (busqueda combinacional y load hit).
+    // Siguiente paso aprobado: implementar L1-4 (store hit, mascara por byte y dirty).
 endmodule
