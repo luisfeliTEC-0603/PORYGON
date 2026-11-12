@@ -304,12 +304,23 @@ error no instala datos; sigue el contrato de error CPU–memoria.
 
 ## 9. Avance y casos de referencia
 
-El diseño incorpora pipeline interno de caché: sus etapas conservan datos,
-identificador y reservas durante esperas y permiten avanzar a operaciones
-independientes cuando hay recursos. Mantiene el hit L1 de un ciclo y los ocho
-ciclos adicionales de L2 sin contención; los handshakes auxiliares no imponen
-ciclos extra. El número de etapas y su organización interna quedan a cargo del
-diseño de cada caché.
+El camino de hit de L1 se resuelve en una sola etapa de un ciclo de CPU:
+consulta del conjunto, comparación de tags/valid y selección de palabra o
+preparación del store. Sin contención, la aceptación y la respuesta ocurren
+en el mismo flanco, según el contrato CPU–memoria. No se añade una etapa
+registrada obligatoria antes de entregar el resultado.
+
+Durante un miss, L1 conserva una sola demanda, su identificador cuando L2 lo
+asigna, la reserva de entrada y los datos necesarios hasta completar el acceso.
+Estos registros y las fases de control del miss no constituyen un pipeline
+multietapa del camino de hit.
+
+L2 incorpora pipeline interno: sus etapas conservan datos, identificador y
+reservas durante esperas y permiten avanzar a operaciones independientes cuando
+hay recursos. El número de etapas y su organización corresponden al diseño de
+L2. Se mantienen sus ocho ciclos adicionales sin contención; los handshakes
+auxiliares no imponen ciclos extra. Una respuesta por ciclo expresa throughput,
+no la latencia individual de cada acceso.
 
 Non-blocking determina cuántas operaciones conserva L2 mientras otras esperan;
 el pipeline interno determina cómo avanzan por etapas. `L2_MAX_INFLIGHT` cuenta
