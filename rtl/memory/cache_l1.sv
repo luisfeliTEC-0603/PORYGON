@@ -185,6 +185,7 @@ module cache_l1 #(
     logic load_hit_now;
     logic store_hit_now;
     logic miss_now;
+    logic range_err_now;
     logic dmem_req_handshake;
     logic dmem_rsp_handshake;
     logic l2_get_handshake;
@@ -208,6 +209,7 @@ module cache_l1 #(
     pkg_metrics::demand_origin_t miss_rsp_origin;
     logic install_now;
     logic store_in_input_now;
+    logic fill_error_now;
 
     assign req_set = dmem_req_addr_i[BLOCK_OFFSET_W +: SET_INDEX_W];
     assign req_tag = dmem_req_addr_i[BLOCK_OFFSET_W + SET_INDEX_W +: TAG_W];
@@ -265,6 +267,8 @@ module cache_l1 #(
                         dmem_req_write_i && req_addr_in_range && hit_any;
         miss_now = (state_q == L1_IDLE) && dmem_req_valid_i &&
                    req_addr_in_range && !hit_any;
+        range_err_now = (state_q == L1_IDLE) && dmem_req_valid_i &&
+                        !req_addr_in_range;
 
         raw_install_line = input_valid_q ? input_data_q : fill_data_i;
         raw_install_dirty = input_valid_q ? input_dirty_q : fill_dirty_i;
@@ -296,9 +300,9 @@ module cache_l1 #(
     end
 
     /**
-     * @brief Control combinacional de salidas, intenciones y proximo estado (L1-3..L1-6).
+     * @brief Control combinacional de salidas, intenciones y proximo estado (L1-3..L1-7).
      * @details Valores por defecto inactivos evitan latches. Gestiona hits E1,
-     * consultas WB, solicitudes L2, desalojo de victimas y recepcion/instalacion.
+     * respuestas retenidas, errores de rango/fill, desalojo WB e instalacion.
      */
     always_comb begin
         req_ready_internal = 1'b0;
@@ -321,6 +325,7 @@ module cache_l1 #(
 
         install_now = 1'b0;
         store_in_input_now = 1'b0;
+        fill_error_now = 1'b0;
 
         // Desalojo continuo de victima mientras siga ocupando la via destino
         if (pending_valid_q && dest_way_valid) begin
@@ -345,6 +350,9 @@ module cache_l1 #(
                         perf_events_o.access_valid = 1'b1;
                         perf_events_o.access_write = 1'b0;
                         perf_events_o.access_result = pkg_metrics::ACCESS_HIT;
+                        if (!dmem_rsp_handshake) begin
+                            next_state = L1_COMPLETE_ACCESS;
+                        end
                     end
                 end else if (store_hit_now) begin
                     req_ready_internal = 1'b1;
@@ -353,6 +361,21 @@ module cache_l1 #(
                         perf_events_o.access_valid = 1'b1;
                         perf_events_o.access_write = 1'b1;
                         perf_events_o.access_result = pkg_metrics::ACCESS_HIT;
+                        if (!dmem_rsp_handshake) begin
+                            next_state = L1_COMPLETE_ACCESS;
+                        end
+                    end
+                end else if (range_err_now) begin
+                    req_ready_internal = 1'b1;
+                    rsp_valid_internal = 1'b1;
+                    dmem_rsp_error_o = 1'b1;
+                    dmem_rsp_origin_o = pkg_metrics::ORIGIN_ERROR;
+                    if (dmem_req_handshake) begin
+                        perf_events_o.error.valid = 1'b1;
+                        perf_events_o.error.address = dmem_req_addr_i;
+                        if (!dmem_rsp_handshake) begin
+                            next_state = L1_COMPLETE_ACCESS;
+                        end
                     end
                 end else if (miss_now) begin
                     req_ready_internal = 1'b1;
@@ -380,17 +403,29 @@ module cache_l1 #(
                 wb_probe_base_o = pending_block_base;
                 if (!l2_offered_q && wb_probe_hit_i && !wb_probe_busy_i) begin
                     fill_ready_internal = input_reserved_q && !input_valid_q;
-                    if (fill_handshake && fill_match && !fill_error_i) begin
-                        if (way_available_now) begin
+                    if (fill_handshake && fill_match) begin
+                        if (fill_error_i) begin
+                            fill_error_now = 1'b1;
+                            rsp_valid_internal = 1'b1;
+                            dmem_rsp_error_o = 1'b1;
+                            dmem_rsp_origin_o = pkg_metrics::ORIGIN_ERROR;
+                            perf_events_o.error.valid = 1'b1;
+                            perf_events_o.error.address = pending_addr_q;
+                            if (dmem_rsp_handshake) begin
+                                next_state = L1_IDLE;
+                            end else begin
+                                next_state = L1_COMPLETE_ACCESS;
+                            end
+                        end else if (way_available_now) begin
                             install_now = 1'b1;
                             rsp_valid_internal = 1'b1;
                             dmem_rsp_rdata_o = miss_rsp_word;
                             dmem_rsp_origin_o = miss_rsp_origin;
                             if (dmem_rsp_handshake) begin
-                                    next_state = L1_IDLE;
-                                end else begin
-                                    next_state = L1_COMPLETE_ACCESS;
-                                end
+                                next_state = L1_IDLE;
+                            end else begin
+                                next_state = L1_COMPLETE_ACCESS;
+                            end
                         end else begin
                             store_in_input_now = 1'b1;
                             next_state = L1_COMPLETE_ACCESS;
@@ -407,8 +442,20 @@ module cache_l1 #(
 
             L1_WAIT_BLOCK: begin
                 fill_ready_internal = input_reserved_q && !input_valid_q;
-                if (fill_handshake && fill_match && !fill_error_i) begin
-                    if (way_available_now) begin
+                if (fill_handshake && fill_match) begin
+                    if (fill_error_i) begin
+                        fill_error_now = 1'b1;
+                        rsp_valid_internal = 1'b1;
+                        dmem_rsp_error_o = 1'b1;
+                        dmem_rsp_origin_o = pkg_metrics::ORIGIN_ERROR;
+                        perf_events_o.error.valid = 1'b1;
+                        perf_events_o.error.address = pending_addr_q;
+                        if (dmem_rsp_handshake) begin
+                            next_state = L1_IDLE;
+                        end else begin
+                            next_state = L1_COMPLETE_ACCESS;
+                        end
+                    end else if (way_available_now) begin
                         install_now = 1'b1;
                         rsp_valid_internal = 1'b1;
                         dmem_rsp_rdata_o = miss_rsp_word;
@@ -457,9 +504,9 @@ module cache_l1 #(
     end
 
     /**
-     * @brief Seguimiento de demanda pendiente, entrada reservada e id L2.
-     * @details Reset domina incluso con valid/ready activos. Libera id L2 al
-     * aceptar el retorno y limpia reservas al completarse la respuesta CPU.
+     * @brief Seguimiento de demanda pendiente, entrada reservada, id L2 y retencion.
+     * @details Reset domina incluso con valid/ready activos. Retiene respuestas
+     * cuando !dmem_rsp_ready_i y limpia reservas al completarse la entrega.
      */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -482,6 +529,18 @@ module cache_l1 #(
             response_error_q <= 1'b0;
             response_origin_q <= pkg_metrics::ORIGIN_L1;
         end else begin
+            if (dmem_req_handshake && (load_hit_now || store_hit_now) && !dmem_rsp_handshake) begin
+                response_valid_q <= 1'b1;
+                response_data_q <= load_hit_now ? hit_word : 32'b0;
+                response_error_q <= 1'b0;
+                response_origin_q <= pkg_metrics::ORIGIN_L1;
+            end else if (dmem_req_handshake && range_err_now && !dmem_rsp_handshake) begin
+                response_valid_q <= 1'b1;
+                response_data_q <= 32'b0;
+                response_error_q <= 1'b1;
+                response_origin_q <= pkg_metrics::ORIGIN_ERROR;
+            end
+
             if (dmem_req_handshake && miss_now) begin
                 pending_valid_q <= 1'b1;
                 pending_addr_q <= dmem_req_addr_i;
@@ -503,7 +562,17 @@ module cache_l1 #(
 
             if (fill_handshake && fill_match) begin
                 l2_id_valid_q <= 1'b0;
-                if (store_in_input_now) begin
+                if (fill_error_now) begin
+                    input_reserved_q <= 1'b0;
+                    if (dmem_rsp_handshake) begin
+                        pending_valid_q <= 1'b0;
+                    end else begin
+                        response_valid_q <= 1'b1;
+                        response_data_q <= 32'b0;
+                        response_error_q <= 1'b1;
+                        response_origin_q <= pkg_metrics::ORIGIN_ERROR;
+                    end
+                end else if (store_in_input_now) begin
                     input_valid_q <= 1'b1;
                     input_data_q <= fill_data_i;
                     input_dirty_q <= fill_dirty_i;
@@ -569,5 +638,4 @@ module cache_l1 #(
         end
     end
 
-    // Siguiente paso: implementar L1-7 (respuesta retenida en hit, errores y reset en vuelo).
 endmodule
