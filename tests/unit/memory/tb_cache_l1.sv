@@ -196,10 +196,53 @@ module tb_cache_l1;
         req_valid = 1'b0;
         rsp_ready = 1'b0;
 
+        /** 4. L1-4 (Caso L1-T3): Store hit de palabra, byte y media palabra + dirty */
+        // Store de byte (wstrb = 4'b0010, byte 1) sobre palabra 0 de via 0 (0xA000_0000)
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b1;
+        req_addr = 32'h00010020;
+        req_wdata = 32'h0000_CC00;
+        req_wstrb = 4'b0010;
+        rsp_ready = 1'b1;
+        #1;
+        if (dut.dmem_req_ready_o !== 1'b1 || dut.dmem_rsp_valid_o !== 1'b1 ||
+            dut.dmem_rsp_rdata_o !== 32'b0)
+            $fatal(1, "Store hit byte no responde cero en E1");
+        if (dut.perf_events_o.access_valid !== 1'b1 ||
+            dut.perf_events_o.access_write !== 1'b1 ||
+            dut.perf_events_o.access_result !== pkg_metrics::ACCESS_HIT)
+            $fatal(1, "Metrica incorrecta en store hit");
+        @(posedge clk); #1;
+        if (dut.block_dirty_q[1][0] !== 1'b1 || dut.lru_victim_q[1] !== 1'b1)
+            $fatal(1, "Store hit no marco dirty o no actualizo LRU");
+
+        // Store de media palabra alta (wstrb = 4'b1100) sobre la misma palabra
+        @(negedge clk);
+        req_wdata = 32'hDEAD_0000;
+        req_wstrb = 4'b1100;
+        @(posedge clk); #1;
+
+        // Load posterior de palabra completa para verificar mezcla y bytes vecinos conservados
+        @(negedge clk);
+        req_write = 1'b0;
+        req_wstrb = 4'b0000;
+        #1;
+        if (dut.dmem_rsp_rdata_o !== 32'hDEAD_CC00)
+            $fatal(1, "Mezcla de bytes incorrecta en store hit: esperado DEADCC00, obtenido %h",
+                   dut.dmem_rsp_rdata_o);
+        if (dut.block_data_q[1][0][63:32] !== 32'hA000_0001)
+            $fatal(1, "Store hit altero palabras vecinas del bloque");
+
+        @(posedge clk); #1;
+        req_valid = 1'b0;
+        rsp_ready = 1'b0;
+
         $display("PASS L1: reset inicial, repetido y conservacion de invalidez");
         $display("PASS L1: id valido solo tras aceptacion L2 y cancelado por reset");
         $display("PASS L1: reset bloquea canales con vecinos e intenciones activos");
         $display("PASS L1: control vuelve a LIBRE tras reset inicial y repetido");
+        $display("PASS L1: store hit en palabra, byte y media palabra (L1-4)");
         $display("PASS L1: load hit en las 8 palabras (E1), origen L1, metricas y LRU (L1-3)");
         $finish;
     end

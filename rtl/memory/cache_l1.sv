@@ -179,7 +179,9 @@ module cache_l1 #(
     logic [WAY_INDEX_W-1:0] hit_way;
     pkg_memory::line_t hit_block_data;
     pkg_memory::word_t hit_word;
+    pkg_memory::word_t merged_store_word;
     logic load_hit_now;
+    logic store_hit_now;
     logic dmem_req_handshake;
 
     assign req_set = dmem_req_addr_i[BLOCK_OFFSET_W +: SET_INDEX_W];
@@ -200,14 +202,22 @@ module cache_l1 #(
     always_comb begin
         hit_block_data = block_data_q[req_set][hit_way];
         hit_word = hit_block_data[32 * req_word_idx +: 32];
+        for (integer byte_idx = 0; byte_idx < 4; byte_idx++) begin
+            merged_store_word[8 * byte_idx +: 8] = dmem_req_wstrb_i[byte_idx] ?
+                dmem_req_wdata_i[8 * byte_idx +: 8] :
+                hit_word[8 * byte_idx +: 8];
+        end
         load_hit_now = (state_q == L1_IDLE) && dmem_req_valid_i &&
                        !dmem_req_write_i && req_addr_in_range && hit_any;
+        store_hit_now = (state_q == L1_IDLE) && dmem_req_valid_i &&
+                        dmem_req_write_i && req_addr_in_range && hit_any;
     end
 
     /**
-     * @brief Control combinacional de salidas e intenciones (L1-3: load hit).
+     * @brief Control combinacional de salidas e intenciones (L1-3/L1-4: hits).
      * @details Valores por defecto inactivos evitan latches. En L1_IDLE, un
-     * load valido dentro de rango con acierto ofrece aceptacion y respuesta E1.
+     * hit valido dentro de rango ofrece aceptacion y respuesta E1 (dato cero
+     * en store).
      */
     always_comb begin
         req_ready_internal = 1'b0;
@@ -236,6 +246,17 @@ module cache_l1 #(
             if (dmem_req_handshake) begin
                 perf_events_o.access_valid = 1'b1;
                 perf_events_o.access_write = 1'b0;
+                perf_events_o.access_result = pkg_metrics::ACCESS_HIT;
+            end
+        end else if (store_hit_now) begin
+            req_ready_internal = 1'b1;
+            rsp_valid_internal = 1'b1;
+            dmem_rsp_rdata_o = 32'b0;
+            dmem_rsp_origin_o = pkg_metrics::ORIGIN_L1;
+
+            if (dmem_req_handshake) begin
+                perf_events_o.access_valid = 1'b1;
+                perf_events_o.access_write = 1'b1;
                 perf_events_o.access_result = pkg_metrics::ACCESS_HIT;
             end
         end
@@ -272,10 +293,10 @@ module cache_l1 #(
     end
 
     /**
-     * @brief Reset asincrono activo bajo de validez/reemplazo y actualizacion LRU.
+     * @brief Reset asincrono activo bajo de validez/reemplazo y escritura en hit.
      * @details Invalidar todas las vias deja la cache vacia sin borrar datos
-     * ni tags. En un load hit aceptado en el flanco, actualiza lru_victim_q
-     * hacia la via contraria (~hit_way).
+     * ni tags. En un hit aceptado en el flanco, actualiza lru_victim_q hacia
+     * la via contraria (~hit_way); si es store hit, mezcla bytes y marca dirty.
      */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -286,10 +307,15 @@ module cache_l1 #(
                     block_dirty_q[set_index][way] <= 1'b0;
                 end
             end
-        end else if (dmem_req_handshake && load_hit_now) begin
+        end else if (dmem_req_handshake && (load_hit_now || store_hit_now)) begin
             lru_victim_q[req_set] <= ~hit_way;
+            if (store_hit_now) begin
+                block_data_q[req_set][hit_way][32 * req_word_idx +: 32] <=
+                    merged_store_word;
+                block_dirty_q[req_set][hit_way] <= 1'b1;
+            end
         end
     end
 
-    // Siguiente paso aprobado: implementar L1-4 (store hit, mascara por byte y dirty).
+    // Siguiente paso aprobado: implementar L1-5 (preferencia por via invalida y seleccion LRU).
 endmodule
