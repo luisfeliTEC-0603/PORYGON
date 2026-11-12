@@ -1,7 +1,12 @@
 /**
  * @brief Verifica el controlador junto con la RAM real de 64 KiB.
  * @details Comprueba escritura y lectura de lineas, tiempos, respuestas
- * retenidas, empate de arbitraje, conflicto EB, reset y rango invalido.
+ * retenidas, arbitraje, conflicto EB, reset y errores. TEST_MODE=1/2
+ * detiene el reloj RAM para comprobar timeout de lectura/escritura.
+ * @param DIV Ciclos CPU por ciclo RAM; ejecutar con 2 y 5.
+ * @param READ_FIRST, WRITE_FIRST Latencias iniciales independientes.
+ * @param TEST_MODE 0: recorrido completo; 1: timeout de lectura;
+ * 2: timeout de escritura. Los modos de timeout esperan el fatal del DUT.
  */
 module tb_memory_controller_full;
     import pkg_memory::*;
@@ -9,6 +14,7 @@ module tb_memory_controller_full;
     parameter integer DIV = 2;
     parameter integer READ_FIRST = MEM_READ_FIRST_WORD_CYCLES_DEFAULT;
     parameter integer WRITE_FIRST = MEM_WRITE_FIRST_WORD_CYCLES_DEFAULT;
+    parameter integer TEST_MODE = 0;
     localparam integer WRITE_TOTAL = WRITE_FIRST + (WORDS_PER_LINE - 1) * DIV;
     localparam integer READ_TOTAL = READ_FIRST + (WORDS_PER_LINE - 1) * DIV;
     localparam address_t A = DATA_BASE_ADDRESS;
@@ -48,16 +54,26 @@ module tb_memory_controller_full;
     word_t ram_write_data;
     word_t ram_read_data;
     logic ram_read_valid;
+    logic ram_read_valid_for_controller;
     logic ram_out_of_range;
+    logic inject_protocol_word = 1'b0;
+    logic protocol_drop_q = 1'b0;
     pkg_metrics::mem_events_t perf_events;
     integer cpu_edges = 0;
     integer rd_accepts = 0;
     integer wr_accepts = 0;
     integer rd_accept_edge = -1;
     integer wr_accept_edge = -1;
+    integer read_words_in_burst = 0;
+    integer previous_read_edge = -1;
+    address_t expected_read_base;
+    integer clock_age = 0;
+    logic clock_check_armed = 1'b0;
     integer words_written = 0;
     integer physical_read_words = 0;
     integer physical_write_words = 0;
+    integer protocol_drop_count = 0;
+    integer timeout_word_events = 0;
     integer event_read_words = 0;
     integer event_write_words = 0;
     integer event_read_accepts = 0;
@@ -74,10 +90,38 @@ module tb_memory_controller_full;
 
     always #5 cpu_clk = ~cpu_clk;
 
+    /** @brief Comprueba fase continua del divisor y dos flancos de reset RAM. */
+    always @(negedge rst_n) begin
+        clock_age = 0;
+        clock_check_armed = 1'b1;
+    end
+
+    always @(posedge cpu_clk) begin
+        if (clock_check_armed && TEST_MODE == 0) begin
+            if (!rst_n)
+                clock_age = 0;
+            else
+                clock_age = clock_age + 1;
+            #1;
+            if (!rst_n) begin
+                if (ram_clk !== 1'b0 || ram_rst_n !== 1'b0)
+                    $fatal(1, "reloj o reset RAM incorrecto durante reset");
+            end else begin
+                if (ram_clk !==
+                    (((clock_age - 1) % DIV) < ((DIV + 1) / 2)) ||
+                    ram_rst_n !== (clock_age >= DIV + 1))
+                    $fatal(1, "fase de reloj/reset RAM incorrecta ciclo=%0d",
+                           clock_age);
+            end
+        end
+    end
+
     memory_controller #(
         .MEM_CLOCK_DIV(DIV),
         .MEM_READ_FIRST_WORD_CYCLES(READ_FIRST),
-        .MEM_WRITE_FIRST_WORD_CYCLES(WRITE_FIRST)
+        .MEM_WRITE_FIRST_WORD_CYCLES(WRITE_FIRST),
+        .MEM_TIMEOUT_CYCLES(TEST_MODE == 0
+                            ? MEM_TIMEOUT_CYCLES_DEFAULT : 45)
     ) dut (
         .clk_i(cpu_clk), .rst_ni(rst_n),
         .mem_rd_req_valid_i(rd_valid), .mem_rd_req_ready_o(rd_ready),
@@ -95,7 +139,8 @@ module tb_memory_controller_full;
         .ram_clk_o(ram_clk), .ram_rst_no(ram_rst_n),
         .ram_address_o(ram_address), .ram_read_enable_o(ram_read_enable),
         .ram_write_enable_o(ram_write_enable), .ram_write_data_o(ram_write_data),
-        .ram_read_data_i(ram_read_data), .ram_read_valid_i(ram_read_valid),
+        .ram_read_data_i(ram_read_data),
+        .ram_read_valid_i(ram_read_valid_for_controller),
         .ram_out_of_range_i(ram_out_of_range), .perf_events_o(perf_events)
     );
 
@@ -106,6 +151,18 @@ module tb_memory_controller_full;
         .read_data_o(ram_read_data), .read_valid_o(ram_read_valid),
         .out_of_range_o(ram_out_of_range)
     );
+
+    /** @brief Inyecta una sola palabra sin valid para probar ERROR_PROTOCOL. */
+    assign ram_read_valid_for_controller =
+        ram_read_valid && !protocol_drop_q;
+
+    always @(posedge ram_clk or negedge rst_n) begin
+        if (!rst_n)
+            protocol_drop_q <= 1'b0;
+        else
+            protocol_drop_q <= inject_protocol_word && ram_read_enable &&
+                               ram_address == A + 12;
+    end
 
     function automatic line_t pattern(input word_t seed);
         line_t result;
@@ -120,6 +177,9 @@ module tb_memory_controller_full;
             rd_accepts = rd_accepts + 1;
             rd_accept_edge = cpu_edges;
             read_active_span = 0;
+            read_words_in_burst = 0;
+            previous_read_edge = -1;
+            expected_read_base = rd_base;
         end
         if (wr_valid && wr_ready) begin
             wr_accepts = wr_accepts + 1;
@@ -130,6 +190,9 @@ module tb_memory_controller_full;
             expected_write_base = wr_base;
             expected_write_line = wr_data;
         end
+        if (TEST_MODE != 0 && perf_events.word.valid)
+            timeout_word_events = timeout_word_events + 1;
+        if (TEST_MODE == 0) begin
         if (rd_valid && rd_ready && wr_valid && wr_ready)
             $fatal(1, "dos bursts aceptados en el mismo flanco");
         if (perf_events.accept.valid) begin
@@ -173,9 +236,11 @@ module tb_memory_controller_full;
                     perf_events.complete.id !== rd_rsp_id ||
                     perf_events.complete.base !== rd_rsp_base ||
                     perf_events.complete_error !==
-                        ((rd_rsp_base == END_BASE)
-                            ? pkg_metrics::ERROR_ADDRESS
-                            : pkg_metrics::ERROR_NONE))
+                        (inject_protocol_word
+                            ? pkg_metrics::ERROR_PROTOCOL
+                            : ((rd_rsp_base == END_BASE)
+                                ? pkg_metrics::ERROR_ADDRESS
+                                : pkg_metrics::ERROR_NONE)))
                     $fatal(1, "evento de fin de lectura incorrecto");
             end
         end
@@ -195,9 +260,25 @@ module tb_memory_controller_full;
              (!perf_events.complete.write &&
               read_active_span != READ_TOTAL)))
             $fatal(1, "ciclos activos de memoria incorrectos");
+        end
     end
 
     always @(posedge ram_clk) begin
+        if (TEST_MODE == 0 && ram_read_enable) begin
+            if (read_words_in_burst >= WORDS_PER_LINE ||
+                ram_address !== expected_read_base + 4 * read_words_in_burst)
+                $fatal(1, "direccion de lectura RAM incorrecta");
+            if (read_words_in_burst == 0) begin
+                if (cpu_edges - rd_accept_edge < READ_FIRST - DIV ||
+                    cpu_edges - rd_accept_edge >= READ_FIRST)
+                    $fatal(1, "primera lectura RAM fuera de ventana");
+            end else if (cpu_edges - previous_read_edge != DIV)
+                $fatal(1, "intervalo entre lecturas RAM incorrecto");
+            previous_read_edge = cpu_edges;
+            read_words_in_burst = read_words_in_burst + 1;
+        end
+        if (inject_protocol_word && ram_read_enable && ram_address == A + 12)
+            protocol_drop_count = protocol_drop_count + 1;
         if (ram_read_enable && !ram_out_of_range)
             physical_read_words = physical_read_words + 1;
         if (|ram_write_enable) begin
@@ -224,11 +305,15 @@ module tb_memory_controller_full;
         wr_rsp_ready = 1'b0;
         eb_hit = 1'b0;
         #1;
-        if (rd_rsp_valid !== 1'b0 || wr_rsp_valid !== 1'b0)
+        if (rd_rsp_valid !== 1'b0 || wr_rsp_valid !== 1'b0 ||
+            rd_ready !== 1'b0 || wr_ready !== 1'b0)
             $fatal(1, "reset no cancelo las respuestas");
         @(negedge cpu_clk);
         rst_n = 1'b1;
         @(posedge ram_rst_n);
+        #1;
+        if (rd_ready !== 1'b1)
+            $fatal(1, "lectura no disponible tras reset RAM");
     endtask
 
     task automatic send_write(input integer id, input address_t base,
@@ -314,9 +399,73 @@ module tb_memory_controller_full;
             $fatal(1, "respuesta de lectura no consumida");
     endtask
 
+    /** @brief Comprueba ERROR_PROTOCOL al perder valid en la palabra 3. */
+    task automatic check_protocol_error;
+        inject_protocol_word = 1'b1;
+        send_read(2, A);
+        @(posedge rd_rsp_valid);
+        #1;
+        if (cpu_edges - rd_accept_edge != READ_TOTAL ||
+            rd_rsp_id !== 2 || rd_rsp_base !== A ||
+            rd_rsp_error !== 1'b1)
+            $fatal(1, "respuesta de error de protocolo incorrecta");
+        for (integer i = 0; i < WORDS_PER_LINE; i++)
+            if (rd_rsp_data[32 * i +: 32] !==
+                ((i == 3) ? 32'b0 : 32'hCAFE_0000 + i))
+                $fatal(1, "palabra %0d alterada por error de protocolo", i);
+        inject_protocol_word = 1'b0;
+        consume_read();
+    endtask
+
+    /** @brief valid retenido no debe aceptar dos veces la misma lectura. */
+    task automatic check_read_reservation;
+        integer before_count;
+        before_count = rd_accepts;
+        @(negedge cpu_clk);
+        rd_id = 2;
+        rd_base = A;
+        rd_valid = 1'b1;
+        while (rd_accepts == before_count) begin
+            @(posedge cpu_clk);
+            #1;
+        end
+        @(negedge cpu_clk);
+        rd_id = 1;
+        rd_base = B;
+        repeat (3) begin
+            @(posedge cpu_clk);
+            #1;
+            if (rd_ready !== 1'b0 || rd_accepts != before_count + 1)
+                $fatal(1, "valid retenido duplico lectura aceptada");
+        end
+        rd_valid = 1'b0;
+        expect_read(2, A, pattern(32'h1234_0000));
+        consume_read();
+    endtask
+
     initial begin : checks
         integer old_reads;
         integer old_writes;
+        if (TEST_MODE != 0) begin
+            reset_controller();
+            if (TEST_MODE == 1)
+                send_read(1, A);
+            else
+                send_write(2, A, pattern(32'h5555_0000));
+            force dut.ram_clk_o = 1'b0;
+            @(posedge perf_events.complete.valid);
+            #1;
+            if (perf_events.complete_error !== pkg_metrics::ERROR_TIMEOUT ||
+                perf_events.complete.write !== (TEST_MODE == 2) ||
+                perf_events.complete.base !== A ||
+                cpu_edges - ((TEST_MODE == 2)
+                             ? wr_accept_edge : rd_accept_edge) != 44 ||
+                rd_rsp_valid !== 1'b0 || wr_rsp_valid !== 1'b0 ||
+                timeout_word_events != 0)
+                $fatal(1, "evento de timeout incorrecto");
+            $display("TIMEOUT_EVENT_OK mode=%0d", TEST_MODE);
+            // El controlador debe ejecutar $fatal en el siguiente flanco CPU.
+        end else begin
         reset_controller();
 
         send_write(3, A, pattern(32'h1234_0000));
@@ -325,6 +474,7 @@ module tb_memory_controller_full;
         send_read(2, A);
         expect_read(2, A, pattern(32'h1234_0000));
         consume_read();
+        check_read_reservation();
 
         // Una lectura terminada puede esperar ready mientras RAM escribe B.
         send_read(1, A);
@@ -512,14 +662,57 @@ module tb_memory_controller_full;
         expect_read(1, B, pattern(32'h4444_0000));
         consume_read();
 
+        // Reset interrumpe una lectura y descarta su resultado antiguo.
+        send_read(0, A);
+        while (read_words_in_burst < 3) begin
+            @(posedge ram_clk);
+            #1;
+        end
+        @(posedge cpu_clk);
+        #1;
+        reset_controller();
+        repeat (READ_TOTAL + DIV) begin
+            @(posedge cpu_clk);
+            #1;
+            if (rd_rsp_valid)
+                $fatal(1, "respuesta de lectura cancelada por reset");
+        end
+        send_read(0, A);
+        expect_read(0, A, pattern(32'hCAFE_0000));
+        consume_read();
+
+        // Reset tambien descarta una respuesta de lectura ya disponible.
+        send_read(0, A);
+        expect_read(0, A, pattern(32'hCAFE_0000));
+        reset_controller();
+        repeat (READ_TOTAL + DIV) begin
+            @(posedge cpu_clk);
+            #1;
+            if (rd_rsp_valid)
+                $fatal(1, "respuesta retenida reaparecio tras reset");
+        end
+        send_read(0, A);
+        expect_read(0, A, pattern(32'hCAFE_0000));
+        consume_read();
+
+        // La RAM conserva datos tras reset; cada fase del divisor da 39 ciclos.
+        for (integer phase = 0; phase < DIV; phase++) begin
+            reset_controller();
+            repeat (phase) @(posedge cpu_clk);
+            send_read(1, A);
+            expect_read(1, A, pattern(32'hCAFE_0000));
+            consume_read();
+        end
+        check_protocol_error();
+
         if (event_read_accepts != rd_accepts ||
             event_write_accepts != wr_accepts ||
-            event_read_words != physical_read_words ||
+            event_read_words != physical_read_words - protocol_drop_count ||
             event_write_words != physical_write_words ||
-            event_read_completes != event_read_consumes ||
+            event_read_completes != event_read_consumes + 1 ||
             event_write_completes != event_write_consumes + 1 ||
             event_write_completes != wr_accepts - 1 ||
-            event_read_completes != rd_accepts)
+            event_read_completes != rd_accepts - 1)
             $fatal(1,
                 "eventos de memoria: acepta R=%0d/%0d W=%0d/%0d palabras R=%0d/%0d W=%0d/%0d fin R=%0d/%0d W=%0d/%0d",
                 event_read_accepts, rd_accepts,
@@ -532,6 +725,7 @@ module tb_memory_controller_full;
         $display("PASS tb_memory_controller_full DIV=%0d READ_FIRST=%0d WRITE_FIRST=%0d",
                  DIV, READ_FIRST, WRITE_FIRST);
         $finish;
+        end
     end
 
     initial begin
