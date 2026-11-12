@@ -28,14 +28,20 @@ module tb_memory_controller_read_line;
     word_t ram_read_data = '0;
     logic ram_read_valid = 1'b0;
     logic inject_bad_word = 1'b0;
+    logic inject_protocol_word = 1'b0;
     logic bad_word;
+    logic range_bad_word;
+    pkg_metrics::mem_events_t perf_events;
+    pkg_metrics::error_kind_t last_complete_error;
     integer cpu_edges = 0;
     integer accepted_edge = -1;
 
     always #5 cpu_clk = ~cpu_clk;
 
-    assign bad_word = inject_bad_word && ram_read_enable &&
+    assign bad_word = (inject_bad_word || inject_protocol_word) &&
+        ram_read_enable &&
         (ram_address == DATA_BASE_ADDRESS + 12);
+    assign range_bad_word = inject_bad_word && bad_word;
 
     memory_controller #(.MEM_CLOCK_DIV(DIV)) dut (
         .clk_i(cpu_clk),
@@ -69,13 +75,15 @@ module tb_memory_controller_read_line;
         .ram_write_data_o(),
         .ram_read_data_i(ram_read_data),
         .ram_read_valid_i(ram_read_valid),
-        .ram_out_of_range_i(bad_word),
-        .perf_events_o()
+        .ram_out_of_range_i(range_bad_word),
+        .perf_events_o(perf_events)
     );
 
     always @(posedge cpu_clk) begin
         cpu_edges = cpu_edges + 1;
         if (req_valid && req_ready) accepted_edge = cpu_edges;
+        if (perf_events.complete.valid)
+            last_complete_error = perf_events.complete_error;
     end
 
     /** @brief Modelo del contrato de lectura sincrona de una palabra. */
@@ -107,6 +115,7 @@ module tb_memory_controller_read_line;
         req_valid = 1'b0;
         rsp_ready = 1'b0;
         inject_bad_word = 1'b0;
+        inject_protocol_word = 1'b0;
         accepted_edge = -1;
         @(negedge cpu_clk);
         rst_n = 1'b1;
@@ -213,19 +222,24 @@ module tb_memory_controller_read_line;
     endtask
 
     /** @brief Una palabra invalida deja error y conserva las otras siete. */
-    task automatic check_invalid_word;
-        inject_bad_word = 1'b1;
+    task automatic check_invalid_word(input logic range_error);
+        inject_bad_word = range_error;
+        inject_protocol_word = !range_error;
         start_read();
         @(posedge rsp_valid);
         #1;
         if (cpu_edges - accepted_edge != TOTAL_CYCLES ||
-            rsp_error !== 1'b1)
+            rsp_error !== 1'b1 ||
+            last_complete_error !==
+                (range_error ? pkg_metrics::ERROR_ADDRESS
+                             : pkg_metrics::ERROR_PROTOCOL))
             $fatal(1, "error de RAM no publicado a tiempo");
         for (integer word_index = 0; word_index < WORDS_PER_LINE; word_index++)
             if (rsp_data[word_index * 32 +: 32] !==
                 ((word_index == 3) ? 32'b0 : 32'hA500_0000 + word_index))
                 $fatal(1, "palabra %0d incorrecta con error", word_index);
         inject_bad_word = 1'b0;
+        inject_protocol_word = 1'b0;
         consume_response();
     endtask
 
@@ -233,7 +247,8 @@ module tb_memory_controller_read_line;
         for (integer phase = 0; phase < DIV; phase++) run_case(phase);
         check_reset_during_burst();
         check_reset_with_response();
-        check_invalid_word();
+        check_invalid_word(1'b1);
+        check_invalid_word(1'b0);
         $display("PASS tb_memory_controller_read_line DIV=%0d", DIV);
         $finish;
     end
