@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 
 /**
- * @brief Prueba aislada del Write Buffer: reset (WB-1), insercion (WB-2) y forwarding (WB-3).
+ * @brief Prueba aislada del Write Buffer: WB-1..WB-4.
  */
 module tb_write_buffer;
     localparam integer DEPTH = pkg_memory::WRITE_BUFFER_DEPTH_DEFAULT;
@@ -36,8 +36,8 @@ module tb_write_buffer;
     );
 
     task automatic check_empty;
-        if (dut.count_q !== '0 || dut.fwd_active_q !== 1'b0)
-            $fatal(1, "Reset incompleto: count_q o fwd_active_q activos");
+        if (dut.count_q !== '0 || dut.fwd_active_q !== 1'b0 || dut.install_active_q !== 1'b0)
+            $fatal(1, "Reset incompleto: count_q o retenciones activas");
         if (!rst_n && {dut.wb_push_ready_o, dut.wb_fwd_valid_o,
                        dut.wb_install_valid_o, dut.wb_done_ready_o} !== 4'b0)
             $fatal(1, "Reset permite handshake en canales WB");
@@ -61,6 +61,7 @@ module tb_write_buffer;
 
         dut.count_q = 3'd4;
         dut.fwd_active_q = 1'b1;
+        dut.install_active_q = 1'b1;
         for (integer i = 0; i < DEPTH; i++) begin
             dut.entry_valid_q[i] = 1'b1;
             dut.entry_base_q[i] = 32'h0001_0000 + (i * 32);
@@ -111,7 +112,6 @@ module tb_write_buffer;
             @(posedge clk); #1;
         end
 
-        // Al llenar las 4 entradas: wb_push_ready_o debe bajar a 0 y activar push_wait
         @(negedge clk);
         push_valid = 1'b1;
         push_base = 32'h0001_9900;
@@ -124,7 +124,6 @@ module tb_write_buffer;
         @(posedge clk); #1;
         push_valid = 1'b0;
 
-        // Verificar que las 4 entradas originales siguen intactas y en orden FIFO
         if (dut.count_q !== 3'd4)
             $fatal(1, "count_q alterado al rechazar 5ta entrada");
         for (integer i = 0; i < DEPTH; i++) begin
@@ -141,7 +140,6 @@ module tb_write_buffer;
         @(negedge clk);
         check_empty();
 
-        // Encolar A (0x1000, limpia), B (0x1020, sucia), C (0x1040, limpia)
         for (integer i = 0; i < 3; i++) begin
             @(negedge clk);
             push_valid = 1'b1;
@@ -152,7 +150,6 @@ module tb_write_buffer;
         end
         push_valid = 1'b0;
 
-        // Consulta miss (0x1080) -> hit=0, busy=0, fwd_valid=0
         @(negedge clk);
         probe_valid = 1'b1;
         probe_base = 32'h0001_1080;
@@ -161,7 +158,6 @@ module tb_write_buffer;
             dut.wb_fwd_valid_o !== 1'b0)
             $fatal(1, "Consulta miss reporto hit o forwarding indebido");
 
-        // Consulta sobre entrada intermedia B (0x1020) con fwd_ready=0 -> retiene oferta
         probe_base = 32'h0001_1020;
         fwd_ready = 1'b0;
         #1;
@@ -173,7 +169,6 @@ module tb_write_buffer;
             $fatal(1, "Evento forwarded emitido prematuramente sin handshake");
 
         @(posedge clk); #1;
-        // Aunque probe_valid baje, la oferta retenida conserva base, data y dirty
         probe_valid = 1'b0;
         probe_base = 32'b0;
         #1;
@@ -181,7 +176,6 @@ module tb_write_buffer;
             dut.wb_fwd_data_o !== {8{32'hAAAA_0001}} || dut.wb_fwd_dirty_o !== 1'b1)
             $fatal(1, "Oferta wb_fwd no mantuvo campos estables mientras fwd_ready=0");
 
-        // L1 acepta forwarding -> emite pulso unico y retira B dejando [A, C]
         @(negedge clk);
         fwd_ready = 1'b1;
         #1;
@@ -196,20 +190,117 @@ module tb_write_buffer;
             dut.entry_base_q[1] !== 32'h0001_1040 || dut.entry_dirty_q[1] !== 1'b0)
             $fatal(1, "Compactacion FIFO tras forwarding intermedio fallo: no quedaron [A, C]");
 
-        // Verificar que una entrada en servicio (inflight=1) reporta hit=1, busy=1 y sin forwarding
-        dut.entry_inflight_q[0] = 1'b1;
+        /** 4. WB-4: Prioridad fwd vs drenado, servicio sin ready, orden FIFO y done fuera de orden */
+        #1 rst_n = 1'b0;
+        #1 rst_n = 1'b1;
+        @(negedge clk);
+        check_empty();
+
+        // Encolar A (0x2000), B (0x2020), C (0x2040)
+        for (integer i = 0; i < 3; i++) begin
+            @(negedge clk);
+            push_valid = 1'b1;
+            push_base = 32'h0001_2000 + (i * 32);
+            push_data = {8{32'hBBBB_0000 + i}};
+            push_dirty = (i != 1);
+            // Simultaneamente con la insercion de A (i==0), probamos A para forwarding:
+            // forwarding debe ganar sobre drenado y no presentar wb_install para A
+            if (i == 0) begin
+                probe_valid = 1'b1;
+                probe_base = 32'h0001_2000;
+                fwd_ready = 1'b1;
+            end else begin
+                probe_valid = 1'b0;
+                fwd_ready = 1'b0;
+            end
+            @(posedge clk); #1;
+            if (i == 0) begin
+                // A acaba de encolarse; ahora en el siguiente ciclo forwarding y drenado compiten por A
+                #1;
+                if (dut.wb_fwd_valid_o !== 1'b1 || dut.wb_fwd_base_o !== 32'h0001_2000 ||
+                    dut.wb_install_valid_o !== 1'b0)
+                    $fatal(1, "Prioridad fallo: drenado presento A pese a forwarding activo");
+            end
+        end
+        push_valid = 1'b0;
+        probe_valid = 1'b0;
+        fwd_ready = 1'b0;
+
+        // Reencolar A para tener [A, B, C] completos en orden
+        #1 rst_n = 1'b0;
+        #1 rst_n = 1'b1;
+        @(negedge clk);
+        for (integer i = 0; i < 3; i++) begin
+            @(negedge clk);
+            push_valid = 1'b1;
+            push_base = 32'h0001_3000 + (i * 32);
+            push_data = {8{32'hCCCC_0000 + i}};
+            push_dirty = i[0];
+            // Drenado con ready=0 desde que aparece A
+            install_ready = 1'b0;
+            @(posedge clk); #1;
+        end
+        push_valid = 1'b0;
+
+        // A esta presentada con wb_install_valid_o=1 y ready=0 -> esta en servicio
+        if (dut.wb_install_valid_o !== 1'b1 || dut.wb_install_base_o !== 32'h0001_3000 ||
+            dut.perf_events_o.state.send_wait !== 1'b1)
+            $fatal(1, "A no se presento primero o no marco send_wait con ready=0");
+
+        // Consultar A en servicio -> hit=1, busy=1, sin forwarding
         @(negedge clk);
         probe_valid = 1'b1;
-        probe_base = 32'h0001_1000;
+        probe_base = 32'h0001_3000;
         #1;
         if (dut.wb_probe_hit_o !== 1'b1 || dut.wb_probe_busy_o !== 1'b1 ||
-            dut.wb_fwd_valid_o !== 1'b0 || dut.perf_events_o.state.raw_wait !== 1'b1)
-            $fatal(1, "Entrada en servicio no reporto hit+busy sin forwarding");
+            dut.wb_fwd_valid_o !== 1'b0)
+            $fatal(1, "Entrada A en servicio (con ready=0) permitio forwarding o no reporto busy");
         probe_valid = 1'b0;
+
+        // L2 acepta A con id=1 -> A sigue ocupando entrada 0 y ahora se presenta B
+        @(negedge clk);
+        install_ready = 1'b1;
+        install_accept_id = 2'd1;
+        #1;
+        if (dut.perf_events_o.install_accept.valid !== 1'b1 ||
+            dut.perf_events_o.install_accept.id !== 32'd1)
+            $fatal(1, "Evento install_accept incorrecto para A");
+        @(posedge clk); #1;
+        if (dut.count_q !== 3'd3 || dut.entry_base_q[0] !== 32'h0001_3000 ||
+            dut.entry_id_valid_q[0] !== 1'b1 || dut.entry_l2_id_q[0] !== 2'd1 ||
+            dut.wb_install_valid_o !== 1'b1 || dut.wb_install_base_o !== 32'h0001_3020)
+            $fatal(1, "Tras aceptar A, no retuvo entrada ni presento B en orden");
+
+        // L2 acepta B con id=2 -> se presenta C
+        @(negedge clk);
+        install_accept_id = 2'd2;
+        @(posedge clk); #1;
+        if (dut.wb_install_valid_o !== 1'b1 || dut.wb_install_base_o !== 32'h0001_3040)
+            $fatal(1, "Tras aceptar B, no presento C en orden");
+        install_ready = 1'b0;
+
+        // Confirmacion wb_done fuera de orden: llega done para B (id=2) antes que A (id=1)
+        @(negedge clk);
+        done_valid = 1'b1;
+        done_id = 2'd2;
+        #1;
+        if (dut.wb_done_ready_o !== 1'b1 || dut.perf_events_o.install_done.valid !== 1'b1 ||
+            dut.perf_events_o.install_done.id !== 32'd2)
+            $fatal(1, "wb_done fuera de orden para B no fue aceptado correctamente");
+        @(posedge clk); #1;
+        done_valid = 1'b0;
+
+        // Debe haberse retirado exclusivamente B, conservando [A (id=1), C] en orden
+        if (dut.count_q !== 3'd2 ||
+            dut.entry_base_q[0] !== 32'h0001_3000 || dut.entry_l2_id_q[0] !== 2'd1 ||
+            dut.entry_id_valid_q[0] !== 1'b1 || dut.entry_inflight_q[0] !== 1'b1 ||
+            dut.entry_base_q[1] !== 32'h0001_3040 || dut.entry_inflight_q[1] !== 1'b1)
+            $fatal(1, "Retiro fuera de orden de B altero [A, C] o sus asociaciones");
 
         $display("PASS WB: reset inicial, repetido y frontera de canales (WB-1)");
         $display("PASS WB: insercion FIFO limpia/sucia y limite de capacidad (WB-2)");
         $display("PASS WB: consulta probe, forwarding intermedio con retencion y compactacion (WB-3)");
+        $display("PASS WB: prioridad fwd, servicio sin ready, orden FIFO y done fuera de orden (WB-4)");
         $finish;
     end
 endmodule

@@ -61,24 +61,25 @@ module write_buffer #(
     localparam integer COUNT_W = $clog2(WRITE_BUFFER_DEPTH + 1);
     localparam integer IDX_W = (WRITE_BUFFER_DEPTH > 1) ? $clog2(WRITE_BUFFER_DEPTH) : 1;
 
-    /**
-     * @brief Frontera de reset para las ofertas y aceptaciones del Write Buffer.
-     * @details Con rst_ni=0, WB baja su lado de cada canal para impedir
-     * transferencias aunque el vecino este activo.
-     */
     logic push_ready_internal;
     logic fwd_valid_internal;
     logic install_valid_internal;
     logic done_ready_internal;
+
     logic wb_push_handshake;
     logic wb_fwd_handshake;
+    logic wb_install_handshake;
+    logic wb_done_handshake;
 
     assign wb_push_ready_o = rst_ni && push_ready_internal;
     assign wb_fwd_valid_o = rst_ni && fwd_valid_internal;
     assign wb_install_valid_o = rst_ni && install_valid_internal;
     assign wb_done_ready_o = rst_ni && done_ready_internal;
+
     assign wb_push_handshake = wb_push_valid_i && wb_push_ready_o;
     assign wb_fwd_handshake = wb_fwd_valid_o && wb_fwd_ready_i;
+    assign wb_install_handshake = wb_install_valid_o && wb_install_ready_i;
+    assign wb_done_handshake = wb_done_valid_i && wb_done_ready_o;
 
     /** @brief Vectores empaquetados por profundidad para evitar warnings en Icarus. */
     logic [WRITE_BUFFER_DEPTH-1:0] entry_valid_q;
@@ -90,26 +91,32 @@ module write_buffer #(
     logic [L2_ID_W-1:0] entry_l2_id_q [0:WRITE_BUFFER_DEPTH-1];
     logic [COUNT_W-1:0] count_q;
 
-    /** @brief Retencion de oferta de forwarding mientras !wb_fwd_ready_i. */
+    /** @brief Retencion de ofertas wb_fwd y wb_install hasta handshake. */
     logic fwd_active_q;
     logic [IDX_W-1:0] fwd_held_idx_q;
+    logic install_active_q;
+    logic [IDX_W-1:0] install_held_idx_q;
 
-    /** @brief Senales combinacionales de busqueda probe y seleccion forwarding. */
+    /** @brief Senales combinacionales de busqueda probe, forwarding, drenado y done. */
     logic probe_hit;
-    logic probe_busy;
+    logic probe_busy_stored;
     logic [IDX_W-1:0] probe_idx;
     logic [IDX_W-1:0] fwd_idx;
+    logic install_found;
+    logic [IDX_W-1:0] install_idx;
+    logic done_found;
+    logic [IDX_W-1:0] done_idx;
 
     always_comb begin
         probe_hit = 1'b0;
-        probe_busy = 1'b0;
+        probe_busy_stored = 1'b0;
         probe_idx = '0;
         if (wb_probe_valid_i) begin
             for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
                 if (!probe_hit && entry_valid_q[idx] &&
                     (entry_base_q[idx] == wb_probe_base_i)) begin
                     probe_hit = 1'b1;
-                    probe_busy = entry_inflight_q[idx];
+                    probe_busy_stored = entry_inflight_q[idx];
                     for (integer bit_i = 0; bit_i < IDX_W; bit_i++) begin
                         probe_idx[bit_i] = idx[bit_i];
                     end
@@ -118,21 +125,16 @@ module write_buffer #(
         end
     end
 
-    /** @brief Control combinacional de capacidad, probe, forwarding y metricas (WB-2/WB-3). */
+    /** @brief Control combinacional de canales, prioridad fwd/install y metricas. */
     always_comb begin
         push_ready_internal = (count_q < COUNT_W'(WRITE_BUFFER_DEPTH));
         fwd_valid_internal = 1'b0;
         install_valid_internal = 1'b0;
         done_ready_internal = 1'b0;
 
-        wb_probe_hit_o = rst_ni && probe_hit;
-        wb_probe_busy_o = rst_ni && probe_hit && probe_busy;
         wb_fwd_base_o = 32'b0;
         wb_fwd_data_o = '0;
         wb_fwd_dirty_o = 1'b0;
-        wb_install_base_o = 32'b0;
-        wb_install_data_o = '0;
-        wb_install_dirty_o = 1'b0;
         fwd_idx = '0;
 
         if (fwd_active_q) begin
@@ -141,7 +143,7 @@ module write_buffer #(
             wb_fwd_base_o = entry_base_q[fwd_held_idx_q];
             wb_fwd_data_o = entry_data_q[fwd_held_idx_q];
             wb_fwd_dirty_o = entry_dirty_q[fwd_held_idx_q];
-        end else if (probe_hit && !probe_busy) begin
+        end else if (probe_hit && !probe_busy_stored) begin
             fwd_valid_internal = 1'b1;
             fwd_idx = probe_idx;
             wb_fwd_base_o = entry_base_q[probe_idx];
@@ -149,11 +151,64 @@ module write_buffer #(
             wb_fwd_dirty_o = entry_dirty_q[probe_idx];
         end
 
+        // Seleccion FIFO de drenado; forwarding tiene prioridad sobre entrada libre
+        install_found = 1'b0;
+        install_idx = '0;
+        wb_install_base_o = 32'b0;
+        wb_install_data_o = '0;
+        wb_install_dirty_o = 1'b0;
+
+        if (install_active_q) begin
+            install_found = 1'b1;
+            install_idx = install_held_idx_q;
+            install_valid_internal = 1'b1;
+            wb_install_base_o = entry_base_q[install_held_idx_q];
+            wb_install_data_o = entry_data_q[install_held_idx_q];
+            wb_install_dirty_o = entry_dirty_q[install_held_idx_q];
+        end else begin
+            for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
+                logic [IDX_W-1:0] idx_trunc;
+                for (integer bit_i = 0; bit_i < IDX_W; bit_i++) begin
+                    idx_trunc[bit_i] = idx[bit_i];
+                end
+                if (!install_found && entry_valid_q[idx] && !entry_inflight_q[idx] &&
+                    !(fwd_valid_internal && (idx_trunc == fwd_idx))) begin
+                    install_found = 1'b1;
+                    install_idx = idx_trunc;
+                    install_valid_internal = 1'b1;
+                    wb_install_base_o = entry_base_q[idx_trunc];
+                    wb_install_data_o = entry_data_q[idx_trunc];
+                    wb_install_dirty_o = entry_dirty_q[idx_trunc];
+                end
+            end
+        end
+
+        // Consulta probe: entrada en servicio desde el ciclo en que se presenta install
+        wb_probe_hit_o = rst_ni && probe_hit;
+        wb_probe_busy_o = rst_ni && probe_hit &&
+            (probe_busy_stored || (install_valid_internal && (probe_idx == install_idx)));
+
+        // Busqueda de confirmacion wb_done por identificador L2
+        done_found = 1'b0;
+        done_idx = '0;
+        for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
+            if (!done_found && entry_valid_q[idx] && entry_inflight_q[idx] &&
+                entry_id_valid_q[idx] && (entry_l2_id_q[idx] == wb_done_id_i)) begin
+                done_found = 1'b1;
+                for (integer bit_i = 0; bit_i < IDX_W; bit_i++) begin
+                    done_idx[bit_i] = idx[bit_i];
+                end
+            end
+        end
+        done_ready_internal = done_found;
+
+        // Eventos y estados observables
         perf_events_o = '0;
         perf_events_o.state.occupancy = {{(32 - COUNT_W){1'b0}}, count_q};
         perf_events_o.state.capacity = WRITE_BUFFER_DEPTH;
         perf_events_o.state.push_wait = wb_push_valid_i && !wb_push_ready_o;
-        perf_events_o.state.raw_wait = wb_probe_valid_i && probe_hit && probe_busy;
+        perf_events_o.state.send_wait = wb_install_valid_o && !wb_install_ready_i;
+        perf_events_o.state.raw_wait = wb_probe_valid_i && wb_probe_hit_o && wb_probe_busy_o;
 
         if (wb_push_handshake) begin
             perf_events_o.enqueued.valid = 1'b1;
@@ -165,14 +220,24 @@ module write_buffer #(
             perf_events_o.forwarded.base = wb_fwd_base_o;
             perf_events_o.forwarded.dirty = wb_fwd_dirty_o;
         end
+        if (wb_install_handshake) begin
+            perf_events_o.install_accept.valid = 1'b1;
+            perf_events_o.install_accept.id = {{(32 - L2_ID_W){1'b0}}, wb_install_accept_id_i};
+        end
+        if (wb_done_handshake) begin
+            perf_events_o.install_done.valid = 1'b1;
+            perf_events_o.install_done.id = {{(32 - L2_ID_W){1'b0}}, wb_done_id_i};
+        end
     end
 
-    /** @brief Actualizacion sincrona: reset, retencion fwd, compactacion e insercion. */
+    /** @brief Actualizacion sincrona unificada: estado servicio, retiros, compactacion e insercion. */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             count_q <= '0;
             fwd_active_q <= 1'b0;
             fwd_held_idx_q <= '0;
+            install_active_q <= 1'b0;
+            install_held_idx_q <= '0;
             entry_valid_q <= '0;
             entry_dirty_q <= '0;
             entry_inflight_q <= '0;
@@ -183,55 +248,124 @@ module write_buffer #(
                 entry_l2_id_q[idx] <= '0;
             end
         end else begin
+            logic [WRITE_BUFFER_DEPTH-1:0] next_valid;
+            pkg_memory::address_t next_base [0:WRITE_BUFFER_DEPTH-1];
+            pkg_memory::line_t next_data [0:WRITE_BUFFER_DEPTH-1];
+            logic [WRITE_BUFFER_DEPTH-1:0] next_dirty;
+            logic [WRITE_BUFFER_DEPTH-1:0] next_inflight;
+            logic [WRITE_BUFFER_DEPTH-1:0] next_id_valid;
+            logic [L2_ID_W-1:0] next_l2_id [0:WRITE_BUFFER_DEPTH-1];
             logic [COUNT_W-1:0] next_count;
-            next_count = count_q;
+            logic next_fwd_active;
+            logic [IDX_W-1:0] next_fwd_held;
+            logic next_install_active;
+            logic [IDX_W-1:0] next_install_held;
+            logic [IDX_W-1:0] write_ptr;
 
+            next_valid = entry_valid_q;
+            next_dirty = entry_dirty_q;
+            next_inflight = entry_inflight_q;
+            next_id_valid = entry_id_valid_q;
+            for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
+                next_base[idx] = entry_base_q[idx];
+                next_data[idx] = entry_data_q[idx];
+                next_l2_id[idx] = entry_l2_id_q[idx];
+            end
+
+            next_fwd_active = fwd_active_q;
+            next_fwd_held = fwd_held_idx_q;
+            next_install_active = install_active_q;
+            next_install_held = install_held_idx_q;
+
+            // 1. Retencion de oferta wb_fwd
             if (wb_fwd_handshake) begin
-                fwd_active_q <= 1'b0;
+                next_fwd_active = 1'b0;
             end else if (wb_fwd_valid_o && !wb_fwd_ready_i && !fwd_active_q) begin
-                fwd_active_q <= 1'b1;
-                fwd_held_idx_q <= probe_idx;
+                next_fwd_active = 1'b1;
+                next_fwd_held = probe_idx;
             end
 
-            if (wb_fwd_handshake) begin
-                for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
-                    if (idx >= integer'(fwd_idx)) begin
-                        if ((idx + 1) < WRITE_BUFFER_DEPTH) begin
-                            entry_valid_q[idx] <= entry_valid_q[idx + 1];
-                            entry_base_q[idx] <= entry_base_q[idx + 1];
-                            entry_data_q[idx] <= entry_data_q[idx + 1];
-                            entry_dirty_q[idx] <= entry_dirty_q[idx + 1];
-                            entry_inflight_q[idx] <= entry_inflight_q[idx + 1];
-                            entry_id_valid_q[idx] <= entry_id_valid_q[idx + 1];
-                            entry_l2_id_q[idx] <= entry_l2_id_q[idx + 1];
-                        end else begin
-                            entry_valid_q[idx] <= 1'b0;
-                            entry_base_q[idx] <= 32'b0;
-                            entry_data_q[idx] <= '0;
-                            entry_dirty_q[idx] <= 1'b0;
-                            entry_inflight_q[idx] <= 1'b0;
-                            entry_id_valid_q[idx] <= 1'b0;
-                            entry_l2_id_q[idx] <= '0;
-                        end
-                    end
+            // 2. Paso a servicio y asociacion de id en wb_install
+            if (wb_install_valid_o) begin
+                next_inflight[install_idx] = 1'b1;
+                if (wb_install_handshake) begin
+                    next_id_valid[install_idx] = 1'b1;
+                    next_l2_id[install_idx] = wb_install_accept_id_i;
+                    next_install_active = 1'b0;
+                end else if (!install_active_q) begin
+                    next_install_active = 1'b1;
+                    next_install_held = install_idx;
                 end
-                next_count = next_count - COUNT_W'(1);
             end
 
+            // 3. Marcar entradas retiradas en este ciclo (por fwd y/o done fuera de orden)
+            if (wb_fwd_handshake) begin
+                next_valid[fwd_idx] = 1'b0;
+            end
+            if (wb_done_handshake) begin
+                next_valid[done_idx] = 1'b0;
+            end
+
+            // 4. Compactar entradas sobrevivientes preservando orden FIFO y desplazando indices retenidos
+            write_ptr = '0;
+            next_count = '0;
+            for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
+                logic [IDX_W-1:0] idx_trunc;
+                for (integer bit_i = 0; bit_i < IDX_W; bit_i++) begin
+                    idx_trunc[bit_i] = idx[bit_i];
+                end
+                if (next_valid[idx]) begin
+                    entry_valid_q[write_ptr] <= 1'b1;
+                    entry_base_q[write_ptr] <= next_base[idx];
+                    entry_data_q[write_ptr] <= next_data[idx];
+                    entry_dirty_q[write_ptr] <= next_dirty[idx];
+                    entry_inflight_q[write_ptr] <= next_inflight[idx];
+                    entry_id_valid_q[write_ptr] <= next_id_valid[idx];
+                    entry_l2_id_q[write_ptr] <= next_l2_id[idx];
+                    if (next_fwd_active && (next_fwd_held == idx_trunc)) begin
+                        next_fwd_held = write_ptr;
+                    end
+                    if (next_install_active && (next_install_held == idx_trunc)) begin
+                        next_install_held = write_ptr;
+                    end
+                    write_ptr = write_ptr + IDX_W'(1);
+                    next_count = next_count + COUNT_W'(1);
+                end
+            end
+
+            // 5. Insercion al final de la cola si hubo wb_push_handshake
             if (wb_push_handshake) begin
-                entry_valid_q[next_count[IDX_W-1:0]] <= 1'b1;
-                entry_base_q[next_count[IDX_W-1:0]] <= wb_push_base_i;
-                entry_data_q[next_count[IDX_W-1:0]] <= wb_push_data_i;
-                entry_dirty_q[next_count[IDX_W-1:0]] <= wb_push_dirty_i;
-                entry_inflight_q[next_count[IDX_W-1:0]] <= 1'b0;
-                entry_id_valid_q[next_count[IDX_W-1:0]] <= 1'b0;
-                entry_l2_id_q[next_count[IDX_W-1:0]] <= '0;
+                entry_valid_q[write_ptr] <= 1'b1;
+                entry_base_q[write_ptr] <= wb_push_base_i;
+                entry_data_q[write_ptr] <= wb_push_data_i;
+                entry_dirty_q[write_ptr] <= wb_push_dirty_i;
+                entry_inflight_q[write_ptr] <= 1'b0;
+                entry_id_valid_q[write_ptr] <= 1'b0;
+                entry_l2_id_q[write_ptr] <= '0;
+                write_ptr = write_ptr + IDX_W'(1);
                 next_count = next_count + COUNT_W'(1);
             end
 
+            // 6. Limpiar huecos restantes por encima de next_count
+            for (integer idx = 0; idx < WRITE_BUFFER_DEPTH; idx++) begin
+                if (idx >= integer'(next_count)) begin
+                    entry_valid_q[idx] <= 1'b0;
+                    entry_base_q[idx] <= 32'b0;
+                    entry_data_q[idx] <= '0;
+                    entry_dirty_q[idx] <= 1'b0;
+                    entry_inflight_q[idx] <= 1'b0;
+                    entry_id_valid_q[idx] <= 1'b0;
+                    entry_l2_id_q[idx] <= '0;
+                end
+            end
+
             count_q <= next_count;
+            fwd_active_q <= next_fwd_active;
+            fwd_held_idx_q <= next_fwd_held;
+            install_active_q <= next_install_active;
+            install_held_idx_q <= next_install_held;
         end
     end
 
-    // Siguiente paso: implementar WB-4 (drenado FIFO wb_install, prioridad fwd y wb_done fuera de orden).
+    // Siguiente paso: implementar WB-5 (matriz completa de verificacion y cierre).
 endmodule
