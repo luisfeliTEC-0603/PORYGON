@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 
 /**
- * @brief Prueba aislada del Write Buffer: WB-1..WB-4.
+ * @brief Prueba aislada completa del Write Buffer: WB-1..WB-5.
  */
 module tb_write_buffer;
     localparam integer DEPTH = pkg_memory::WRITE_BUFFER_DEPTH_DEFAULT;
@@ -23,6 +23,13 @@ module tb_write_buffer;
     logic done_valid = 1'b0;
     logic [1:0] done_id = 2'b0;
 
+    // Instancia secundaria con profundidad custom (2) para validar parametrizacion
+    logic push2_valid = 1'b0;
+    logic [31:0] push2_base = 32'b0;
+    logic [255:0] push2_data = 256'b0;
+    logic push2_dirty = 1'b0;
+    wire push2_ready;
+
     always #5 clk = ~clk;
 
     write_buffer dut (
@@ -33,6 +40,16 @@ module tb_write_buffer;
         .wb_fwd_ready_i(fwd_ready), .wb_install_ready_i(install_ready),
         .wb_install_accept_id_i(install_accept_id),
         .wb_done_valid_i(done_valid), .wb_done_id_i(done_id)
+    );
+
+    write_buffer #(.WRITE_BUFFER_DEPTH(2)) dut_depth2 (
+        .clk_i(clk), .rst_ni(rst_n),
+        .wb_push_valid_i(push2_valid), .wb_push_ready_o(push2_ready),
+        .wb_push_base_i(push2_base), .wb_push_data_i(push2_data),
+        .wb_push_dirty_i(push2_dirty), .wb_probe_valid_i(1'b0),
+        .wb_probe_base_i(32'b0), .wb_fwd_ready_i(1'b0),
+        .wb_install_ready_i(1'b0), .wb_install_accept_id_i(2'b0),
+        .wb_done_valid_i(1'b0), .wb_done_id_i(2'b0)
     );
 
     task automatic check_empty;
@@ -196,68 +213,55 @@ module tb_write_buffer;
         @(negedge clk);
         check_empty();
 
-        // Encolar A (0x2000), B (0x2020), C (0x2040)
-        for (integer i = 0; i < 3; i++) begin
-            @(negedge clk);
-            push_valid = 1'b1;
-            push_base = 32'h0001_2000 + (i * 32);
-            push_data = {8{32'hBBBB_0000 + i}};
-            push_dirty = (i != 1);
-            // Simultaneamente con la insercion de A (i==0), probamos A para forwarding:
-            // forwarding debe ganar sobre drenado y no presentar wb_install para A
-            if (i == 0) begin
-                probe_valid = 1'b1;
-                probe_base = 32'h0001_2000;
-                fwd_ready = 1'b1;
-            end else begin
-                probe_valid = 1'b0;
-                fwd_ready = 1'b0;
-            end
-            @(posedge clk); #1;
-            if (i == 0) begin
-                // A acaba de encolarse; ahora en el siguiente ciclo forwarding y drenado compiten por A
-                #1;
-                if (dut.wb_fwd_valid_o !== 1'b1 || dut.wb_fwd_base_o !== 32'h0001_2000 ||
-                    dut.wb_install_valid_o !== 1'b0)
-                    $fatal(1, "Prioridad fallo: drenado presento A pese a forwarding activo");
-            end
-        end
+        @(negedge clk);
+        push_valid = 1'b1;
+        push_base = 32'h0001_2000;
+        push_data = {8{32'hBBBB_0000}};
+        push_dirty = 1'b1;
+        @(posedge clk); #1;
         push_valid = 1'b0;
+
+        probe_valid = 1'b1;
+        probe_base = 32'h0001_2000;
+        fwd_ready = 1'b1;
+        #1;
+        if (dut.wb_fwd_valid_o !== 1'b1 || dut.wb_fwd_base_o !== 32'h0001_2000 ||
+            dut.wb_install_valid_o !== 1'b0)
+            $fatal(1, "Prioridad fallo: drenado presento A pese a forwarding activo");
+        @(posedge clk); #1;
         probe_valid = 1'b0;
         fwd_ready = 1'b0;
 
-        // Reencolar A para tener [A, B, C] completos en orden
-        #1 rst_n = 1'b0;
-        #1 rst_n = 1'b1;
-        @(negedge clk);
+        // Encolar [A, B, C] completos en orden
         for (integer i = 0; i < 3; i++) begin
             @(negedge clk);
             push_valid = 1'b1;
             push_base = 32'h0001_3000 + (i * 32);
             push_data = {8{32'hCCCC_0000 + i}};
             push_dirty = i[0];
-            // Drenado con ready=0 desde que aparece A
             install_ready = 1'b0;
             @(posedge clk); #1;
         end
         push_valid = 1'b0;
 
-        // A esta presentada con wb_install_valid_o=1 y ready=0 -> esta en servicio
-        if (dut.wb_install_valid_o !== 1'b1 || dut.wb_install_base_o !== 32'h0001_3000 ||
-            dut.perf_events_o.state.send_wait !== 1'b1)
-            $fatal(1, "A no se presento primero o no marco send_wait con ready=0");
+        // Retencion de oferta wb_install con ready=0 durante multiples ciclos
+        for (integer cyc = 0; cyc < 3; cyc++) begin
+            @(posedge clk); #1;
+            if (dut.wb_install_valid_o !== 1'b1 || dut.wb_install_base_o !== 32'h0001_3000 ||
+                dut.wb_install_data_o !== {8{32'hCCCC_0000}} || dut.wb_install_dirty_o !== 1'b0 ||
+                dut.perf_events_o.state.send_wait !== 1'b1)
+                $fatal(1, "Oferta wb_install no mantuvo campos estables en ciclo %0d", cyc);
+        end
 
-        // Consultar A en servicio -> hit=1, busy=1, sin forwarding
         @(negedge clk);
         probe_valid = 1'b1;
         probe_base = 32'h0001_3000;
         #1;
         if (dut.wb_probe_hit_o !== 1'b1 || dut.wb_probe_busy_o !== 1'b1 ||
-            dut.wb_fwd_valid_o !== 1'b0)
+            dut.wb_fwd_valid_o !== 1'b0 || dut.perf_events_o.state.raw_wait !== 1'b1)
             $fatal(1, "Entrada A en servicio (con ready=0) permitio forwarding o no reporto busy");
         probe_valid = 1'b0;
 
-        // L2 acepta A con id=1 -> A sigue ocupando entrada 0 y ahora se presenta B
         @(negedge clk);
         install_ready = 1'b1;
         install_accept_id = 2'd1;
@@ -271,7 +275,6 @@ module tb_write_buffer;
             dut.wb_install_valid_o !== 1'b1 || dut.wb_install_base_o !== 32'h0001_3020)
             $fatal(1, "Tras aceptar A, no retuvo entrada ni presento B en orden");
 
-        // L2 acepta B con id=2 -> se presenta C
         @(negedge clk);
         install_accept_id = 2'd2;
         @(posedge clk); #1;
@@ -279,9 +282,15 @@ module tb_write_buffer;
             $fatal(1, "Tras aceptar B, no presento C en orden");
         install_ready = 1'b0;
 
-        // Confirmacion wb_done fuera de orden: llega done para B (id=2) antes que A (id=1)
+        // Confirmacion wb_done con ID no asociado (id=3) no debe aceptarse
         @(negedge clk);
         done_valid = 1'b1;
+        done_id = 2'd3;
+        #1;
+        if (dut.wb_done_ready_o !== 1'b0)
+            $fatal(1, "wb_done acepto identificador sin entrada asociada");
+
+        // Confirmacion wb_done fuera de orden para B (id=2) antes que A (id=1)
         done_id = 2'd2;
         #1;
         if (dut.wb_done_ready_o !== 1'b1 || dut.perf_events_o.install_done.valid !== 1'b1 ||
@@ -290,17 +299,66 @@ module tb_write_buffer;
         @(posedge clk); #1;
         done_valid = 1'b0;
 
-        // Debe haberse retirado exclusivamente B, conservando [A (id=1), C] en orden
         if (dut.count_q !== 3'd2 ||
             dut.entry_base_q[0] !== 32'h0001_3000 || dut.entry_l2_id_q[0] !== 2'd1 ||
             dut.entry_id_valid_q[0] !== 1'b1 || dut.entry_inflight_q[0] !== 1'b1 ||
             dut.entry_base_q[1] !== 32'h0001_3040 || dut.entry_inflight_q[1] !== 1'b1)
             $fatal(1, "Retiro fuera de orden de B altero [A, C] o sus asociaciones");
 
+        /** 5. WB-5: Simultaneidad done + push, reset en servicio y profundidad custom */
+        // Aceptar C con id=3 y confirmar A (id=1) mientras entra D (0x3060)
+        @(negedge clk);
+        install_ready = 1'b1;
+        install_accept_id = 2'd3;
+        done_valid = 1'b1;
+        done_id = 2'd1;
+        push_valid = 1'b1;
+        push_base = 32'h0001_3060;
+        push_data = {8{32'hDDDD_0003}};
+        push_dirty = 1'b1;
+        @(posedge clk); #1;
+        install_ready = 1'b0;
+        done_valid = 1'b0;
+        push_valid = 1'b0;
+
+        if (dut.count_q !== 3'd2 ||
+            dut.entry_base_q[0] !== 32'h0001_3040 || dut.entry_l2_id_q[0] !== 2'd3 ||
+            dut.entry_base_q[1] !== 32'h0001_3060 || dut.entry_inflight_q[1] !== 1'b0)
+            $fatal(1, "Simultaneidad install+done+push corrompio cola o identificadores");
+
+        // Reset mientras D esta ofreciendose en wb_install_valid_o=1 -> al soltar no reaparece
+        if (dut.wb_install_valid_o !== 1'b1 || dut.wb_install_base_o !== 32'h0001_3060)
+            $fatal(1, "D no se presento tras liberar A");
+        #1 rst_n = 1'b0;
+        #1 check_empty();
+        #1 rst_n = 1'b1;
+        @(negedge clk);
+        check_empty();
+        if (dut.wb_install_valid_o !== 1'b0 || dut.wb_fwd_valid_o !== 1'b0)
+            $fatal(1, "Oferta previa reaparecio tras liberar reset");
+
+        // Validar instancia parametrizada con WRITE_BUFFER_DEPTH = 2
+        for (integer i = 0; i < 2; i++) begin
+            @(negedge clk);
+            push2_valid = 1'b1;
+            push2_base = 32'h0001_4000 + (i * 32);
+            push2_data = {8{32'hEEEE_0000 + i}};
+            push2_dirty = 1'b1;
+            #1;
+            if (push2_ready !== 1'b1)
+                $fatal(1, "Instancia depth=2 rechazo entrada %0d antes de llenarse", i);
+            @(posedge clk); #1;
+        end
+        push2_valid = 1'b0;
+        #1;
+        if (push2_ready !== 1'b0 || dut_depth2.perf_events_o.state.capacity !== 32'd2)
+            $fatal(1, "Instancia depth=2 no respeto su limite de capacidad");
+
         $display("PASS WB: reset inicial, repetido y frontera de canales (WB-1)");
         $display("PASS WB: insercion FIFO limpia/sucia y limite de capacidad (WB-2)");
         $display("PASS WB: consulta probe, forwarding intermedio con retencion y compactacion (WB-3)");
         $display("PASS WB: prioridad fwd, servicio sin ready, orden FIFO y done fuera de orden (WB-4)");
+        $display("PASS WB: retencion install, simultaneidad, reset en servicio y depth=2 (WB-5)");
         $finish;
     end
 endmodule

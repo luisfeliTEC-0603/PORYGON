@@ -366,6 +366,4 @@ module write_buffer #(
             install_held_idx_q <= next_install_held;
         end
     end
-
-    // Siguiente paso: implementar WB-5 (matriz completa de verificacion y cierre).
 endmodule
