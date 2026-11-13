@@ -8,7 +8,8 @@
  * @param MEM_TIMEOUT_CYCLES Limite desde aceptacion hasta resultado disponible.
  * @details Los tiempos incluyen CDC; con 25, 25 y divisor 2, cada burst tarda
  * 39 ciclos CPU. Ready de solicitud significa inicio del servicio, despues
- * del arbitraje. Gana la solicitud mas antigua que puede avanzar, con prioridad
+ * del arbitraje y de alcanzar la fase de reloj necesaria. Gana la solicitud
+ * mas antigua que puede avanzar, con prioridad
  * de drenado en empate. Un burst iniciado termina antes del siguiente.
  * Reset cancela ambas caras del CDC y descarta respuestas anteriores.
  * @see docs/ii-proyecto/interfaces.md secciones 6 y 7.
@@ -141,6 +142,14 @@ module memory_controller #(
         (MEM_CLOCK_DIV - 1 -
          (MEM_WRITE_FIRST_WORD_CYCLES % MEM_CLOCK_DIV) +
          MEM_CLOCK_DIV) % MEM_CLOCK_DIV;
+    /**
+     * @brief Fase de aceptacion que fija la captura CPU de lectura en A+F.
+     * @details El primer acceso RAM cae en A+F-1 y su dato sincrono se
+     * captura un flanco CPU despues. A representa el handshake de solicitud.
+     */
+    localparam integer READ_ACCEPT_PHASE =
+        (MEM_CLOCK_DIV -
+         (MEM_READ_FIRST_WORD_CYCLES % MEM_CLOCK_DIV)) % MEM_CLOCK_DIV;
 
     logic read_busy_q;
     logic write_busy_q;
@@ -151,6 +160,7 @@ module memory_controller #(
     pkg_memory::line_t write_line_q;
     logic read_accept;
     logic write_accept;
+    logic read_phase_ok;
     logic write_phase_ok;
     logic read_offer_seen_q;
     logic write_offer_seen_q;
@@ -167,27 +177,31 @@ module memory_controller #(
     logic write_complete_now;
     logic write_complete_reported_q;
     logic timeout_now;
+    logic active_result_available;
     logic rsp_valid_q;
 
     /**
      * @brief Elige la oferta mas antigua que puede avanzar.
      * @details Las banderas seen recuerdan ofertas retenidas con valid.
-     * Dos ofertas nuevas en el mismo ciclo favorecen escritura. Una lectura
-     * con conflicto EB no compite; una escritura elegida espera su fase RAM.
+     * Dos ofertas nuevas elegibles en el mismo ciclo favorecen escritura.
+     * Una oferta fuera de fase conserva su antiguedad, pero no bloquea a la
+     * otra si esta puede iniciar su burst en el flanco actual.
      */
+    assign read_phase_ok = divider_count_q == READ_ACCEPT_PHASE;
+    assign write_phase_ok = divider_count_q == WRITE_ACCEPT_PHASE;
     assign read_eligible =
-        mem_rd_req_valid_i && !read_busy_q && !eb_probe_hit_i;
-    assign write_eligible = mem_wr_req_valid_i && !write_busy_q;
+        mem_rd_req_valid_i && !read_busy_q && !eb_probe_hit_i &&
+        read_phase_ok;
+    assign write_eligible =
+        mem_wr_req_valid_i && !write_busy_q && write_phase_ok;
     assign choose_read = read_eligible &&
         (!write_eligible ||
          (read_offer_seen_q && !write_offer_seen_q) ||
          (read_offer_seen_q && write_offer_seen_q && read_older_q));
     assign choose_write = write_eligible && !choose_read;
-    assign write_phase_ok = divider_count_q == WRITE_ACCEPT_PHASE;
-
     assign mem_rd_req_ready_o =
         rst_ni && ram_rst_no && !transfer_active_q &&
-        !read_busy_q && !eb_probe_hit_i &&
+        !read_busy_q && !eb_probe_hit_i && read_phase_ok &&
         (!write_eligible || choose_read);
     assign mem_wr_req_ready_o =
         rst_ni && ram_rst_no && !transfer_active_q &&
@@ -253,11 +267,10 @@ module memory_controller #(
 
 
     /**
-     * @brief Prepara el primer acceso RAM según la fase del divisor.
-     * @details La edad comienza con la lectura aceptada. Se cambia un bit
-     * de aviso un flanco CPU antes del flanco RAM elegido; la base ya está
-     * guardada y permanece estable. Requiere una latencia inicial mayor
-     * que MEM_CLOCK_DIV para admitir cualquier fase.
+     * @brief Prepara el acceso RAM que produce la primera palabra en F.
+     * @details La fase de aceptacion ubica el flanco RAM en A+F-1. El aviso
+     * cambia en A+F-2 y la lectura sincrona se captura en CPU en A+F.
+     * La espera para alcanzar esa fase ocurre antes del handshake.
      */
 
     localparam integer READ_TOTAL_CYCLES =
@@ -266,8 +279,6 @@ module memory_controller #(
 
     localparam integer READ_AGE_W =
         (READ_TOTAL_CYCLES > 1) ? $clog2(READ_TOTAL_CYCLES + 1) : 1;
-    localparam integer FIRST_READ_WINDOW =
-        MEM_READ_FIRST_WORD_CYCLES - MEM_CLOCK_DIV;
     localparam integer WRITE_TOTAL_CYCLES =
         MEM_WRITE_FIRST_WORD_CYCLES +
         (pkg_memory::WORDS_PER_LINE - 1) * MEM_CLOCK_DIV;
@@ -279,9 +290,6 @@ module memory_controller #(
     logic [READ_AGE_W-1:0] read_age_q;
     logic read_start_toggle_q;
     logic read_start_seen_q;
-    logic ram_rise_next;
-    logic launch_on_accept;
-    logic launch_while_waiting;
     logic [WRITE_AGE_W-1:0] write_age_q;
     logic write_start_toggle_q;
     logic write_start_seen_q;
@@ -291,30 +299,16 @@ module memory_controller #(
     logic write_error_mem_q;
     logic [TIMEOUT_W-1:0] active_age_q;
 
-    assign ram_rise_next = divider_count_q == MEM_CLOCK_DIV - 2;
-
-    assign launch_on_accept =
-        ram_rise_next &&
-        (1 >= FIRST_READ_WINDOW) &&
-        (1 < MEM_READ_FIRST_WORD_CYCLES);
-
-    assign launch_while_waiting =
-        ram_rise_next &&
-        (read_age_q + 1 >= FIRST_READ_WINDOW) &&
-        (read_age_q + 1 < MEM_READ_FIRST_WORD_CYCLES);
-
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             read_age_q <= '0;
             read_start_toggle_q <= 1'b0;
         end else if (read_accept) begin
             read_age_q <= 1;
-            if (launch_on_accept)
-                read_start_toggle_q <= ~read_start_toggle_q;
         end else if (read_busy_q &&
                      read_age_q < READ_TOTAL_CYCLES) begin
             read_age_q <= read_age_q + 1'b1;
-            if (launch_while_waiting)
+            if (read_age_q == MEM_READ_FIRST_WORD_CYCLES - 2)
                 read_start_toggle_q <= ~read_start_toggle_q;
         end
     end
@@ -322,16 +316,19 @@ module memory_controller #(
     /**
      * @brief Cuenta solo desde aceptacion hasta resultado disponible.
      * @details La espera de arbitraje y la espera de consumo no pertenecen
-     * al timeout. La disponibilidad de la respuesta detiene la cuenta;
-     * el evento de estado activo cuenta solo los ciclos de transferencia.
+     * al timeout. Solo el resultado del burst activo detiene su edad; una
+     * respuesta anterior del otro canal puede seguir retenida sin afectarla.
      */
+    assign active_result_available = transfer_write_q
+        ? mem_wr_rsp_valid_o
+        : (read_complete_now || mem_rd_rsp_valid_o);
+
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni)
             active_age_q <= '0;
         else if (read_accept || write_accept)
             active_age_q <= 1;
-        else if (transfer_active_q && !read_complete_now &&
-                 !write_complete_now && !mem_wr_rsp_valid_o &&
+        else if (transfer_active_q && !active_result_available &&
                  active_age_q < MEM_TIMEOUT_CYCLES)
             active_age_q <= active_age_q + 1'b1;
     end
@@ -593,8 +590,7 @@ module memory_controller #(
     assign timeout_now =
         transfer_active_q &&
         (active_age_q >= MEM_TIMEOUT_CYCLES) &&
-        !read_complete_now && !write_complete_now &&
-        !mem_wr_rsp_valid_o;
+        !active_result_available;
 
     /**
      * @brief Expone eventos de una sola vez y estados por ciclo CPU.

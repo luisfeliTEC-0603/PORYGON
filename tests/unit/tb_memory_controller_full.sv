@@ -1,12 +1,13 @@
 /**
  * @brief Verifica el controlador junto con la RAM real de 64 KiB.
  * @details Comprueba escritura y lectura de lineas, tiempos, respuestas
- * retenidas, arbitraje, conflicto EB, reset y errores. TEST_MODE=1/2
- * detiene el reloj RAM para comprobar timeout de lectura/escritura.
+ * retenidas, arbitraje, conflicto EB, reset y errores. Los modos especiales
+ * comprueban timeout con reloj detenido y arbitraje en cada fase.
  * @param DIV Ciclos CPU por ciclo RAM; ejecutar con 2 y 5.
  * @param READ_FIRST, WRITE_FIRST Latencias iniciales independientes.
- * @param TEST_MODE 0: recorrido completo; 1: timeout de lectura;
- * 2: timeout de escritura. Los modos de timeout esperan el fatal del DUT.
+ * @param TEST_MODE 0: recorrido completo; 1/2: timeout aislado de lectura/
+ * escritura; 3/4: timeout de lectura con confirmacion anterior retenida/
+ * consumida; 5: arbitraje por fase. Modos 1..4 esperan el fatal del DUT.
  */
 module tb_memory_controller_full;
     import pkg_memory::*;
@@ -17,6 +18,10 @@ module tb_memory_controller_full;
     parameter integer TEST_MODE = 0;
     localparam integer WRITE_TOTAL = WRITE_FIRST + (WORDS_PER_LINE - 1) * DIV;
     localparam integer READ_TOTAL = READ_FIRST + (WORDS_PER_LINE - 1) * DIV;
+    localparam integer READ_ACCEPT_PHASE_TB =
+        (DIV - (READ_FIRST % DIV)) % DIV;
+    localparam integer WRITE_ACCEPT_PHASE_TB =
+        (DIV - 1 - (WRITE_FIRST % DIV) + DIV) % DIV;
     localparam address_t A = DATA_BASE_ADDRESS;
     localparam address_t B = DATA_BASE_ADDRESS + LINE_BYTES;
     localparam address_t C = DATA_BASE_ADDRESS + 2 * LINE_BYTES;
@@ -67,6 +72,9 @@ module tb_memory_controller_full;
     integer read_words_in_burst = 0;
     integer previous_read_edge = -1;
     address_t expected_read_base;
+    logic [id_width(L2_MAX_INFLIGHT_DEFAULT)-1:0] expected_read_id;
+    logic [WORDS_PER_LINE-1:0] read_word_event_mask = '0;
+    integer observed_read_word_index;
     integer clock_age = 0;
     logic clock_check_armed = 1'b0;
     integer words_written = 0;
@@ -97,7 +105,7 @@ module tb_memory_controller_full;
     end
 
     always @(posedge cpu_clk) begin
-        if (clock_check_armed && TEST_MODE == 0) begin
+        if (clock_check_armed && (TEST_MODE == 0 || TEST_MODE == 5)) begin
             if (!rst_n)
                 clock_age = 0;
             else
@@ -120,8 +128,8 @@ module tb_memory_controller_full;
         .MEM_CLOCK_DIV(DIV),
         .MEM_READ_FIRST_WORD_CYCLES(READ_FIRST),
         .MEM_WRITE_FIRST_WORD_CYCLES(WRITE_FIRST),
-        .MEM_TIMEOUT_CYCLES(TEST_MODE == 0
-                            ? MEM_TIMEOUT_CYCLES_DEFAULT : 45)
+        .MEM_TIMEOUT_CYCLES((TEST_MODE >= 1 && TEST_MODE <= 4)
+                            ? 45 : MEM_TIMEOUT_CYCLES_DEFAULT)
     ) dut (
         .clk_i(cpu_clk), .rst_ni(rst_n),
         .mem_rd_req_valid_i(rd_valid), .mem_rd_req_ready_o(rd_ready),
@@ -180,6 +188,8 @@ module tb_memory_controller_full;
             read_words_in_burst = 0;
             previous_read_edge = -1;
             expected_read_base = rd_base;
+            expected_read_id = rd_id;
+            read_word_event_mask = '0;
         end
         if (wr_valid && wr_ready) begin
             wr_accepts = wr_accepts + 1;
@@ -192,7 +202,7 @@ module tb_memory_controller_full;
         end
         if (TEST_MODE != 0 && perf_events.word.valid)
             timeout_word_events = timeout_word_events + 1;
-        if (TEST_MODE == 0) begin
+        if (TEST_MODE == 0 || TEST_MODE == 5) begin
         if (rd_valid && rd_ready && wr_valid && wr_ready)
             $fatal(1, "dos bursts aceptados en el mismo flanco");
         if (perf_events.accept.valid) begin
@@ -216,8 +226,20 @@ module tb_memory_controller_full;
                 if (perf_events.word.id !== expected_write_id ||
                     perf_events.word.base !== expected_write_base)
                     $fatal(1, "evento de palabra escrita sin asociacion");
-            end else
+            end else begin
+                if (cpu_edges - rd_accept_edge < READ_FIRST ||
+                    cpu_edges - rd_accept_edge >= READ_TOTAL + DIV ||
+                    (cpu_edges - rd_accept_edge - READ_FIRST) % DIV != 0 ||
+                    perf_events.word.id !== expected_read_id ||
+                    perf_events.word.base !== expected_read_base)
+                    $fatal(1, "evento de palabra leida fuera de ciclo o asociacion");
+                observed_read_word_index =
+                    (cpu_edges - rd_accept_edge - READ_FIRST) / DIV;
+                if (read_word_event_mask[observed_read_word_index])
+                    $fatal(1, "evento de palabra leida duplicado");
+                read_word_event_mask[observed_read_word_index] = 1'b1;
                 event_read_words = event_read_words + 1;
+            end
         end
         if (perf_events.complete.valid) begin
             if (perf_events.complete.write) begin
@@ -264,14 +286,13 @@ module tb_memory_controller_full;
     end
 
     always @(posedge ram_clk) begin
-        if (TEST_MODE == 0 && ram_read_enable) begin
+        if ((TEST_MODE == 0 || TEST_MODE == 5) && ram_read_enable) begin
             if (read_words_in_burst >= WORDS_PER_LINE ||
                 ram_address !== expected_read_base + 4 * read_words_in_burst)
                 $fatal(1, "direccion de lectura RAM incorrecta");
             if (read_words_in_burst == 0) begin
-                if (cpu_edges - rd_accept_edge < READ_FIRST - DIV ||
-                    cpu_edges - rd_accept_edge >= READ_FIRST)
-                    $fatal(1, "primera lectura RAM fuera de ventana");
+                if (cpu_edges - rd_accept_edge != READ_FIRST - 1)
+                    $fatal(1, "primera lectura RAM fuera de ciclo");
             end else if (cpu_edges - previous_read_edge != DIV)
                 $fatal(1, "intervalo entre lecturas RAM incorrecto");
             previous_read_edge = cpu_edges;
@@ -311,9 +332,73 @@ module tb_memory_controller_full;
         @(negedge cpu_clk);
         rst_n = 1'b1;
         @(posedge ram_rst_n);
+    endtask
+
+    /** @brief Con fases iguales, una oferta anterior gana al desempate. */
+    task automatic check_older_offer(input logic read_older);
+        integer old_reads;
+        integer old_writes;
+        reset_controller();
+        if (read_older)
+            send_write(3, C, pattern(32'hDD00_0000));
+        else
+            send_read(3, A);
+        old_reads = rd_accepts;
+        old_writes = wr_accepts;
+        repeat (4) @(posedge cpu_clk);
+        @(negedge cpu_clk);
+        if (read_older) begin
+            rd_id = 1;
+            rd_base = A;
+            rd_valid = 1'b1;
+        end else begin
+            wr_id = 2;
+            wr_base = B;
+            wr_data = pattern(32'hCC00_0000);
+            wr_valid = 1'b1;
+        end
+        repeat (2) @(posedge cpu_clk);
+        @(negedge cpu_clk);
+        if (read_older) begin
+            wr_id = 2;
+            wr_base = B;
+            wr_data = pattern(32'hCC00_0000);
+            wr_valid = 1'b1;
+        end else begin
+            rd_id = 1;
+            rd_base = A;
+            rd_valid = 1'b1;
+        end
+        if (read_older) begin
+            wait (wr_rsp_valid);
+            consume_write();
+        end else begin
+            wait (rd_rsp_valid);
+            consume_read();
+        end
+        while (rd_accepts == old_reads && wr_accepts == old_writes) begin
+            @(posedge cpu_clk);
+            #1;
+        end
+        if (read_older ?
+            (rd_accepts != old_reads + 1 || wr_accepts != old_writes) :
+            (wr_accepts != old_writes + 1 || rd_accepts != old_reads))
+            $fatal(1, "antiguedad ignorada en fase compartida");
+        if (read_older) rd_valid = 1'b0;
+        else wr_valid = 1'b0;
+        while (rd_accepts == old_reads || wr_accepts == old_writes) begin
+            @(posedge cpu_clk);
+            #1;
+        end
+        if (read_older) wr_valid = 1'b0;
+        else rd_valid = 1'b0;
+        wait (rd_rsp_valid && wr_rsp_valid);
         #1;
-        if (rd_ready !== 1'b1)
-            $fatal(1, "lectura no disponible tras reset RAM");
+        if (rd_rsp_id !== 1 || rd_rsp_base !== A || rd_rsp_error ||
+            wr_rsp_id !== 2 || wr_rsp_base !== B || wr_rsp_error)
+            $fatal(1, "respuesta de arbitraje por antiguedad incorrecta");
+        consume_read();
+        consume_write();
     endtask
 
     task automatic send_write(input integer id, input address_t base,
@@ -443,24 +528,123 @@ module tb_memory_controller_full;
         consume_read();
     endtask
 
-    initial begin : checks
+    /**
+     * @brief Ofrece ambos canales en cada fase y comprueba quien puede iniciar.
+     * @details La fase esperada se calcula desde el contrato, no desde el DUT.
+     */
+    task automatic check_simultaneous_phase(input integer phase_offset);
         integer old_reads;
         integer old_writes;
-        if (TEST_MODE != 0) begin
+        integer offer_edge;
+        integer phase_at_offer;
+        integer read_delay;
+        integer write_delay;
+        logic expect_write_first;
+        reset_controller();
+        repeat (phase_offset) @(posedge cpu_clk);
+        @(negedge cpu_clk);
+        old_reads = rd_accepts;
+        old_writes = wr_accepts;
+        offer_edge = cpu_edges;
+        phase_at_offer = (DIV - 1 + clock_age) % DIV;
+        read_delay =
+            (READ_ACCEPT_PHASE_TB - phase_at_offer + DIV) % DIV;
+        write_delay =
+            (WRITE_ACCEPT_PHASE_TB - phase_at_offer + DIV) % DIV;
+        expect_write_first = write_delay <= read_delay;
+        rd_id = 1;
+        rd_base = A;
+        rd_valid = 1'b1;
+        wr_id = 2;
+        wr_base = B;
+        wr_data = pattern(32'hAB00_0000 + phase_offset);
+        wr_valid = 1'b1;
+        while (rd_accepts == old_reads && wr_accepts == old_writes) begin
+            @(posedge cpu_clk);
+            #1;
+        end
+        if (cpu_edges - offer_edge !=
+            1 + ((read_delay < write_delay) ? read_delay : write_delay))
+            $fatal(1, "primera concesion incorrecta fase=%0d", phase_offset);
+        if (expect_write_first) begin
+            if (wr_accepts != old_writes + 1 || rd_accepts != old_reads)
+                $fatal(1, "escritura elegible no gano fase=%0d", phase_offset);
+        end else if (rd_accepts != old_reads + 1 ||
+                     wr_accepts != old_writes) begin
+            $fatal(1, "lectura elegible no gano fase=%0d", phase_offset);
+        end
+        if (expect_write_first) wr_valid = 1'b0;
+        else rd_valid = 1'b0;
+        while (rd_accepts == old_reads || wr_accepts == old_writes) begin
+            @(posedge cpu_clk);
+            #1;
+        end
+        if (expect_write_first) rd_valid = 1'b0;
+        else wr_valid = 1'b0;
+        if (!(expect_write_first ? wr_rsp_valid : rd_rsp_valid))
+            $fatal(1, "segundo burst adelanto fin del primero");
+        wait (rd_rsp_valid && wr_rsp_valid);
+        #1;
+        if (rd_rsp_id !== 1 || rd_rsp_base !== A || rd_rsp_error ||
+            wr_rsp_id !== 2 || wr_rsp_base !== B || wr_rsp_error ||
+            read_word_event_mask !== '1 ||
+            words_written != WORDS_PER_LINE)
+            $fatal(1, "resultado o palabras de arbitraje incorrectos");
+        consume_read();
+        consume_write();
+    endtask
+
+    initial begin : checks
+        integer old_reads;
+        if (TEST_MODE == 5) begin
+            for (integer phase = 0; phase < DIV; phase++)
+                check_simultaneous_phase(phase);
+            if (READ_ACCEPT_PHASE_TB == WRITE_ACCEPT_PHASE_TB) begin
+                check_older_offer(1'b1);
+                check_older_offer(1'b0);
+            end
+            if (event_read_words != physical_read_words ||
+                event_write_words != physical_write_words)
+                $fatal(1, "eventos de palabras perdidos en arbitraje");
+            $display("PASS arbiter DIV=%0d READ_FIRST=%0d WRITE_FIRST=%0d",
+                     DIV, READ_FIRST, WRITE_FIRST);
+            $finish;
+        end else if (TEST_MODE >= 1 && TEST_MODE <= 4) begin
             reset_controller();
-            if (TEST_MODE == 1)
+            if (TEST_MODE == 3 || TEST_MODE == 4) begin
+                send_write(2, B, pattern(32'h5555_0000));
+                @(posedge wr_rsp_valid);
+                #1;
+                if (wr_rsp_id !== 2 || wr_rsp_base !== B || wr_rsp_error)
+                    $fatal(1, "confirmacion previa incorrecta");
+                @(posedge cpu_clk);
+                #1;
+                send_read(1, A);
+            end else if (TEST_MODE == 1)
                 send_read(1, A);
             else
                 send_write(2, A, pattern(32'h5555_0000));
+            timeout_word_events = 0;
             force dut.ram_clk_o = 1'b0;
+            if (TEST_MODE == 4) begin
+                repeat (8) begin
+                    @(posedge cpu_clk);
+                    #1;
+                    if (rd_rsp_valid)
+                        $fatal(1, "lectura congelada publico respuesta");
+                end
+                consume_write();
+            end
             @(posedge perf_events.complete.valid);
             #1;
             if (perf_events.complete_error !== pkg_metrics::ERROR_TIMEOUT ||
                 perf_events.complete.write !== (TEST_MODE == 2) ||
+                perf_events.complete.id !== ((TEST_MODE == 2) ? 2 : 1) ||
                 perf_events.complete.base !== A ||
                 cpu_edges - ((TEST_MODE == 2)
                              ? wr_accept_edge : rd_accept_edge) != 44 ||
-                rd_rsp_valid !== 1'b0 || wr_rsp_valid !== 1'b0 ||
+                rd_rsp_valid !== 1'b0 ||
+                wr_rsp_valid !== (TEST_MODE == 3) ||
                 timeout_word_events != 0)
                 $fatal(1, "evento de timeout incorrecto");
             $display("TIMEOUT_EVENT_OK mode=%0d", TEST_MODE);
@@ -487,68 +671,7 @@ module tb_memory_controller_full;
         consume_write();
         consume_read();
 
-        // A espera desde antes que B mientras otra escritura usa RAM.
-        send_write(1, C, pattern(32'h1111_0000));
-        old_reads = rd_accepts;
-        old_writes = wr_accepts;
-        repeat (4) @(posedge cpu_clk);
-        @(negedge cpu_clk);
-        rd_id = 2;
-        rd_base = A;
-        rd_valid = 1'b1;
-        repeat (2) @(posedge cpu_clk);
-        @(negedge cpu_clk);
-        wr_id = 3;
-        wr_base = B;
-        wr_data = pattern(32'h2222_0000);
-        wr_valid = 1'b1;
-        @(posedge wr_rsp_valid);
-        #1;
-        if (wr_rsp_id !== 1 || wr_rsp_error !== 1'b0)
-            $fatal(1, "escritura inicial del arbitraje incorrecta");
-        consume_write();
-        @(posedge cpu_clk);
-        #1;
-        if (rd_accepts != old_reads + 1 || wr_accepts != old_writes)
-            $fatal(1, "arbitro no eligio la lectura mas antigua");
-        rd_valid = 1'b0;
-        expect_read(2, A, pattern(32'h1234_0000));
-        consume_read();
-        while (wr_accepts == old_writes) begin
-            @(posedge cpu_clk);
-            #1;
-        end
-        wr_valid = 1'b0;
-        expect_write(3, B, 1'b0);
-        consume_write();
-
-        // Dos ofertas simultaneas: escritura primero; lectura progresa
-        // mientras la confirmacion de escritura permanece retenida.
-        old_reads = rd_accepts;
-        old_writes = wr_accepts;
-        @(negedge cpu_clk);
-        wr_id = 4;
-        wr_base = B;
-        wr_data = pattern(32'hBEEF_0000);
-        wr_valid = 1'b1;
-        rd_id = 1;
-        rd_base = A;
-        rd_valid = 1'b1;
-        while (wr_accepts == old_writes) begin
-            @(posedge cpu_clk);
-            #1;
-            if (rd_accepts != old_reads)
-                $fatal(1, "empate no favorecio escritura");
-        end
-        wr_valid = 1'b0;
-        expect_write(4, B, 1'b0);
-        if (rd_accepts != old_reads + 1 || wr_rsp_valid !== 1'b1)
-            $fatal(1, "lectura no progreso con confirmacion retenida");
-        rd_valid = 1'b0;
-        consume_write();
-        expect_read(1, A, pattern(32'h1234_0000));
-        consume_read();
-
+        // El arbitraje por fase y antiguedad se prueba en TEST_MODE=5.
         // EB contiene una version mas reciente de A: lectura espera.
         old_reads = rd_accepts;
         @(negedge cpu_clk);
@@ -585,40 +708,6 @@ module tb_memory_controller_full;
             if (rd_rsp_data[32 * i +: 32] !==
                 ((i < 4) ? 32'hDEAD_0000 + i : 32'b0))
                 $fatal(1, "dato de lectura fuera de rango incorrecto");
-        consume_read();
-
-        // Ofertas durante el reset RAM: escritura B llega antes que lectura A.
-        old_reads = rd_accepts;
-        old_writes = wr_accepts;
-        @(negedge cpu_clk);
-        rst_n = 1'b0;
-        @(negedge cpu_clk);
-        rst_n = 1'b1;
-        @(posedge ram_clk);
-        @(negedge cpu_clk);
-        wr_id = 1;
-        wr_base = B;
-        wr_data = pattern(32'h3333_0000);
-        wr_valid = 1'b1;
-        @(posedge cpu_clk);
-        #1;
-        @(negedge cpu_clk);
-        rd_id = 1;
-        rd_base = A;
-        rd_valid = 1'b1;
-        while (wr_accepts == old_writes) begin
-            @(posedge cpu_clk);
-            #1;
-            if (rd_accepts != old_reads)
-                $fatal(1, "lectura posterior adelanto escritura antigua");
-        end
-        wr_valid = 1'b0;
-        expect_write(1, B, 1'b0);
-        if (rd_accepts != old_reads + 1)
-            $fatal(1, "lectura no progreso tras escritura antigua");
-        rd_valid = 1'b0;
-        consume_write();
-        expect_read(1, A, pattern(32'hCAFE_0000));
         consume_read();
 
         // Reset a mitad del burst cancela la respuesta sin borrar RAM.
