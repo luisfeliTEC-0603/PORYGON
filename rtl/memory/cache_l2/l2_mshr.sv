@@ -48,11 +48,17 @@ module l2_mshr #(
     input  logic             clk_i,
     input  logic             rst_ni,
 
-    // Consulta combinacional
-    input  logic [AW-1:0]    probe_base_i,
-    output logic             probe_hit_o,
-    output logic [OPW-1:0]   probe_owner_o,
-    output logic [N-1:0]     probe_waiters_o,
+    // Consulta A (admisión: get_base)
+    input  logic [AW-1:0]    probe_a_base_i,
+    output logic             probe_a_hit_o,
+    output logic [OPW-1:0]   probe_a_owner_o,
+    output logic [N-1:0]     probe_a_waiters_o,
+    output logic [OPW-1:0]   probe_a_entry_o,
+
+    // Consulta B (rsp: mem_rd_rsp_base_i)
+    input  logic [AW-1:0]    probe_b_base_i,
+    output logic             probe_b_hit_o,
+    output logic [OPW-1:0]   probe_b_entry_o,
 
     // Asignación de miss nuevo
     input  logic             alloc_valid_i,
@@ -77,16 +83,24 @@ module l2_mshr #(
     logic [N-1:0]     wait_q  [0:N-1];
 
     // ---- Consulta combinacional ----
-    // Recorre todas las entradas y reporta la que coincida con probe_base_i.
+    // Recorre todas las entradas y reporta la que coincida con probe_*
     always_comb begin
-        probe_hit_o     = 1'b0;
-        probe_owner_o   = '0;
-        probe_waiters_o = '0;
+        probe_a_hit_o     = 1'b0;
+        probe_a_owner_o   = '0;
+        probe_a_waiters_o = '0;
+        probe_a_entry_o   = '0;
+        probe_b_hit_o     = 1'b0;
+        probe_b_entry_o   = '0;
         for (int i = 0; i < N; i++) begin
-            if (valid_q[i] && base_q[i] == probe_base_i) begin
-                probe_hit_o     = 1'b1;
-                probe_owner_o   = owner_q[i];
-                probe_waiters_o = wait_q[i];
+            if (valid_q[i] && base_q[i] == probe_a_base_i) begin
+                probe_a_hit_o     = 1'b1;
+                probe_a_owner_o   = owner_q[i];
+                probe_a_waiters_o = wait_q[i];
+                probe_a_entry_o   = OPW'(i);
+            end
+            if (valid_q[i] && base_q[i] == probe_b_base_i) begin
+                probe_b_hit_o   = 1'b1;
+                probe_b_entry_o = OPW'(i);
             end
         end
     end
