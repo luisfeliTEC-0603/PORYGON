@@ -77,29 +77,19 @@ module cache_l2 #(
     // ------------------------------------------------------------------
     // Geometria derivada
     // ------------------------------------------------------------------
-    localparam int N        = L2_MAX_INFLIGHT;
-    localparam int WAYS     = pkg_memory::L2_WAYS;
-    localparam int AW       = $bits(pkg_memory::address_t);
-    localparam int LW       = $bits(pkg_memory::line_t);
-    localparam int OFFSET_W = $clog2(pkg_memory::LINE_BYTES);
-    localparam int SETS     = pkg_memory::L2_BYTES / (WAYS * pkg_memory::LINE_BYTES);
-    localparam int SET_W    = $clog2(SETS);
-    localparam int TAG_W    = AW - SET_W - OFFSET_W;
-    localparam int WAY_W    = $clog2(WAYS);
-    localparam int ID_W     = pkg_memory::id_width(N);
-    localparam int OPW      = (N > 1) ? $clog2(N) : 1;
+    `include "l2_geom.svh"
 
-    localparam int ST_AC = 1, ST_DS = 1, ST_TAG = 2, ST_DATA = 2, ST_RD = 1;
-    localparam int PIPE_STAGES   = ST_AC + ST_DS + ST_TAG + ST_DATA + ST_RD;
-    localparam int TAG_LAST_STG  = ST_AC + ST_DS + ST_TAG - 1;
+    localparam int N    = L2_MAX_INFLIGHT;
+    localparam int ID_W = pkg_memory::id_width(N);
+    localparam int OPW  = (N > 1) ? $clog2(N) : 1;
 
-    // Estados de l2_op_table (4 bits, deben coincidir con el modulo)
+    // Estados de l2_op_table 
     localparam logic [3:0] ST_PIPE      = 4'd1;
     localparam logic [3:0] ST_WAIT_MSHR = 4'd8;
 
     initial begin
         if (N < 1 || N > 4) $display("ERROR cache_l2: L2_MAX_INFLIGHT fuera de 1..4");
-        if (WAYS != 4)      $display("ERROR cache_l2: tree-PLRU implementado para 4 vias");
+        if (L2_WAYS_L != 4) $display("ERROR cache_l2: tree-PLRU implementado para 4 vias");
     end
 
     // ------------------------------------------------------------------
