@@ -4,27 +4,43 @@
  *
  * @details
  *   Una vía reservada queda apartada por una operación non-blocking: no puede
- *   ser elegida como destino/víctima ni acertada por otra demanda mientras la
- *   reserva esté activa. Esto evita que dos operaciones se apropien a la vez
- *   de la misma vía, sin serializar por conjunto (solo por vía).
+ *   ser elegida como destino ni como víctima, ni acertada por otra demanda,
+ *   mientras la reserva esté activa. 
  *
- *   Dos puertos de lectura: en un mismo ciclo, `l2_way_select` consulta las
- *   reservas del conjunto donde elige vía, y otro consumidor puede consultar
- *   las de un conjunto distinto (p. ej. el conjunto de la demanda entrante).
+ *   Dos puertos de lectura porque en un mismo ciclo se consultan dos
+ *   conjuntos distintos: `l2_way_select` lee las reservas del conjunto del
+ *   install (para no elegir una vía reservada) y el top lee las del conjunto
+ *   de la demanda (para bloquear un hit sobre una vía reservada). Los dos
+ *   conjuntos pueden coincidir o no.
  *
- *   Dos puertos de clear porque la reserva se libera en dos momentos con
+ *   Dos puertos de `clear` porque la reserva se libera en dos momentos con
  *   semántica propia, posiblemente en el mismo ciclo sobre vías distintas:
- *     clr0 : al completarse un fill (línea entregada a L1).
+ *     clr0 : al completarse un fill (línea entregada a L1, vía invalidada).
  *     clr1 : al completarse una escritura/install (vía ya instalada).
  *
  *   Prioridad en el mismo ciclo: clr0 -> clr1 -> set. Si una vía se libera y
- *   se reserva en el mismo ciclo, prevalece `set` (queda reservada), política
- *   conservadora para no dejar libre una vía ya tomada por otra operación.
+ *   se reserva en el mismo ciclo, prevalece set: la vía queda reservada. Es
+ *   conservador: prefiere no dejar libre una vía que otra operación ya tomó.
  *
  * @param SETS  Número de conjuntos.
  * @param WAYS  Vías por conjunto.
  * @param SET_W Ancho de índice de conjunto, $clog2(SETS).
  * @param WAY_W Ancho de índice de vía, $clog2(WAYS).
+ *
+ * @input  rd_a_set_i      Conjunto cuya fila de reservas se lee por el puerto A.
+ * @input  rd_b_set_i      Conjunto cuya fila de reservas se lee por el puerto B.
+ * @input  set_valid_i     1 si esta operación reserva una vía.
+ * @input  set_set_i       Conjunto de la vía a reservar.
+ * @input  set_way_i       Vía a reservar.
+ * @input  clr0_valid_i    1 si un fill completado libera su vía.
+ * @input  clr0_set_i      Conjunto de la vía liberada por fill.
+ * @input  clr0_way_i      Vía liberada por fill.
+ * @input  clr1_valid_i    1 si un install completado libera su vía.
+ * @input  clr1_set_i      Conjunto de la vía liberada por install.
+ * @input  clr1_way_i      Vía liberada por install.
+ *
+ * @output rd_a_resv_o     Reservas de la fila del conjunto rd_a_set_i.
+ * @output rd_b_resv_o     Reservas de la fila del conjunto rd_b_set_i.
  */
 
 module l2_way_resv #(
