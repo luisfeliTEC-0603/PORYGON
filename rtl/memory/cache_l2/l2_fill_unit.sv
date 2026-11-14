@@ -6,13 +6,11 @@
  *   Selecciona la operación en ST_FILL más antigua mediante `l2_out_sel` con
  *   lock estable, y ofrece a L1 el id, la base, la línea y el bit dirty de esa
  *   operación. Al completarse el handshake (`l2_fill_valid_o &
- *   l2_fill_ready_i`) se producen cuatro efectos en el mismo flanco:
+ *   l2_fill_ready_i`) se producen tres efectos en el mismo flanco:
  *     - invalidación de la vía en L2 (exclusividad: la línea pasa a vivir en
  *       L1 y se elimina de L2),
  *     - liberación de la reserva de la vía en `l2_way_resv`,
  *     - emisión de `ev_fill` para que la tabla de operaciones pase a IDLE,
- *     - liberación de la entrada del MSHR si la base estaba en vuelo hacia
- *       memoria.
  *
  *   No instala copia en L2: un hit L2 se invalida al entregar. No genera
  *   error: el error de memoria viaja por el canal `line_return` del top, no
@@ -23,18 +21,7 @@
  *   `sel_set_o`/`sel_way_o` de este módulo, de modo que el arreglo devuelva
  *   exactamente la línea de la operación elegida en el mismo ciclo.
  *
- *   El top también debe cablear `mshr_probe_hit_i` con el `probe_hit_o` del
- *   MSHR, usando `l2_fill_base_o` como base de consulta; ambos son
- *   combinacionales, así que el resultado está disponible en el mismo ciclo.
- *
- *   `mshr_release_valid_o` es defensivo: en operación normal, si una demanda
- *   hace hit L2 no hay entrada MSHR para su base (la admisión no acepta un
- *   hit como waiter). Solo se dispara si por alguna razón una op en ST_FILL
- *   comparte base con una entrada MSHR vigente, para no dejar la entrada
- *   colgada. Los waiters enganchados a un miss se completan por `ev_rsp`
- *   generado en `l2_mem_unit` al llegar `mem_rd_rsp`, no por este canal.
- *
- *   Los pulsos `inv_*`, `resv_clr_*`, `ev_fill_*` y `mshr_release_*` duran un
+ *   Los pulsos `inv_*`, `resv_clr_*`, y `ev_fill_*` duran un
  *   solo ciclo, el del handshake. El consumidor los trata como eventos, no
  *   como niveles.
  *
@@ -70,9 +57,6 @@ module l2_fill_unit #(
     // Línea leída del arreglo de datos (el top la cablea con sel_set_o/sel_way_o)
     input  logic [LW-1:0]    rd0_data_i,
 
-    // Consulta al MSHR por la base de la operación elegida
-    input  logic             mshr_probe_hit_i,
-
     // Canal externo hacia L1
     output logic             l2_fill_valid_o,
     input  logic             l2_fill_ready_i,
@@ -91,9 +75,6 @@ module l2_fill_unit #(
     output logic             resv_clr_valid_o,
     output logic [SET_W-1:0] resv_clr_set_o,
     output logic [WAY_W-1:0] resv_clr_way_o,
-    output logic             mshr_release_valid_o,
-    output logic [AW-1:0]    mshr_release_base_o,
-
     // Selección expuesta para que el top cablee la lectura del arreglo de datos
     output logic [SET_W-1:0] sel_set_o,
     output logic [WAY_W-1:0] sel_way_o
@@ -138,8 +119,6 @@ module l2_fill_unit #(
     assign resv_clr_valid_o   = fill_hs;
     assign resv_clr_set_o     = sel_set;
     assign resv_clr_way_o     = sel_way;
-    assign mshr_release_valid_o = fill_hs && mshr_probe_hit_i;
-    assign mshr_release_base_o  = sel_base;
 
     // Selección expuesta para el cableado del arreglo de datos en el top.
     assign sel_set_o = sel_set;

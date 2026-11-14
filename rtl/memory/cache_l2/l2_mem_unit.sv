@@ -20,17 +20,10 @@
  *   Al observar mem_rd_rsp (valid && ready) L2 no genera el handshake: solo
  *   lo observa para finalizar su operacion. En ese flanco:
  *     - ev_rsp para el owner (rsp_id): l2_op_table pasa ST_MEMWAIT -> ST_IDLE.
- *     - ev_rsp para cada waiter enganchado al MSHR de esa base:
- *       l2_op_table pasa ST_WAIT_MSHR -> ST_FILL. Asi dos demandas a la
- *       misma base no duplican mem_rd_req (T6).
- *     - mshr_release para liberar la entrada MSHR.
+ *     - Dos demandas a la misma base no coexisten: la segunda espera por
+ *       conflicto de base en la admision (no hay MSHR ni waiters).
  *     - NO se instala copia en L2 (exclusividad en miss).
  *
- *   Los waiters de la entrada MSHR correcta los entrega el top en
- *   mshr_waiters_sel_i (N bits), seleccionados con mshr_probe_entry_i
- *   (indice de la entrada que hizo hit en el MSHR para la base del rsp).
- *   No se usa la matriz N*N directamente porque el indice de la entrada
- *   MSHR no coincide necesariamente con el id del owner.
  *
  *   Precondiciones documentadas:
  *     - mem_rd_rsp_ready_i es la aceptacion de L1/line_return, no de L2;
@@ -41,7 +34,7 @@
  *       top bloquee la aceptacion del waiter en ese ciclo (l2_get_ready_o=0)
  *       para evitar un waiter colgado. Ver documentacion del top.
  *
- *   Los pulsos ev_mem, ev_rsp y mshr_release duran un solo ciclo.
+ *   Los pulsos ev_mem y ev_rsp duran un solo ciclo.
  *
  * @param N     Numero de operaciones en vuelo.
  * @param AW    Ancho de direccion.
@@ -64,10 +57,6 @@ module l2_mem_unit #(
     // EB: conflicto para la base ofrecida
     input  logic             eb_probe_hit_i,
 
-    // MSHR: waiters de la entrada que coincide con la base del rsp.
-    // El top selecciona con mshr_probe_entry_i y pasa solo N bits.
-    input  logic [N-1:0]     mshr_waiters_sel_i,
-
     // Canal externo hacia el controlador
     output logic             eb_probe_valid_o,
     output pkg_memory::address_t eb_probe_base_o,
@@ -85,20 +74,23 @@ module l2_mem_unit #(
     // Eventos para l2_op_table (pulsos de un ciclo)
     output logic             ev_mem_valid_o,
     output logic [N-1:0]     ev_mem_onehot_o,
-    output logic [N-1:0]     ev_rsp_onehot_o,
-
-    // Liberacion del MSHR al observar el rsp
-    output logic             mshr_release_valid_o,
-    output logic [AW-1:0]    mshr_release_base_o
+    output logic [N-1:0]     ev_rsp_onehot_o
 );
     logic             sel_valid;
     logic [OPW-1:0]   sel_idx;
     logic [N-1:0]     sel_onehot;
     logic [AW-1:0]    sel_base;
 
+    // Mascara de operaciones bloqueadas por conflicto con EB. Sin ella, el
+    // arbitro reelegiria cada ciclo a la operacion mas antigua aunque este
+    // bloqueada (eb_probe_hit=1) y una lectura independiente nunca avanzaria.
+    logic [N-1:0] skip_q, req_eff, req_use;
+    assign req_eff = req_mem_i & ~skip_q;
+    assign req_use = (|req_eff) ? req_eff : req_mem_i;
+
     l2_out_sel #(.N(N)) u_sel (
         .clk_i, .rst_ni,
-        .req_i(req_mem_i), .older_i(older_i),
+        .req_i(req_use), .older_i(older_i),
         .ext_valid_i(mem_rd_req_valid_o), .ext_ready_i(mem_rd_req_ready_i),
         .sel_valid_o(sel_valid), .sel_idx_o(sel_idx),
         .sel_onehot_o(sel_onehot));
@@ -115,6 +107,21 @@ module l2_mem_unit #(
     logic mem_hs;
     assign mem_hs = mem_rd_req_valid_o && mem_rd_req_ready_i;
 
+    // Al bloquearse la elegida se marca y la siguiente candidata se sondea en
+    // el ciclo siguiente. Si todas estan marcadas se reinicia la mascara (se
+    // vuelve a sondear en rotacion). Un handshake limpia la mascara para que
+    // las operaciones antiguas no sufran inanicion.
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni)
+            skip_q <= '0;
+        else if (mem_hs)
+            skip_q <= '0;
+        else if (eb_probe_valid_o && eb_probe_hit_i)
+            skip_q <= (((|req_eff) ? skip_q : '0) | sel_onehot) & req_mem_i;
+        else
+            skip_q <= skip_q & req_mem_i;
+    end
+
     assign ev_mem_valid_o  = mem_hs;
     assign ev_mem_onehot_o = mem_hs ? sel_onehot : '0;
 
@@ -124,22 +131,12 @@ module l2_mem_unit #(
     logic rsp_hs;
     assign rsp_hs = rst_ni && mem_rd_rsp_valid_i && mem_rd_rsp_ready_i;
 
-    // ev_rsp: owner siempre; waiters de la entrada MSHR correcta.
-    // El owner avanza ST_MEMWAIT -> ST_IDLE aunque su base ya no coincida
-    // (por ejemplo, por un timeout), para no dejarlo colgado.
+    // ev_rsp: solo el owner. Se exige coincidencia de id y base para ignorar
+    // respuestas ajenas (p. ej. residuales de un reset anterior).
     always_comb begin
         ev_rsp_onehot_o = '0;
-        if (rsp_hs) begin
+        if (rsp_hs && (int'(mem_rd_rsp_id_i) < N) &&
+            (t_base_i[int'(mem_rd_rsp_id_i)*AW +: AW] == mem_rd_rsp_base_i))
             ev_rsp_onehot_o[mem_rd_rsp_id_i] = 1'b1;
-            for (int w = 0; w < N; w++) begin
-                if (mshr_waiters_sel_i[w])
-                    ev_rsp_onehot_o[w] = 1'b1;
-            end
-        end
     end
-
-    // Liberacion del MSHR: siempre que llegue un rsp. El MSHR ignora bases
-    // que no estan en vuelo, asi que es seguro.
-    assign mshr_release_valid_o = rsp_hs;
-    assign mshr_release_base_o  = mem_rd_rsp_base_i;
 endmodule

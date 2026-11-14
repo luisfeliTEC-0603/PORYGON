@@ -67,6 +67,7 @@ module l2_install_unit #(
     output logic [TAG_W-1:0] wr_tag_o,
     output logic             wr_dirty_o,
     output logic [LW-1:0]    wr_data_o,
+    output logic [OPW-1:0]   wr_idx_o,
 
     // Touch PLRU y clear de reserva (pulsos de un ciclo)
     output logic             plru_touch_valid_o,
@@ -130,6 +131,7 @@ module l2_install_unit #(
     assign wr_set_o   = sel_set;
     assign wr_way_o   = sel_way;
     assign wr_tag_o   = sel_base[$clog2(pkg_memory::LINE_BYTES) + SET_W +: TAG_W];
+    assign wr_idx_o   = sel_idx;
     assign wr_dirty_o = t_dirty_i[sel_idx];
     assign wr_data_o  = t_data_i[sel_idx*LW +: LW];
 

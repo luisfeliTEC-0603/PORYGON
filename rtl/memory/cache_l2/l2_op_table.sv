@@ -13,15 +13,14 @@
  *     PIPE      : la operación atraviesa el pipeline interno.
  *     FILL      : demanda con hit L2; espera handshake de fill hacia L1.
  *     MEMREQ    : demanda con miss; solicita lectura a memoria.
- *     MEMWAIT   : demanda esperando la respuesta de memoria (owner del MSHR).
- *     WAIT_MSHR : demanda o install enganchada a un MSHR existente (waiter).
+ *     MEMWAIT   : demanda esperando la respuesta de memoria (owner de la lectura).
  *     EBOFF     : install con víctima sucia; espera aceptación del eviction
  *                 buffer antes de escribir.
  *     WRITE     : install escribiendo en el arreglo de datos.
  *     DONE      : install esperando confirmación wb_done.
  *
  *   Transiciones:
- *     IDLE -> PIPE o WAIT_MSHR   al alloc, según alloc_st_i.
+ *     IDLE -> PIPE               al alloc.
  *     PIPE -> FILL               demanda con hit, al terminar el pipeline.
  *     PIPE -> MEMREQ             demanda con miss, al terminar el pipeline.
  *     PIPE -> EBOFF/WRITE        install, al terminar el pipeline (según
@@ -29,17 +28,13 @@
  *     FILL -> IDLE               al handshake de fill.
  *     MEMREQ -> MEMWAIT          al emitir la solicitud de memoria.
  *     MEMWAIT -> IDLE            al observar la respuesta de memoria (owner).
- *     WAIT_MSHR -> FILL          demanda waiter al observarse la respuesta.
- *     WAIT_MSHR -> DONE          install waiter al observarse la respuesta.
  *     EBOFF -> WRITE             al aceptar el eviction buffer.
  *     WRITE -> DONE              al completar la escritura.
  *     DONE -> IDLE               al handshake de wb_done.
  *
  *   Los eventos ev_*_i son one-hot por operación e indican que el handshake
- *   del canal correspondiente ocurrió en este ciclo. El productor de
- *   ev_rsp_i debe generar el bit para TODAS las operaciones con esa base
- *   (owner y waiters) en el mismo ciclo, para que owner y waiters avancen
- *   juntos.
+ *   del canal correspondiente ocurrió en este ciclo. ev_rsp_i
+ *   corresponde solo al owner de la lectura (una demanda por base).
  *
  *   Antigüedad: older_o[j*N + i] = 1 indica que j es más antigua que i. Se
  *   construye al alloc (toda operación activa es más antigua que la nueva) y
@@ -79,7 +74,6 @@ module l2_op_table #(
     input  logic [AW-1:0]        alloc_vbase_i,   // base de la víctima
     input  logic [LW-1:0]        alloc_data_i,
     input  logic                 alloc_dirty_i,
-    input  logic [3:0]           alloc_st_i,      // estado inicial al allocar
     output logic                 free_any_o,
     output logic [OPW-1:0]       alloc_idx_o,
 
@@ -130,7 +124,6 @@ module l2_op_table #(
     localparam logic [3:0] ST_EBOFF     = 4'd5;
     localparam logic [3:0] ST_WRITE     = 4'd6;
     localparam logic [3:0] ST_DONE      = 4'd7;
-    localparam logic [3:0] ST_WAIT_MSHR = 4'd8;
 
     logic [N*4-1:0]     st_q;
     logic [N-1:0]       kind_q, hit_q, vvalid_q, vdirty_q, dirty_q;
@@ -206,9 +199,6 @@ module l2_op_table #(
                     ST_FILL:      if (ev_fill_i[i]) st_q[i*4 +: 4] <= ST_IDLE;
                     ST_MEMREQ:    if (ev_mem_i[i])  st_q[i*4 +: 4] <= ST_MEMWAIT;
                     ST_MEMWAIT:   if (ev_rsp_i[i])  st_q[i*4 +: 4] <= ST_IDLE;
-                    // FIX 3: waiter distingue demanda (FILL) de install (DONE).
-                    ST_WAIT_MSHR: if (ev_rsp_i[i])
-                                      st_q[i*4 +: 4] <= kind_q[i] ? ST_DONE : ST_FILL;
                     ST_EBOFF:     if (ev_eb_i[i])   st_q[i*4 +: 4] <= ST_WRITE;
                     ST_WRITE:     if (ev_wr_i[i])   st_q[i*4 +: 4] <= ST_DONE;
                     ST_DONE:      if (ev_done_i[i]) st_q[i*4 +: 4] <= ST_IDLE;
@@ -217,7 +207,7 @@ module l2_op_table #(
             end
 
             if (alloc_valid_i) begin
-                st_q[alloc_idx_o*4 +: 4]          <= alloc_st_i;
+                st_q[alloc_idx_o*4 +: 4]          <= ST_PIPE;
                 kind_q[alloc_idx_o]               <= alloc_kind_i;
                 hit_q[alloc_idx_o]                <= alloc_hit_i;
                 vvalid_q[alloc_idx_o]             <= alloc_vvalid_i;

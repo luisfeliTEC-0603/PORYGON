@@ -3,23 +3,24 @@
  * @param L2_MAX_INFLIGHT Operaciones aceptadas hasta finalizacion consumida;
  * cuatro por defecto, rango 1..4. No determina bancos ni busquedas simultaneas.
  * @details Top de solo cableado y reglas de admision. Submodulos: l2_tag_array,
- * l2_data_array, l2_plru, l2_way_resv, l2_lookup, l2_way_select, l2_mshr,
+ * l2_data_array, l2_plru, l2_way_resv, l2_lookup, l2_way_select,
  * l2_op_table, l2_pipe, l2_out_sel, l2_fill_unit, l2_install_unit,
- * l2_evict_unit, l2_mem_unit, l2_perf, l2_reset.
+ * l2_evict_unit, l2_mem_unit, l2_perf.
  *
  * Exclusividad: hit L2 -> L1 invalida en L2 al aceptar L1; miss L2 -> retorno
  * directo (L2 solo observa mem_rd_rsp valid&&ready y libera el id); instalacion
  * WB conserva dirty y ofrece wb_done solo despues de escribir los arreglos.
  * Latencia: accept (ciclo T) -> fill_valid / mem_rd_req_valid en T+8.
  *
- * MSHR: una entrada por base en vuelo. Demanda a base ya en MSHR se acepta
- * directo en ST_WAIT_MSHR (alloc_st_i) y se engancha como waiter; no emite
- * mem_rd_req adicional. Al llegar mem_rd_rsp se completan owner y waiters.
+ * Demandas a una misma base: no se admite una segunda mientras exista una
+ * operacion activa con esa base (conflict_a); espera y, al terminar la
+ * primera, se evalua de nuevo. No hay MSHR ni waiters.
  *
- * Caso limite attach + rsp mismo ciclo: si una demanda coincide en base con
- * una entrada MSHR que se libera en este flanco, se bloquea su aceptacion un
- * ciclo (l2_get_ready_o=0) para evitar un waiter colgado. En el siguiente
- * ciclo se acepta como miss nuevo (la entrada MSHR ya se libero).
+ * Reset: asincrono (rst_ni) sobre todo el estado (tags, reservas, PLRU, tabla,
+ * pipeline, arbitros); las salidas valid se fuerzan a 0 con rst_ni.
+ *
+ * Nota: la via de una victima sucia no se invalida al aceptarla EB; permanece
+ * reservada (nadie puede acertarla ni elegirla) y se sobrescribe al instalar.
  */
 
 module cache_l2 #(
@@ -77,19 +78,24 @@ module cache_l2 #(
     // ------------------------------------------------------------------
     // Geometria derivada
     // ------------------------------------------------------------------
-    `include "l2_geom.svh"
+    localparam int AW       = $bits(pkg_memory::address_t);
+    localparam int LW       = $bits(pkg_memory::line_t);
+    localparam int OFFSET_W = $clog2(pkg_memory::LINE_BYTES);
+    localparam int SETS     = pkg_memory::L2_BYTES / (pkg_memory::L2_WAYS * pkg_memory::LINE_BYTES);
+    localparam int SET_W    = $clog2(SETS);
+    localparam int WAYS     = pkg_memory::L2_WAYS;
+    localparam int WAY_W    = $clog2(WAYS);
+    localparam int TAG_W    = AW - SET_W - OFFSET_W;
+    localparam int PIPE_STAGES  = 7;
+    localparam int TAG_LAST_STG = 3;
 
     localparam int N    = L2_MAX_INFLIGHT;
     localparam int ID_W = pkg_memory::id_width(N);
     localparam int OPW  = (N > 1) ? $clog2(N) : 1;
 
-    // Estados de l2_op_table 
-    localparam logic [3:0] ST_PIPE      = 4'd1;
-    localparam logic [3:0] ST_WAIT_MSHR = 4'd8;
-
     initial begin
         if (N < 1 || N > 4) $display("ERROR cache_l2: L2_MAX_INFLIGHT fuera de 1..4");
-        if (L2_WAYS_L != 4) $display("ERROR cache_l2: tree-PLRU implementado para 4 vias");
+        if (WAYS != 4) $display("ERROR cache_l2: tree-PLRU implementado para 4 vias");
     end
 
     // ------------------------------------------------------------------
@@ -118,6 +124,8 @@ module cache_l2 #(
     logic [TAG_W-1:0] wr_tag;
     logic             wr_dirty;
     logic [LW-1:0]    wr_data;
+    logic [OPW-1:0]   wr_idx;
+    logic             wr_first;
 
     // Invalidacion de fill (desde l2_fill_unit)
     logic             inv_valid;
@@ -212,43 +220,6 @@ module cache_l2 #(
     assign inst_dirty_in = wb_install_dirty_i | (inst_hit & b_dirty[inst_hit_way]);
 
     // ------------------------------------------------------------------
-    // MSHR
-    // ------------------------------------------------------------------
-    logic             mshr_a_hit, mshr_b_hit;
-    logic [OPW-1:0]   mshr_a_owner, mshr_a_entry, mshr_b_entry;
-    logic [N-1:0]     mshr_a_waiters;
-    logic [N*N-1:0]   mshr_waiters_all;
-    logic             mshr_alloc_valid, mshr_attach_valid, mshr_release_valid;
-    logic [AW-1:0]    mshr_alloc_base, mshr_attach_base, mshr_release_base;
-    logic [OPW-1:0]   mshr_alloc_owner, mshr_attach_id;
-    logic [N-1:0]     mshr_waiters_sel;
-
-    l2_mshr #(.N(N), .AW(AW), .IDW(ID_W), .OPW(OPW)) u_mshr (
-        .clk_i, .rst_ni,
-        .probe_a_base_i(get_base),
-        .probe_a_hit_o(mshr_a_hit), .probe_a_owner_o(mshr_a_owner),
-        .probe_a_waiters_o(mshr_a_waiters), .probe_a_entry_o(mshr_a_entry),
-        .probe_b_base_i(mem_rd_rsp_base_i),
-        .probe_b_hit_o(mshr_b_hit), .probe_b_entry_o(mshr_b_entry),
-        .alloc_valid_i(mshr_alloc_valid), .alloc_base_i(mshr_alloc_base),
-        .alloc_owner_i(mshr_alloc_owner),
-        .attach_valid_i(mshr_attach_valid), .attach_base_i(mshr_attach_base),
-        .attach_id_i(mshr_attach_id),
-        .release_valid_i(mshr_release_valid), .release_base_i(mshr_release_base),
-        .waiters_o(mshr_waiters_all)
-    );
-
-    // Waiters de la entrada que coincide con la base del rsp (para l2_mem_unit).
-    // Seleccion directa con mshr_b_entry.
-    assign mshr_waiters_sel = mshr_waiters_all[mshr_b_entry*N +: N];
-
-    // Combinacion de los dos posibles release (mem y fill defensivo)
-    logic        mshr_rel_mem_valid, mshr_rel_fill_valid;
-    logic [AW-1:0] mshr_rel_mem_base, mshr_rel_fill_base;
-    assign mshr_release_valid = mshr_rel_mem_valid | mshr_rel_fill_valid;
-    assign mshr_release_base  = mshr_rel_mem_valid ? mshr_rel_mem_base : mshr_rel_fill_base;
-
-    // ------------------------------------------------------------------
     // Tabla de operaciones, pipeline
     // ------------------------------------------------------------------
     logic             free_any, conflict_a, conflict_b;
@@ -262,26 +233,18 @@ module cache_l2 #(
     logic [PIPE_STAGES-1:0]     stage_valid;
     logic [PIPE_STAGES*OPW-1:0] stage_idx;
 
-    // Admision: get e install, con MSHR
-    // - get a base en MSHR (y sin rsp en el mismo ciclo) -> accept directo en ST_WAIT_MSHR
-    // - get a base en MSHR y rsp en el mismo ciclo -> bloquear aceptacion
-    // - get hit L2 puro -> ST_PIPE (no toca MSHR)
-    // - get miss L2 nuevo -> ST_PIPE + alloc MSHR al final del pipe
-    // - install -> ST_PIPE + (alloc MSHR al final si miss; no si hit)
-    logic get_hit_blocked, get_mshr_attach, get_mshr_block;
-    logic rsp_hs;
-    assign rsp_hs = rst_ni && mem_rd_rsp_valid_i && mem_rd_rsp_ready_i;
-
+    // Admision (una sola aceptacion por ciclo; drenado WB gana en empate):
+    // - get con hit en via reservada -> espera
+    // - get/install con base ya activa en la tabla -> espera (conflicto)
+    // - get hit -> reserva la via; get miss -> sin reserva, lectura a memoria
+    // - install -> reserva la via destino (invalida no reservada o PLRU)
+    logic get_hit_blocked;
     assign get_hit_blocked = get_hit && a_resv[get_hit_way];
-    assign get_mshr_attach = mshr_a_hit && !get_hit && !rsp_hs;
-    assign get_mshr_block  = mshr_a_hit && !get_hit &&  rsp_hs;
 
     logic get_pre, install_pre;
-    assign get_pre      = rst_ni && free_any && !get_hit_blocked &&
-                          !get_mshr_block && !conflict_a;
+    assign get_pre      = rst_ni && free_any && !get_hit_blocked && !conflict_a;
     assign install_pre  = rst_ni && free_any && inst_way_ok && !conflict_b;
     assign wb_install_ready_o = install_pre;
-    // Drenado gana en empate; get se bloquea si install se acepta.
     assign l2_get_ready_o = get_pre && !(wb_install_valid_i && install_pre);
 
     logic get_accept, install_accept;
@@ -291,23 +254,9 @@ module cache_l2 #(
     assign l2_get_accept_id_o     = alloc_idx;
     assign wb_install_accept_id_o = alloc_idx;
 
-    // Estado inicial de la op aceptada
-    logic [3:0] alloc_st;
-    assign alloc_st = get_accept ? (get_mshr_attach ? ST_WAIT_MSHR : ST_PIPE)
-                                 : ST_PIPE;
-
-    // MSHR alloc/attach al aceptar (para get; install no usa MSHR)
-    assign mshr_alloc_valid  = get_accept && !get_hit && !get_mshr_attach;
-    assign mshr_alloc_base   = get_base;
-    assign mshr_alloc_owner  = alloc_idx;
-    assign mshr_attach_valid = get_accept && get_mshr_attach;
-    assign mshr_attach_base  = get_base;
-    assign mshr_attach_id    = alloc_idx;
-
     l2_op_table #(.N(N), .AW(AW), .LW(LW), .WAY_W(WAY_W)) u_table (
         .clk_i, .rst_ni,
         .alloc_valid_i(get_accept | install_accept),
-        .alloc_st_i(alloc_st),
         .alloc_kind_i(install_accept),
         .alloc_base_i(install_accept ? inst_base : get_base),
         .alloc_way_i(install_accept ? inst_way : get_hit_way),
@@ -355,7 +304,6 @@ module cache_l2 #(
         .req_fill_i(req_fill), .older_i(older),
         .t_base_i(t_base), .t_way_i(t_way), .t_dirty_i(t_dirty),
         .rd0_data_i(rd0_data),
-        .mshr_probe_hit_i(mshr_a_hit),
         .l2_fill_valid_o, .l2_fill_ready_i,
         .l2_fill_id_o, .l2_fill_base_o, .l2_fill_data_o,
         .l2_fill_dirty_o, .l2_fill_error_o,
@@ -363,8 +311,6 @@ module cache_l2 #(
         .inv_valid_o(inv_valid), .inv_set_o(inv_set), .inv_way_o(inv_way),
         .resv_clr_valid_o(resv_clr0_valid), .resv_clr_set_o(resv_clr0_set),
         .resv_clr_way_o(resv_clr0_way),
-        .mshr_release_valid_o(mshr_rel_fill_valid),
-        .mshr_release_base_o(mshr_rel_fill_base),
         .sel_set_o(fill_sel_set), .sel_way_o(fill_sel_way)
     );
 
@@ -378,11 +324,12 @@ module cache_l2 #(
         .t_base_i(t_base), .t_way_i(t_way), .t_data_i(t_data), .t_dirty_i(t_dirty),
         .wr_valid_o(wr_valid), .wr_set_o(wr_set), .wr_way_o(wr_way),
         .wr_tag_o(wr_tag), .wr_dirty_o(wr_dirty), .wr_data_o(wr_data),
+        .wr_idx_o(wr_idx),
         .plru_touch_valid_o(plru_touch_valid),
         .plru_touch_set_o(plru_touch_set), .plru_touch_way_o(plru_touch_way),
         .resv_clr_valid_o(resv_clr1_valid), .resv_clr_set_o(resv_clr1_set),
         .resv_clr_way_o(resv_clr1_way),
-        .ev_wr_valid_o(), .ev_wr_onehot_o(ev_wr)
+        .ev_wr_valid_o(wr_first), .ev_wr_onehot_o(ev_wr)
     );
 
     // ------------------------------------------------------------------
@@ -410,16 +357,13 @@ module cache_l2 #(
         .clk_i, .rst_ni,
         .req_mem_i(req_mem), .older_i(older), .t_base_i(t_base),
         .eb_probe_hit_i(eb_probe_hit_i),
-        .mshr_waiters_sel_i(mshr_waiters_sel),
         .eb_probe_valid_o, .eb_probe_base_o,
         .mem_rd_req_valid_o, .mem_rd_req_ready_i,
         .mem_rd_req_id_o, .mem_rd_req_base_o,
         .mem_rd_rsp_valid_i, .mem_rd_rsp_ready_i,
         .mem_rd_rsp_id_i, .mem_rd_rsp_base_i,
         .ev_mem_valid_o(), .ev_mem_onehot_o(ev_mem),
-        .ev_rsp_onehot_o(ev_rsp),
-        .mshr_release_valid_o(mshr_rel_mem_valid),
-        .mshr_release_base_o(mshr_rel_mem_base)
+        .ev_rsp_onehot_o(ev_rsp)
     );
 
     // ------------------------------------------------------------------
@@ -464,11 +408,11 @@ module cache_l2 #(
     l2_perf #(.AW(AW), .ID_W(ID_W)) u_perf (
         .get_accept_i(get_accept), .get_base_i(get_base), .get_id_i(alloc_idx),
         .fill_hs_i(l2_fill_valid_o && l2_fill_ready_i),
-        .fill_base_i(l2_fill_base_o), .fill_id_i(l2_fill_id_o),
+        .fill_base_i(l2_fill_base_o), .fill_dirty_i(l2_fill_dirty_o), .fill_id_i(l2_fill_id_o),
         .lookup_valid_i(look_valid), .lookup_id_i(look_idx),
         .lookup_hit_i(t_hit[look_idx]), .lookup_is_write_i(t_kind[look_idx]),
-        .clean_discard_i(wr_valid && t_vvalid[done_idx] && !t_vdirty[done_idx]),
-        .clean_base_i(t_vbase[done_idx*AW +: AW]),
+        .clean_discard_i(wr_first && t_vvalid[wr_idx] && !t_vdirty[wr_idx]),
+        .clean_base_i(t_vbase[wr_idx*AW +: AW]),
         .evict_i(eb_push_valid_o && eb_push_ready_i),
         .evict_base_i(eb_push_base_o),
         .inst_accept_i(install_accept), .inst_accept_id_i(alloc_idx),
@@ -478,6 +422,9 @@ module cache_l2 #(
         .inst_wait_i(wb_install_valid_i && !wb_install_ready_o),
         .mem_wait_i(mem_rd_req_valid_o && !mem_rd_req_ready_i),
         .eb_wait_i(eb_push_valid_o && !eb_push_ready_i),
-        .perf_events_o(perf_events_o)
+        .perf_events_o(perf_events_o),
+        .lookup_is_write_o(), .install_accept_o(), .install_accept_id_o(),
+        .install_done_o(), .install_done_id_o(), .inst_wait_o(),
+        .mem_wait_o(), .eb_wait_o()
     );
 endmodule
