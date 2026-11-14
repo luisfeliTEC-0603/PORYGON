@@ -3,20 +3,20 @@
  * @brief Comparador de tags de una fila de conjunto: detecta hit y devuelve la vía.
  *
  * @details
- *   Recibe la fila completa del conjunto (TAG y valid de todos los ways,
- *   empaquetados) y un tag buscado. Compara cada vía válida contra el tag
- *   y reporta hit_o y la vía donde coincide.
- *
- *   Se recorre de mayor a menor índice y se sobrescribe way_o en cada match,
- *   de modo que si hubiera más de una coincidencia (situación inconsistente,
- *   no esperada) gane la vía de MENOR índice.
- *
- *   Puramente combinacional y sin estado: la fila de tags la entrega
- *   `l2_tag_array`; este módulo solo compara.
+ *   Recibe la fila completa del conjunto (tags y valid de todos los ways,
+ *   empaquetados) y un tag buscado. Compara cada vía válida contra el tag y
+ *   reporta hit_o y la vía donde coincide.
  *
  * @param WAYS  Vías por conjunto.
  * @param TAG_W Ancho de tag en bits.
  * @param WAY_W Ancho de índice de vía.
+ *
+ * @input  tags_i  Fila de tags del conjunto, empaquetada como WAYS segmentos de TAG_W bits.
+ * @input  valid_i Bit de validez por vía de la fila.
+ * @input  tag_i   Tag buscado.
+ *
+ * @output hit_o   Hay al menos una vía válida cuyo tag coincide con tag_i.
+ * @output way_o   Vía donde coincide (menor índice si hay más de una).
  */
 
 module l2_lookup #(
