@@ -4,8 +4,9 @@
  * cuatro por defecto, rango 1..4. No determina bancos ni busquedas simultaneas.
  * @details Top de solo cableado y reglas de admision. Submodulos: l2_tag_array,
  * l2_data_array, l2_plru, l2_way_resv, l2_lookup, l2_way_select,
- * l2_op_table, l2_pipe, l2_out_sel, l2_fill_unit, l2_install_unit,
- * l2_evict_unit, l2_mem_unit, l2_perf.
+ * l2_op_table, l2_pipe, l2_fill_unit, l2_install_unit, l2_done_unit,
+ * l2_evict_unit, l2_mem_unit, l2_perf. Cada unidad de canal instancia su propio
+ * l2_out_sel; el top no contiene logica de canal.
  *
  * Exclusividad: hit L2 -> L1 invalida en L2 al aceptar L1; miss L2 -> retorno
  * directo (L2 solo observa mem_rd_rsp valid&&ready y libera el id); instalacion
@@ -377,19 +378,13 @@ module cache_l2 #(
     // ------------------------------------------------------------------
     // Canal wb_done (desde ST_DONE de la tabla)
     // ------------------------------------------------------------------
-    logic done_sel_valid;
-    logic [OPW-1:0] done_idx;
-    logic [N-1:0] done_onehot;
-    l2_out_sel #(.N(N)) u_sel_done (
-        .clk_i, .rst_ni, .req_i(req_done), .older_i(older),
-        .ext_valid_i(wb_done_valid_o), .ext_ready_i(wb_done_ready_i),
-        .sel_valid_o(done_sel_valid), .sel_idx_o(done_idx),
-        .sel_onehot_o(done_onehot));
-    assign wb_done_valid_o = rst_ni && done_sel_valid;
-    assign wb_done_id_o    = done_idx;
     logic done_hs;
-    assign done_hs = wb_done_valid_o && wb_done_ready_i;
-    assign ev_done = done_hs ? done_onehot : '0;
+    l2_done_unit #(.N(N), .OPW(OPW)) u_done (
+        .clk_i, .rst_ni,
+        .req_done_i(req_done), .older_i(older),
+        .wb_done_valid_o(wb_done_valid_o), .wb_done_ready_i(wb_done_ready_i),
+        .wb_done_id_o(wb_done_id_o),
+        .ev_done_valid_o(done_hs), .ev_done_onehot_o(ev_done));
 
     // ------------------------------------------------------------------
     // Metricas
@@ -416,7 +411,7 @@ module cache_l2 #(
         .evict_i(eb_push_valid_o && eb_push_ready_i),
         .evict_base_i(eb_push_base_o),
         .inst_accept_i(install_accept), .inst_accept_id_i(alloc_idx),
-        .inst_done_i(done_hs), .inst_done_id_i(done_idx),
+        .inst_done_i(done_hs), .inst_done_id_i(wb_done_id_o),
         .occupancy_i(occupancy), .capacity_i(N[7:0]),
         .get_wait_i(l2_get_valid_i && !l2_get_ready_o),
         .inst_wait_i(wb_install_valid_i && !wb_install_ready_o),
