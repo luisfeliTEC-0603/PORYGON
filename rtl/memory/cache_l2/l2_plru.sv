@@ -3,24 +3,30 @@
  * @brief Tree-PLRU de 4 vías, 3 bits de estado por conjunto.
  *
  * @details
- *   PLRU (Pseudo-Least Recently Used) aproxima LRU con un árbol binario de
- *   bits por conjunto en lugar de contadores de edad por vía. Para 4 vías se
- *   usan 3 bits:
+ *   Aproxima LRU con un árbol binario de bits por conjunto en lugar de
+ *   contadores de edad por vía. Para 4 vías se usan 3 bits:
  *     bit0 : raíz; 1 -> víctima en {0,1}; 0 -> víctima en {2,3}.
- *     bit1 : elige entre vías 0 y 1.
- *     bit2 : elige entre vías 2 y 3.
+ *     bit1 : elige entre vías 0 y 1 (solo si bit0=1).
+ *     bit2 : elige entre vías 2 y 3 (solo si bit0=0).
  *
- *   La víctima se calcula combinacionalmente.
- *   El estado solo se actualiza cuando `touch_valid_i` está activo, es decir,
- *   una única vez al efectivizar la instalación (no durante el lookup).
- *   `touch` orienta los bits del camino lejos de la vía usada, de modo que la
- *   próxima consulta devuelva la vía menos recientemente usada.
+ *   La víctima se calcula combinacionalmente desde query_set_i, sin efectos.
+ *   El estado solo se actualiza cuando touch_valid_i está activo, es decir,
+ *   una vez por instalación efectiva (no durante el lookup). touch orienta
+ *   los bits del camino lejos de la vía usada, de modo que la próxima
+ *   consulta devuelva la vía menos recientemente usada.
  *
- *   No decide el reemplazo por sí mismo: entrega la víctima a
- *   `l2_way_select`, que aplica la prioridad vía inválida -> PLRU -> fallback.
+ *   No decide el reemplazo por sí mismo: entrega la víctima a l2_way_select,
+ *   que aplica la prioridad.
  *
  * @param SETS  Número de conjuntos.
- * @param SET_W Ancho de índice de conjunto.
+ * @param SET_W Ancho de índice de conjunto, $clog2(SETS).
+ *
+ * @input  query_set_i    Conjunto cuya víctima se consulta.
+ * @input  touch_valid_i  1 si esta instalación actualiza el estado PLRU.
+ * @input  touch_set_i    Conjunto de la vía usada por la instalación.
+ * @input  touch_way_i    Vía usada por la instalación.
+ *
+ * @output victim_way_o   Vía víctima según el estado actual del conjunto.
  */
 
 module l2_plru #(
