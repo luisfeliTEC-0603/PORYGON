@@ -7,6 +7,7 @@ WAVE_DIR := $(BUILD_DIR)/waves
 RTL_DIR := rtl
 CORE_DIR := $(RTL_DIR)/core
 MEMORY_DIR := $(RTL_DIR)/memory
+METRICS_DIR := $(RTL_DIR)/metrics
 UNIT_TB_DIR := tests/unit
 INTEGRATION_TB_DIR := tests/integration
 PROGRAM_DIR := tests/programs
@@ -44,7 +45,7 @@ $(BUILD_DIR)/vliw_processor.vvp: $(RTL_SOURCES)
 
 .PHONY: all sim test test-tools sim-alu sim-super-alu sim-regfile sim-lost sim-bruh sim-feistel \
 	sim-crypto-decode sim-key-vault sim-crypto-wb sim-crypto-unit sim-crypto \
-	sim-top sim-system clean
+	sim-top sim-system sim-metrics clean
 
 all: sim
 
@@ -55,7 +56,8 @@ sim:
 	@./tools/sim.sh "$(PROG)" $(if $(strip $(DATA)),--data "$(DATA)") $(if $(strip $(MAX_CYCLES)),--max-cycles "$(MAX_CYCLES)")
 endif
 
-test: sim-alu sim-super-alu sim-regfile sim-lost sim-bruh sim-crypto test-tools
+test: sim-alu sim-super-alu sim-regfile sim-lost sim-bruh sim-crypto \
+	sim-metrics test-tools
 
 test-tools:
 	sh tests/tools/test_loader.sh
@@ -153,6 +155,19 @@ $(BUILD_DIR)/crypto_unit.vvp: $(PKG) \
 	$(UNIT_TB_DIR)/tb_crypto_unit.sv
 	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto_unit -o $@ $^
+
+# Observador de metricas P2-10: no depende del nucleo ni de la jerarquia,
+# los eventos se construyen en el testbench.
+sim-metrics: $(BUILD_DIR)/metrics.vvp | $(WAVE_DIR)
+	$(VVP) $<
+
+$(BUILD_DIR)/metrics.vvp: $(PKG) \
+	$(MEMORY_DIR)/pkg_memory.sv \
+	$(METRICS_DIR)/pkg_metrics.sv \
+	$(METRICS_DIR)/performance_counters.sv \
+	$(UNIT_TB_DIR)/tb_performance_counters.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_performance_counters -o $@ $^
 
 $(WAVE_DIR):
 	mkdir -p $@
