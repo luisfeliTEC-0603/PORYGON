@@ -1,32 +1,61 @@
 /**
  * @file l2_perf.sv
- * @brief Generacion de eventos de metricas de L2.
+ * @brief Generación de eventos de métricas de L2.
  *
  * @details
- *   UNICO modulo (junto con el top) que depende de pkg_metrics. Los campos
- *   asignados en perf_events_o corresponden EXACTAMENTE a los definidos en
- *   pkg_metrics::l2_events_t:
+ *   Único módulo (junto con el top) que depende de pkg_metrics. Mapea señales
+ *   del top a los campos de pkg_metrics::l2_events_t:
+ *     get_accept, get_done, lookup (id_event_t: valid + id)
+ *     lookup_hit (campo suelto, no dentro de lookup)
+ *     promotion, clean_discard, dirty_eviction (line_event_t: valid + base + dirty)
+ *     inflight, capacity (occupancy_t), get_wait (logic)
+ *     error (error_event_t, queda en 0: L2 no reporta error por este módulo)
  *
- *     id_event_t     get_accept   -> .valid, .id
- *     id_event_t     get_done     -> .valid, .id
- *     id_event_t     lookup       -> .valid, .id
- *     logic          lookup_hit   (campo suelto, no dentro de lookup)
- *     line_event_t   promotion    -> .valid, .base, .dirty
- *     line_event_t   clean_discard-> .valid, .base, .dirty
- *     line_event_t   dirty_eviction-> .valid, .base, .dirty
- *     occupancy_t    inflight
- *     occupancy_t    capacity
- *     logic          get_wait
- *     error_event_t  error        (no usado aqui; queda en 0)
+ *   Los conceptos sin campo en l2_events_t se exponen como salidas auxiliares
+ *   para no perderlos: lookup_is_write, install_accept/id, install_done/id,
+ *   inst_wait, mem_wait, eb_wait.
  *
- *   Los conceptos que NO tienen campo en l2_events_t se exponen como salidas
- *   separadas del modulo para no perderlos:
- *     - lookup_is_write_o
- *     - install_accept_o / install_accept_id_o
- *     - install_done_o   / install_done_id_o
- *     - inst_wait_o, mem_wait_o, eb_wait_o
+ *   Sin reset: las métricas son acumulativas; el consumidor muestrea
+ *   diferencias entre ciclos.
  *
- *   El top (o performance_counters) puede consumir estas salidas aparte.
+ * @param AW   Ancho de dirección.
+ * @param ID_W Ancho de identificador de operación.
+ *
+ * @input  get_accept_i      1 si se aceptó una demanda.
+ * @input  get_base_i        Base de la demanda aceptada.
+ * @input  get_id_i          Id de la demanda aceptada.
+ * @input  fill_hs_i         1 en el handshake de fill (hit L2 entregado a L1).
+ * @input  fill_base_i       Base de la línea entregada por fill.
+ * @input  fill_dirty_i      Dirty de la línea entregada por fill.
+ * @input  fill_id_i         Id de la operación que completó fill.
+ * @input  lookup_valid_i    1 si hay un lookup en la etapa de tags.
+ * @input  lookup_id_i       Id de la operación en lookup.
+ * @input  lookup_hit_i      1 si el lookup acertó.
+ * @input  lookup_is_write_i 1 si el lookup corresponde a un install.
+ * @input  clean_discard_i   1 si se descartó una víctima limpia.
+ * @input  clean_base_i      Base de la víctima limpia descartada.
+ * @input  evict_i           1 si se empujó una víctima sucia al EB.
+ * @input  evict_base_i      Base de la víctima sucia empujada.
+ * @input  inst_accept_i     1 si se aceptó un install.
+ * @input  inst_accept_id_i  Id del install aceptado.
+ * @input  inst_done_i       1 si un install completó (wb_done handshake).
+ * @input  inst_done_id_i    Id del install completado.
+ * @input  occupancy_i       Ocupación actual de la tabla (posiciones busy).
+ * @input  capacity_i        Capacidad de la tabla (L2_MAX_INFLIGHT).
+ * @input  get_wait_i        1 si una demanda espera por falta de slot/conflicto.
+ * @input  inst_wait_i       1 si un install espera por falta de slot/conflicto.
+ * @input  mem_wait_i        1 si una lectura espera al controlador.
+ * @input  eb_wait_i         1 si un eb_push espera al EB.
+ *
+ * @output perf_events_o      Eventos empaquetados según l2_events_t.
+ * @output lookup_is_write_o  Copia de lookup_is_write_i (sin campo en l2_events_t).
+ * @output install_accept_o   Copia de inst_accept_i.
+ * @output install_accept_id_o Copia de inst_accept_id_i.
+ * @output install_done_o     Copia de inst_done_i.
+ * @output install_done_id_o  Copia de inst_done_id_i.
+ * @output inst_wait_o        Copia de inst_wait_i.
+ * @output mem_wait_o         Copia de mem_wait_i.
+ * @output eb_wait_o          Copia de eb_wait_i.
  */
 
 module l2_perf #(
@@ -75,7 +104,7 @@ module l2_perf #(
     always_comb begin
         perf_events_o = '0;
 
-        // id_event_t: solo valid + id (NO tienen base)
+        // id_event_t: solo valid + id
         perf_events_o.get_accept.valid = get_accept_i;
         perf_events_o.get_accept.id    = get_id_i;
 
