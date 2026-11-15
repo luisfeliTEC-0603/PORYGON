@@ -97,6 +97,11 @@ module write_buffer #(
     logic install_active_q;
     logic [IDX_W-1:0] install_held_idx_q;
 
+    /** @brief Diagnostico unico de confirmacion wb_done con ID sin asociacion. */
+    logic done_err_reported_q;
+    logic [L2_ID_W-1:0] done_err_id_q;
+    logic done_invalid_now;
+
     /** @brief Senales combinacionales de busqueda probe, forwarding, drenado y done. */
     logic probe_hit;
     logic probe_busy_stored;
@@ -201,6 +206,7 @@ module write_buffer #(
             end
         end
         done_ready_internal = done_found;
+        done_invalid_now = rst_ni && wb_done_valid_i && !done_found;
 
         // Eventos y estados observables
         perf_events_o = '0;
@@ -228,6 +234,13 @@ module write_buffer #(
             perf_events_o.install_done.valid = 1'b1;
             perf_events_o.install_done.id = {{(32 - L2_ID_W){1'b0}}, wb_done_id_i};
         end
+
+        // Diagnostico unico de protocolo cuando wb_done llega con ID sin asociacion
+        if (done_invalid_now && (!done_err_reported_q || (done_err_id_q != wb_done_id_i))) begin
+            perf_events_o.error.valid = 1'b1;
+            perf_events_o.error.kind = pkg_metrics::ERROR_PROTOCOL;
+            perf_events_o.error.address = 32'b0;
+        end
     end
 
     /** @brief Actualizacion sincrona unificada: estado servicio, retiros, compactacion e insercion. */
@@ -238,6 +251,8 @@ module write_buffer #(
             fwd_held_idx_q <= '0;
             install_active_q <= 1'b0;
             install_held_idx_q <= '0;
+            done_err_reported_q <= 1'b0;
+            done_err_id_q <= '0;
             entry_valid_q <= '0;
             entry_dirty_q <= '0;
             entry_inflight_q <= '0;
@@ -276,6 +291,15 @@ module write_buffer #(
             next_fwd_held = fwd_held_idx_q;
             next_install_active = install_active_q;
             next_install_held = install_held_idx_q;
+
+            // Registro de reporte de error de protocolo para evitar pulsos repetidos
+            if (done_invalid_now) begin
+                done_err_reported_q <= 1'b1;
+                done_err_id_q <= wb_done_id_i;
+            end else begin
+                done_err_reported_q <= 1'b0;
+                done_err_id_q <= '0;
+            end
 
             // 1. Retencion de oferta wb_fwd
             if (wb_fwd_handshake) begin
