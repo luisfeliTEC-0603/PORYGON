@@ -1,30 +1,38 @@
 /**
  * @file l2_done_unit.sv
- * @brief Canal wb_done: confirmacion de instalacion hacia el write buffer.
+ * @brief Canal wb_done: confirmación de instalación hacia el write buffer.
  *
  * @details
- *   Selecciona la operacion en ST_DONE mas antigua mediante `l2_out_sel` con
- *   lock estable y ofrece su id por `wb_done_valid_o` / `wb_done_id_o`. La
- *   confirmacion solo se ofrece para operaciones que ya escribieron la linea
- *   en los arreglos (ST_DONE se alcanza despues de ST_WRITE).
+ *   Elige la operación en ST_DONE más antigua con l2_out_sel (lock estable) y
+ *   ofrece su id por wb_done_valid_o / wb_done_id_o. La confirmación solo se
+ *   ofrece para operaciones que ya escribieron la línea en los arreglos
+ *   (ST_DONE se alcanza después de ST_WRITE).
  *
- *   Al completarse el handshake (`wb_done_valid_o && wb_done_ready_i`) se
- *   produce un unico efecto, en ese mismo flanco: `ev_done_onehot_o` (one-hot
- *   de la operacion elegida) para que la tabla libere la posicion y el id.
- *   `ev_done_valid_o` es el mismo handshake como escalar (lo usa el top para
- *   metricas). Ambos duran un solo ciclo: el consumidor los trata como
- *   eventos, no como niveles.
+ *   En el handshake (wb_done_valid_o && wb_done_ready_i) se emite un único
+ *   efecto, en ese mismo flanco: ev_done_onehot_o (one-hot de la operación
+ *   elegida) para que la tabla libere la posición y el id. ev_done_valid_o es
+ *   el mismo handshake como escalar (lo usa el top para métricas). Ambos duran
+ *   un solo ciclo: el consumidor los trata como eventos, no como niveles.
  *
  *   A diferencia de fill/evict/mem/install, este canal no lee arreglos, no
- *   invalida vias ni libera reservas: la reserva de la via se libero al
+ *   invalida vías ni libera reservas: la reserva de la vía se liberó al
  *   escribir (l2_install_unit).
  *
- *   Contrato de reset: asincrono, activo bajo. `wb_done_valid_o` y los
- *   eventos se anulan con `rst_ni`; el lock de `l2_out_sel` se limpia.
+ *   Incluido principalmente por motivos de simetria y modularidad.
  *
- * @param N   Numero de operaciones en vuelo.
- * @param OPW Ancho de indice de operacion (mínimo 1).
+ * @param N   Número de operaciones en vuelo.
+ * @param OPW Ancho de índice de operación, mínimo 1.
+ *
+ * @input  req_done_i      Solicitud de done por operación (operaciones en ST_DONE).
+ * @input  older_i         Matriz N×N: older_i[j*N+i]=1 si j es más antigua que i.
+ * @input  wb_done_ready_i 1 si el write buffer acepta la confirmación.
+ *
+ * @output wb_done_valid_o  1 si hay una operación ofreciendo confirmación.
+ * @output wb_done_id_o     Id de la operación confirmada.
+ * @output ev_done_valid_o  1 en el ciclo del handshake.
+ * @output ev_done_onehot_o One-hot de la operación que completó.
  */
+
 module l2_done_unit #(
     parameter int N   = 4,
     parameter int OPW = (N > 1) ? $clog2(N) : 1
@@ -46,6 +54,7 @@ module l2_done_unit #(
     logic [OPW-1:0] sel_idx;
     logic [N-1:0]   sel_onehot;
 
+    // Árbitro del canal con lock: mantiene la oferta estable si el WB no acepta.
     l2_out_sel #(.N(N)) u_sel (
         .clk_i, .rst_ni,
         .req_i(req_done_i), .older_i(older_i),
@@ -56,6 +65,7 @@ module l2_done_unit #(
     assign wb_done_valid_o = rst_ni && sel_valid;
     assign wb_done_id_o    = sel_idx;
 
+    // Handshake: único ciclo en que se emite el evento a la tabla.
     logic done_hs;
     assign done_hs = wb_done_valid_o && wb_done_ready_i;
 
