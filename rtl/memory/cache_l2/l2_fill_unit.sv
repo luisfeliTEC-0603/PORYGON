@@ -3,36 +3,49 @@
  * @brief Canal l2_fill: entrega de hit L2 a L1 con exclusividad.
  *
  * @details
- *   Selecciona la operación en ST_FILL más antigua mediante `l2_out_sel` con
- *   lock estable, y ofrece a L1 el id, la base, la línea y el bit dirty de esa
- *   operación. Al completarse el handshake (`l2_fill_valid_o &
- *   l2_fill_ready_i`) se producen tres efectos en el mismo flanco:
- *     - invalidación de la vía en L2 (exclusividad: la línea pasa a vivir en
- *       L1 y se elimina de L2),
- *     - liberación de la reserva de la vía en `l2_way_resv`,
- *     - emisión de `ev_fill` para que la tabla de operaciones pase a IDLE,
+ *   Elige la operación en ST_FILL más antigua con l2_out_sel (lock estable) y
+ *   ofrece a L1 su id, base, línea y dirty. En el handshake
+ *   (l2_fill_valid_o & l2_fill_ready_i) se aplican tres efectos en el mismo
+ *   flanco: invalida la vía en L2 (exclusividad: la línea pasa a L1), libera
+ *   la reserva de la vía y emite ev_fill para que la tabla pase a IDLE.
  *
- *   No instala copia en L2: un hit L2 se invalida al entregar. No genera
- *   error: el error de memoria viaja por el canal `line_return` del top, no
- *   por este canal.
+ *   No instala copia en L2 y no genera error: el error de memoria viaja por
+ *   line_return del top, no por este canal.
  *
- *   La línea a entregar se lee combinacionalmente del arreglo de datos. El
- *   top debe cablear `rd0_set_i`/`rd0_way_i` del arreglo con las salidas
- *   `sel_set_o`/`sel_way_o` de este módulo, de modo que el arreglo devuelva
- *   exactamente la línea de la operación elegida en el mismo ciclo.
- *
- *   Los pulsos `inv_*`, `resv_clr_*`, y `ev_fill_*` duran un
- *   solo ciclo, el del handshake. El consumidor los trata como eventos, no
- *   como niveles.
+ *   inv_*, resv_clr_* y ev_fill_* duran un solo ciclo, el del handshake; el
+ *   consumidor los trata como eventos, no como niveles.
  *
  * @param N     Número de operaciones en vuelo.
  * @param AW    Ancho de dirección.
  * @param LW    Ancho de línea.
  * @param WAY_W Ancho de índice de vía.
  * @param SET_W Ancho de índice de conjunto.
- * @param OPW   Ancho de índice de operación.
- * @see docs/ii-proyecto/interfaces.md seccion 3.
- * @see docs/ii-proyecto/line-transfers.md seccion 3.
+ * @param OPW   Ancho de índice de operación, mínimo 1.
+ *
+ * @input  req_fill_i    Solicitud de fill por operación.
+ * @input  older_i       Matriz NxN de antigüedad.
+ * @input  t_base_i      Base por operación.
+ * @input  t_way_i       Vía por operación.
+ * @input  t_dirty_i     Dirty por operación.
+ * @input  rd0_data_i    Línea leída del data array para la operación elegida.
+ * @input  l2_fill_ready_i 1 si L1 acepta la entrega.
+ *
+ * @output l2_fill_valid_o 1 si hay una operación ofreciendo fill.
+ * @output l2_fill_id_o    Índice de la operación ofrecida.
+ * @output l2_fill_base_o  Base de la operación ofrecida.
+ * @output l2_fill_data_o  Línea de la operación ofrecida.
+ * @output l2_fill_dirty_o Dirty de la operación ofrecida.
+ * @output l2_fill_error_o Siempre 0; el error viaja por line_return.
+ * @output ev_fill_valid_o 1 en el ciclo del handshake.
+ * @output ev_fill_onehot_o One-hot de la operación que completó fill.
+ * @output inv_valid_o     1 en el ciclo del handshake (invalidar en L2).
+ * @output inv_set_o       Conjunto a invalidar.
+ * @output inv_way_o       Vía a invalidar.
+ * @output resv_clr_valid_o 1 en el ciclo del handshake (liberar reserva).
+ * @output resv_clr_set_o  Conjunto de la reserva a liberar.
+ * @output resv_clr_way_o  Vía de la reserva a liberar.
+ * @output sel_set_o       Conjunto de la operación elegida, para cablear rd0.
+ * @output sel_way_o       Vía de la operación elegida, para cablear rd0.
  */
 
 module l2_fill_unit #(
@@ -75,6 +88,7 @@ module l2_fill_unit #(
     output logic             resv_clr_valid_o,
     output logic [SET_W-1:0] resv_clr_set_o,
     output logic [WAY_W-1:0] resv_clr_way_o,
+
     // Selección expuesta para que el top cablee la lectura del arreglo de datos
     output logic [SET_W-1:0] sel_set_o,
     output logic [WAY_W-1:0] sel_way_o
@@ -86,7 +100,7 @@ module l2_fill_unit #(
     logic [SET_W-1:0] sel_set;
     logic [WAY_W-1:0] sel_way;
 
-    // Árbitro del canal fill con lock estable.
+    // Árbitro del canal con lock: mantiene la oferta estable si L1 no acepta.
     l2_out_sel #(.N(N)) u_sel (
         .clk_i, .rst_ni,
         .req_i(req_fill_i), .older_i(older_i),
