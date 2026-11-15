@@ -3,33 +3,28 @@
  * @brief Pipeline interno de L2: línea de retardo de índices de operación.
  *
  * @details
- *   Modela las 7 etapas internas que una operación recorre entre su admisión
- *   y el momento en que la tabla de operaciones puede avanzar su estado.
- *   Etapas: AC (accept), DS (dispatch), TAG (2 ciclos), DATA (2 ciclos),
- *   RD (return). Sumadas al ciclo de accept dan los 8 ciclos de hit de L2.
+ *   Modela las 7 etapas que una operación recorre entre su admisión y el
+ *   momento en que l2_op_table puede avanzar su estado. Con el ciclo de
+ *   accept son los 8 ciclos de hit de L2.
  *
- *   Solo viaja el índice de la operación (`in_idx_i`). Los datos y metadatos
- *   viven en la tabla de operaciones, indexados por ese id. Por eso, si la
- *   operación se detiene al final del pipeline (porque el canal de salida no
- *   está listo), sus datos siguen intactos en la tabla y las demás
- *   operaciones pueden avanzar si sus recursos lo permiten.
+ *   Solo viaja el índice. Datos y metadatos viven en l2_op_table, indexados
+ *   por ese id: si la operación se detiene al final, sus datos siguen intactos
+ *   y las demás pueden avanzar.
  *
- *   El pipeline no tiene stalls internos: siempre avanza un índice por ciclo.
- *   Los stalls de L2 (miss de memoria, espera de eviction buffer, espera de
- *   canal de salida) se gestionan como estados de la tabla de operaciones,
- *   no como detenciones de esta línea de retardo.
+ *   Sin stalls internos: siempre avanza un índice por ciclo. Las esperas de
+ *   L2 (memoria, EB, canal de salida) son estados de la tabla, no detenciones
+ *   de este pipeline.
  *
- *   Las salidas por etapa (`stage_valid_o`, `stage_idx_o`) exponen el índice
- *   en cada posición del shift register. No son necesarias para la
- *   integración básica, pero permiten depuración y, si en el futuro alguna
- *   etapa necesita conocer el índice antes del final, tomarlo de aquí.
+ * @param STAGES Número de etapas internas (7).
+ * @param OPW    Ancho de índice de operación, mínimo 1.
  *
- *   Configuración contractual: STAGES=7. Cambiar STAGES exige ajustar los
- *   anchos de `stage_valid_o` y `stage_idx_o` en el consumidor, y recalcular
- *   el tiempo de hit.
+ * @input  in_valid_i   1 si una operación entra al pipeline este ciclo.
+ * @input  in_idx_i     Índice de la operación que entra.
  *
- * @param STAGES Número de etapas internas del pipeline (7).
- * @param OPW    Ancho de índice de operación (mínimo 1).
+ * @output stage_valid_o Validez por etapa del shift register.
+ * @output stage_idx_o   Índice por etapa del shift register.
+ * @output end_valid_o   1 si la operación completó las STAGES etapas.
+ * @output end_idx_o     Índice de la operación que completó las etapas.
  */
 
 module l2_pipe #(
@@ -44,7 +39,7 @@ module l2_pipe #(
     input  logic                  in_valid_i,
     input  logic [OPW-1:0]        in_idx_i,
 
-    // Índice presente en cada etapa (para depuración o consumidores tempranos)
+    // Índice presente en cada etapa (depuración)
     output logic [STAGES-1:0]     stage_valid_o,
     output logic [STAGES*OPW-1:0] stage_idx_o,
 
@@ -52,13 +47,11 @@ module l2_pipe #(
     output logic                  end_valid_o,
     output logic [OPW-1:0]        end_idx_o
 );
-    // Registros del shift register: un bit de validez y un índice por etapa.
+    // Shift register: un bit de validez y un índice por etapa.
     logic [STAGES-1:0]     v_q;
     logic [STAGES*OPW-1:0] i_q;
 
-    // Desplazamiento en cada flanco: la admisión entra en la posición 0 y el
-    // resto se corre una etapa. Al cabo de STAGES flancos, la admisión
-    // original ocupa la última posición, que es `end_*`.
+    // La admisión entra en la posición 0; el resto se corre una etapa.
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             v_q <= '0;
@@ -69,7 +62,7 @@ module l2_pipe #(
         end
     end
 
-    // Salidas por etapa y salida final.
+    // Salidas por etapa (depuración) y salida final tras STAGES flancos.
     assign stage_valid_o = v_q;
     assign stage_idx_o   = i_q;
     assign end_valid_o   = v_q[STAGES-1];
