@@ -1,43 +1,32 @@
 /**
  * @file l2_out_sel.sv
  * @brief Árbitro de un canal de L2: elige la operación más antigua que lo
- *        solicita, con bloqueo de oferta estable durante el handshake.
+ *        solicita, con oferta estable durante el handshake.
  *
  * @details
- *   Cada canal de L2 (fill, mem, eb, wr, done) puede ser solicitado por varias
- *   operaciones en vuelo al mismo tiempo. Este módulo resuelve cuál de ellas
- *   usa el canal en el ciclo actual.
+ *   Varias operaciones en vuelo pueden solicitar el mismo canal en el mismo
+ *   ciclo. Gana la que no tiene otra solicitante más antigua (`older_i`).
+ *   Ante empate, gana la de menor índice (determinista, no contractual).
  *
- *   Regla de arbitraje: gana la solicitante que no tiene otra operación
- *   activa más antigua solicitando el mismo canal. La antigüedad llega en
- *   `older_i` como matriz N×N: `older_i[j*N + i] = 1` significa que j es más
- *   antigua que i. Al recorrer las solicitantes de mayor a menor índice y
- *   sobrescribir, el resultado es determinista: ante empate, gana la de menor
- *   índice.
+ *   Lock: si el canal externo ofreció (`ext_valid_i=1`) y no aceptó
+ *   (`ext_ready_i=0`), se registra la elección y se mantiene hasta el
+ *   handshake, para que `sel_*` y los campos cableados a partir de ellos no
+ *   cambien durante la espera. Con `ext_valid_i=0` el lock nunca se activa.
  *
- *   Bloqueo de oferta (lock): si el canal externo ofreció (`ext_valid_i=1`)
- *   pero no aceptó (`ext_ready_i=0`), el árbitro registra la elección y la
- *   mantiene hasta que el handshake se complete. Así, aunque en ciclos
- *   posteriores aparezca una operación más antigua, `sel_valid_o`, `sel_idx_o`
- *   y los campos que el top cablea a partir de ellos no cambian durante la
- *   espera. Es el equivalente al requisito de estabilidad de valid hasta
- *   handshake en protocolos tipo AXI.
- *
- *   Sin handshake externo (arbitraje interno donde el consumidor siempre
- *   acepta en el mismo ciclo), se pasa `ext_valid_i=0` y el lock nunca se
- *   activa; el módulo se comporta como un árbitro combinacional puro.
- *
- *   El desempate "empate -> drenado" no se implementa aquí: este módulo solo
- *   elige la más antigua. La política de drenado, si aplica, la resuelve el
- *   consumidor a partir de las salidas.
- *
- *   Precondición del lock: mientras `lock_q=1`, la operación bloqueada debe
- *   seguir solicitando el canal (su estado en la tabla de operaciones no
- *   avanza hasta el handshake). Si el consumidor cambiara su estado antes del
- *   handshake, el lock ofrecería un id inválido.
+ *   El drenado en empate no se resuelve aquí; en L2 lo aplica el top en la
+ *   admisión, no en los canales.
  *
  * @param N   Número de operaciones en vuelo.
- * @param OPW Ancho de índice de operación (mínimo 1).
+ * @param OPW Ancho de índice de operación, mínimo 1.
+ *
+ * @input  req_i       Solicitud del canal por operación.
+ * @input  older_i     Matriz NxN: older_i[j*N+i]=1 si j es más antigua que i.
+ * @input  ext_valid_i 1 si el canal externo ofrece; 0 desactiva el lock.
+ * @input  ext_ready_i 1 si el canal externo acepta.
+ *
+ * @output sel_valid_o  1 si hay operación elegida (por arbitraje o lock).
+ * @output sel_idx_o    Índice de la operación elegida.
+ * @output sel_onehot_o One-hot del índice, para indexar vectores empaquetados.
  */
 
 module l2_out_sel #(
@@ -67,10 +56,7 @@ module l2_out_sel #(
     logic           lock_q;
     logic [OPW-1:0] lock_idx_q;
 
-    // Arbitraje combinacional
-    // grant[i]=1 solo si i solicita el canal y ninguna otra solicitante j es
-    // más antigua que i. El segundo lazo recorre descendente para que, ante
-    // empate, gane el menor índice.
+    // Arbitraje: grant[i] se cae si otra solicitante j es más antigua que i.
     always_comb begin
         arb_valid = 1'b0;
         arb_idx   = '0;
@@ -80,26 +66,25 @@ module l2_out_sel #(
                 if (j != i && req_i[j] && older_i[j*N + i]) grant[i] = 1'b0;
             end
         end
+        // Descendente + sobrescritura: ante empate, menor índice.
         for (int i = N-1; i >= 0; i--) begin
             if (grant[i]) begin arb_valid = 1'b1; arb_idx = i; end
         end
     end
 
-    // Selección con lock
-    // Mientras lock_q=1, la elección registrada prevalece sobre el arbitraje.
+    // Con lock, la elección registrada prevalece para no romper la oferta.
     assign sel_valid_o = lock_q | arb_valid;
     assign sel_idx_o   = lock_q ? lock_idx_q : arb_idx;
 
-    // One-hot del índice elegido, útil para indexar vectores empaquetados
-    // (base_o, data_o, etc.) en el top.
+    // One-hot del índice elegido, para indexar vectores empaquetados en el top.
     always_comb begin
         for (int i = 0; i < N; i++)
             sel_onehot_o[i] = sel_valid_o && (sel_idx_o == i);
     end
 
-    // Estado del lock
-    // Se activa cuando el canal externo ofreció y no aceptó; se libera en
-    // cualquier otro caso (handshake completado, oferta retirada, o reset).
+    // Lock: se activa si el canal externo ofreció y no aceptó; se libera en
+    // cualquier otro caso. Mientras lock_q=1, la operación sigue solicitando,
+    // así que lock_idx_q es un índice válido.
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             lock_q     <= 1'b0;
