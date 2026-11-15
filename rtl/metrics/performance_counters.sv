@@ -80,6 +80,13 @@ module performance_counters #(
         C_WBUF_PUSH_WAIT, C_WBUF_INSTALL_WAIT, C_WBUF_RAW_WAIT,
         C_EB_ENQUEUED, C_EB_SENT, C_EB_WRITTEN,
         C_EB_OCC_SUM, C_EB_FULL, C_EB_PUSH_WAIT, C_EB_RAW_WAIT,
+        C_MEM_READS, C_MEM_WRITES, C_MEM_READS_DONE, C_MEM_WRITES_DONE,
+        C_MEM_READ_WORDS, C_MEM_WRITE_WORDS,
+        C_MEM_READ_CYCLES, C_MEM_WRITE_CYCLES,
+        C_MEM_READ_WAIT, C_MEM_WRITE_WAIT,
+        C_MEM_READ_RSP_WAIT, C_MEM_WRITE_RSP_WAIT,
+        C_MEM_TIMEOUTS, C_MEM_ERRORS,
+        C_ERROR_EVENTS,
         C_TOTAL
     } counter_id_e;
 
@@ -121,6 +128,20 @@ module performance_counters #(
     logic demand_miss_cycle;
     pkg_metrics::counter_t demand_cycles_now;
     pkg_metrics::counter_t demand_miss_now;
+
+    /**
+     * @brief Errores detectados localmente por los bloques observados.
+     * @details Cada bloque emite su propio error_event_t; el controlador de
+     * memoria informa el suyo en el resultado de la transferencia. Cualquiera
+     * de los dos marca la ejecucion como fallida y conserva la evidencia.
+     * @see docs/ii-proyecto/metrics.md seccion 8
+     */
+    pkg_metrics::counter_t error_pulses;
+    logic memory_failure;
+    logic run_failure;
+
+    /** @brief Trabajo pendiente capturado en el flanco de cierre. */
+    pkg_metrics::pending_t pending_q;
 
     /** @brief Maximos de ocupacion; se actualizan por comparacion, no por suma. */
     pkg_metrics::counter_t l2_inflight_max_q;
@@ -291,7 +312,55 @@ module performance_counters #(
             (eb_events_i.state.occupancy == eb_events_i.state.capacity) ? 64'd1 : 64'd0;
         delta[C_EB_PUSH_WAIT] = eb_events_i.state.push_wait ? 64'd1 : 64'd0;
         delta[C_EB_RAW_WAIT] = eb_events_i.state.raw_wait ? 64'd1 : 64'd0;
+
+        // Memoria principal: solo las transferencias correctas cuentan como
+        // completas; el timeout y el resto de errores van en categorias
+        // separadas y conservan los ciclos y palabras ya consumidos.
+        if (mem_events_i.accept.valid) begin
+            if (mem_events_i.accept.write) delta[C_MEM_WRITES] = 64'd1;
+            else delta[C_MEM_READS] = 64'd1;
+        end
+        if (mem_events_i.word.valid) begin
+            if (mem_events_i.word.write) delta[C_MEM_WRITE_WORDS] = 64'd1;
+            else delta[C_MEM_READ_WORDS] = 64'd1;
+        end
+        if (mem_events_i.complete.valid) begin
+            case (mem_events_i.complete_error)
+                pkg_metrics::ERROR_NONE:
+                    if (mem_events_i.complete.write) delta[C_MEM_WRITES_DONE] = 64'd1;
+                    else delta[C_MEM_READS_DONE] = 64'd1;
+                pkg_metrics::ERROR_TIMEOUT: delta[C_MEM_TIMEOUTS] = 64'd1;
+                default: delta[C_MEM_ERRORS] = 64'd1;
+            endcase
+        end
+        delta[C_MEM_READ_CYCLES] = mem_events_i.read_active ? 64'd1 : 64'd0;
+        delta[C_MEM_WRITE_CYCLES] = mem_events_i.write_active ? 64'd1 : 64'd0;
+        delta[C_MEM_READ_WAIT] = mem_events_i.read_wait ? 64'd1 : 64'd0;
+        delta[C_MEM_WRITE_WAIT] = mem_events_i.write_wait ? 64'd1 : 64'd0;
+        delta[C_MEM_READ_RSP_WAIT] = mem_events_i.read_rsp_wait ? 64'd1 : 64'd0;
+        delta[C_MEM_WRITE_RSP_WAIT] = mem_events_i.write_rsp_wait ? 64'd1 : 64'd0;
+
+        delta[C_ERROR_EVENTS] = error_pulses;
     end
+
+    /**
+     * @details Varios bloques pueden fallar en el mismo flanco, asi que los
+     * pulsos se suman en lugar de tratarse como una sola bandera.
+     */
+    always_comb begin
+        error_pulses = 64'd0;
+        if (cpu_events_i.instruction_error.valid) error_pulses += 64'd1;
+        if (cpu_events_i.alignment_error.valid) error_pulses += 64'd1;
+        if (l1_events_i.error.valid) error_pulses += 64'd1;
+        if (l2_events_i.error.valid) error_pulses += 64'd1;
+        if (wb_events_i.error.valid) error_pulses += 64'd1;
+        if (eb_events_i.error.valid) error_pulses += 64'd1;
+        if (return_error_i.valid) error_pulses += 64'd1;
+    end
+
+    assign memory_failure = mem_events_i.complete.valid &&
+        (mem_events_i.complete_error != pkg_metrics::ERROR_NONE);
+    assign run_failure = (error_pulses != 64'd0) || memory_failure;
 
     /**
      * @details El flanco que acepta start es E0 y solo prepara la medicion:
@@ -314,6 +383,7 @@ module performance_counters #(
             l2_inflight_max_q <= '0;
             wb_occupancy_max_q <= '0;
             eb_occupancy_max_q <= '0;
+            pending_q <= '0;
         end else if (start_accepted) begin
             running_q <= 1'b1;
             snapshot_valid_q <= 1'b0;
@@ -325,6 +395,7 @@ module performance_counters #(
             l2_inflight_max_q <= '0;
             wb_occupancy_max_q <= '0;
             eb_occupancy_max_q <= '0;
+            pending_q <= '0;
         end else if (running_q) begin
             for (int i = 0; i < NUM_COUNTERS; i++) begin
                 wide_sum = {1'b0, counters_q[i]} + {1'b0, delta[i]};
@@ -342,10 +413,25 @@ module performance_counters #(
             if ({32'd0, eb_events_i.state.occupancy} > eb_occupancy_max_q) begin
                 eb_occupancy_max_q <= {32'd0, eb_events_i.state.occupancy};
             end
+            if (run_failure) begin
+                failed_q <= 1'b1;
+            end
             if (stop_accepted) begin
                 running_q <= 1'b0;
                 snapshot_valid_q <= 1'b1;
-                failed_q <= perf_stop_error_i;
+                if (perf_stop_error_i) begin
+                    failed_q <= 1'b1;
+                end
+                // El trabajo pendiente es estado, no cuenta: las ocupaciones
+                // siguen cambiando despues del cierre, asi que se capturan
+                // en este flanco, ya con sus eventos incorporados.
+                pending_q.wb_entries <= wb_events_i.state.occupancy;
+                pending_q.eb_entries <= eb_events_i.state.occupancy;
+                pending_q.l2_inflight <= l2_events_i.inflight;
+                pending_q.mem_reads <= mem_events_i.reads_pending;
+                pending_q.mem_writes <= mem_events_i.writes_pending;
+                pending_q.mem_read_responses <= mem_events_i.read_responses_pending;
+                pending_q.mem_write_responses <= mem_events_i.write_responses_pending;
             end
         end
     end
@@ -467,5 +553,23 @@ module performance_counters #(
         perf_snapshot_o.eb.full_cycles = counters_q[C_EB_FULL];
         perf_snapshot_o.eb.push_wait_cycles = counters_q[C_EB_PUSH_WAIT];
         perf_snapshot_o.eb.raw_wait_cycles = counters_q[C_EB_RAW_WAIT];
+
+        perf_snapshot_o.mem.reads = counters_q[C_MEM_READS];
+        perf_snapshot_o.mem.writes = counters_q[C_MEM_WRITES];
+        perf_snapshot_o.mem.reads_complete = counters_q[C_MEM_READS_DONE];
+        perf_snapshot_o.mem.writes_complete = counters_q[C_MEM_WRITES_DONE];
+        perf_snapshot_o.mem.read_words = counters_q[C_MEM_READ_WORDS];
+        perf_snapshot_o.mem.write_words = counters_q[C_MEM_WRITE_WORDS];
+        perf_snapshot_o.mem.read_cycles = counters_q[C_MEM_READ_CYCLES];
+        perf_snapshot_o.mem.write_cycles = counters_q[C_MEM_WRITE_CYCLES];
+        perf_snapshot_o.mem.read_wait_cycles = counters_q[C_MEM_READ_WAIT];
+        perf_snapshot_o.mem.write_wait_cycles = counters_q[C_MEM_WRITE_WAIT];
+        perf_snapshot_o.mem.read_rsp_wait_cycles = counters_q[C_MEM_READ_RSP_WAIT];
+        perf_snapshot_o.mem.write_rsp_wait_cycles = counters_q[C_MEM_WRITE_RSP_WAIT];
+        perf_snapshot_o.mem.timeouts = counters_q[C_MEM_TIMEOUTS];
+        perf_snapshot_o.mem.errors = counters_q[C_MEM_ERRORS];
+
+        perf_snapshot_o.error_events = counters_q[C_ERROR_EVENTS];
+        perf_snapshot_o.pending = pending_q;
     end
 endmodule
