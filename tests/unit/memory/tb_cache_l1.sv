@@ -52,7 +52,7 @@ module tb_cache_l1;
             $fatal(1, "Reset permite oferta/aceptacion de L1");
         if ({dut.pending_valid_q, dut.evict_pending_q, dut.l2_id_valid_q,
              dut.input_reserved_q, dut.input_valid_q, dut.response_valid_q,
-             dut.l2_offered_q} !== 7'b0)
+             dut.l2_offered_q, dut.proto_err_reported_q} !== 8'b0)
             $fatal(1, "Reset incompleto: seguimiento o reservas activos");
         if ({dut.pending_addr_q, dut.pending_write_q, dut.pending_wdata_q,
              dut.pending_wstrb_q, dut.destination_way_q, dut.l2_id_q,
@@ -86,6 +86,7 @@ module tb_cache_l1;
         end
         dut.pending_valid_q = 1'b1;
         dut.evict_pending_q = 1'b1;
+        dut.proto_err_reported_q = 1'b1;
         dut.input_reserved_q = 1'b1;
         dut.input_valid_q = 1'b1;
         dut.response_valid_q = 1'b1;
@@ -372,23 +373,62 @@ module tb_cache_l1;
         if (dut.state_q !== dut.L1_IDLE || dut.response_valid_q !== 1'b0)
             $fatal(1, "L1 no libero respuesta retenida tras handshake");
 
-        /** 8. L1-7 (Caso L1-T11): Error de direccion fuera de rango */
+        /** 8. L1-7 (Caso L1-T11): Lectura/escritura fuera de rango, clasificacion y retencion */
+        // 8a. Lectura invalida con respuesta retenida
         @(negedge clk);
         req_valid = 1'b1;
         req_write = 1'b0;
         req_addr = 32'h0000_0004;
-        rsp_ready = 1'b1;
+        rsp_ready = 1'b0;
         #1;
         if (dut.dmem_req_ready_o !== 1'b1 || dut.dmem_rsp_valid_o !== 1'b1 ||
             dut.dmem_rsp_error_o !== 1'b1 || dut.dmem_rsp_rdata_o !== 32'b0 ||
             dut.dmem_rsp_origin_o !== pkg_metrics::ORIGIN_ERROR ||
-            dut.l2_get_valid_o !== 1'b0 || dut.perf_events_o.error.valid !== 1'b1)
-            $fatal(1, "Error fuera de rango no respondio o disparo pedido L2");
+            dut.l2_get_valid_o !== 1'b0 ||
+            dut.perf_events_o.access_valid !== 1'b1 ||
+            dut.perf_events_o.access_write !== 1'b0 ||
+            dut.perf_events_o.access_result !== pkg_metrics::ACCESS_INVALID ||
+            dut.perf_events_o.error.valid !== 1'b1 ||
+            dut.perf_events_o.error.kind !== pkg_metrics::ERROR_ADDRESS ||
+            dut.perf_events_o.error.address !== 32'h0000_0004)
+            $fatal(1, "Lectura fuera de rango fallo en clasificacion, error o respuesta");
+
         @(posedge clk); #1;
         req_valid = 1'b0;
+        // Durante retencion (rsp_ready=0), no deben repetirse access_valid ni error.valid
+        if (dut.state_q !== dut.L1_COMPLETE_ACCESS || dut.dmem_rsp_valid_o !== 1'b1 ||
+            dut.dmem_rsp_error_o !== 1'b1 || dut.perf_events_o.access_valid !== 1'b0 ||
+            dut.perf_events_o.error.valid !== 1'b0)
+            $fatal(1, "Eventos duplicados o respuesta inestable durante retencion de error");
+
+        @(negedge clk);
+        rsp_ready = 1'b1;
+        @(posedge clk); #1;
         rsp_ready = 1'b0;
 
-        /** 9. L1-7 (Caso L1-T12): Retorno ajeno ignorado y fill_error_i sin instalacion */
+        // 8b. Escritura invalida
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b1;
+        req_addr = 32'h0020_0000;
+        req_wdata = 32'hDEAD_BEEF;
+        req_wstrb = 4'b1111;
+        rsp_ready = 1'b1;
+        #1;
+        if (dut.perf_events_o.access_valid !== 1'b1 ||
+            dut.perf_events_o.access_write !== 1'b1 ||
+            dut.perf_events_o.access_result !== pkg_metrics::ACCESS_INVALID ||
+            dut.perf_events_o.error.valid !== 1'b1 ||
+            dut.perf_events_o.error.kind !== pkg_metrics::ERROR_ADDRESS ||
+            dut.perf_events_o.error.address !== 32'h0020_0000 ||
+            dut.l2_get_valid_o !== 1'b0)
+            $fatal(1, "Escritura fuera de rango fallo en clasificacion o diagnostico");
+        @(posedge clk); #1;
+        req_valid = 1'b0;
+        req_write = 1'b0;
+        rsp_ready = 1'b0;
+
+        /** 9. L1-7 (Caso L1-T12): Retorno ajeno sin handshake + ERROR_PROTOCOL y fill_error */
         #1 rst_n = 1'b0;
         #1 rst_n = 1'b1;
         @(negedge clk);
@@ -403,27 +443,61 @@ module tb_cache_l1;
         req_valid = 1'b0;
         l2_ready = 1'b0;
 
+        // 9a. Retorno con ID incorrecto: no hace handshake (fill_ready_o=0) y emite ERROR_PROTOCOL una vez
         @(negedge clk);
         fill_valid = 1'b1;
         fill_base = 32'h00010000;
         fill_source = pkg_memory::FILL_L2;
         fill_id = 2'd2;
         fill_error = 1'b0;
+        #1;
+        if (dut.fill_ready_o !== 1'b0 ||
+            dut.perf_events_o.error.valid !== 1'b1 ||
+            dut.perf_events_o.error.kind !== pkg_metrics::ERROR_PROTOCOL ||
+            dut.perf_events_o.error.address !== 32'h00010000)
+            $fatal(1, "Retorno con id ajeno hizo handshake o no diagnostico ERROR_PROTOCOL");
         @(posedge clk); #1;
         if (dut.state_q !== dut.L1_WAIT_BLOCK || dut.l2_id_valid_q !== 1'b1 ||
-            dut.block_valid_q[0][0] !== 1'b0)
-            $fatal(1, "L1 acepto retorno con id ajeno");
+            dut.pending_valid_q !== 1'b1 || dut.input_reserved_q !== 1'b1 ||
+            dut.block_valid_q[0][0] !== 1'b0 || dut.perf_events_o.error.valid !== 1'b0)
+            $fatal(1, "Retorno con id ajeno instalo datos o repitio ERROR_PROTOCOL");
+        fill_valid = 1'b0;
+        @(posedge clk); #1;
 
+        // 9b. Retorno con base incorrecta: no hace handshake y emite ERROR_PROTOCOL una vez
         @(negedge clk);
+        fill_valid = 1'b1;
+        fill_base = 32'h00010040;
+        fill_source = pkg_memory::FILL_L2;
+        fill_id = 2'd1;
+        fill_error = 1'b0;
+        #1;
+        if (dut.fill_ready_o !== 1'b0 ||
+            dut.perf_events_o.error.valid !== 1'b1 ||
+            dut.perf_events_o.error.kind !== pkg_metrics::ERROR_PROTOCOL ||
+            dut.perf_events_o.error.address !== 32'h00010040)
+            $fatal(1, "Retorno con base ajena hizo handshake o no diagnostico ERROR_PROTOCOL");
+        @(posedge clk); #1;
+        if (dut.state_q !== dut.L1_WAIT_BLOCK || dut.pending_valid_q !== 1'b1 ||
+            dut.input_reserved_q !== 1'b1 || dut.block_valid_q[0][0] !== 1'b0 ||
+            dut.perf_events_o.error.valid !== 1'b0)
+            $fatal(1, "Retorno con base ajena instalo datos o repitio ERROR_PROTOCOL");
+        fill_valid = 1'b0;
+        @(posedge clk); #1;
+
+        // 9c. Retorno valido con fill_error_i: propaga error a CPU sin generar deteccion local en L1
+        @(negedge clk);
+        fill_valid = 1'b1;
+        fill_base = 32'h00010000;
         fill_id = 2'd1;
         fill_error = 1'b1;
         rsp_ready = 1'b1;
         #1;
-        if (dut.dmem_rsp_valid_o !== 1'b1 || dut.dmem_rsp_error_o !== 1'b1 ||
-            dut.dmem_rsp_rdata_o !== 32'b0 ||
+        if (dut.fill_ready_o !== 1'b1 || dut.dmem_rsp_valid_o !== 1'b1 ||
+            dut.dmem_rsp_error_o !== 1'b1 || dut.dmem_rsp_rdata_o !== 32'b0 ||
             dut.dmem_rsp_origin_o !== pkg_metrics::ORIGIN_ERROR ||
-            dut.perf_events_o.error.valid !== 1'b1)
-            $fatal(1, "fill_error_i no reporto error a CPU correctamente");
+            dut.perf_events_o.error.valid !== 1'b0)
+            $fatal(1, "fill_error_i no propago error o duplico deteccion local en L1");
         @(posedge clk); #1;
         fill_valid = 1'b0;
         fill_error = 1'b0;
@@ -552,7 +626,6 @@ module tb_cache_l1;
         @(negedge clk);
         check_empty();
 
-        // Poblar conjunto 2: via 0 valida (victima LRU = 0) y via 1 valida
         dut.block_valid_q[2][0] = 1'b1;
         dut.block_tag_q[2][0] = 21'h10;
         dut.block_dirty_q[2][0] = 1'b1;
@@ -565,7 +638,7 @@ module tb_cache_l1;
         @(negedge clk);
         req_valid = 1'b1;
         req_write = 1'b0;
-        req_addr = 32'h00015044; // Conjunto 2 (0x40), palabra 1
+        req_addr = 32'h00015044;
         l2_ready = 1'b1;
         l2_accept_id = 2'd1;
         wb_push_ready = 1'b1;
@@ -574,14 +647,12 @@ module tb_cache_l1;
         req_valid = 1'b0;
         l2_ready = 1'b0;
 
-        // Victima desalojada en el ciclo siguiente; luego wb_push_valid_o debe quedar en 0
         if (dut.wb_push_valid_o !== 1'b1 || dut.perf_events_o.eviction.valid !== 1'b1)
             $fatal(1, "Victima original no se desalojo en 13a");
         @(posedge clk); #1;
         if (dut.wb_push_valid_o !== 1'b0 || dut.evict_pending_q !== 1'b0)
             $fatal(1, "wb_push_valid_o no bajo tras handshake de victima");
 
-        // Llega fill mientras rsp_ready = 0 y wb_push_ready = 1
         @(negedge clk);
         fill_valid = 1'b1;
         fill_base = 32'h00015040;
@@ -594,8 +665,6 @@ module tb_cache_l1;
         @(posedge clk); #1;
         fill_valid = 1'b0;
 
-        // Sostener rsp_ready = 0 por 4 ciclos con wb_push_ready = 1:
-        // la linea instalada debe seguir valida con sus datos y sin re-ofrecerse a WB
         for (integer stall_c = 0; stall_c < 4; stall_c++) begin
             if (dut.state_q !== dut.L1_COMPLETE_ACCESS ||
                 dut.block_valid_q[2][0] !== 1'b1 ||
@@ -610,7 +679,6 @@ module tb_cache_l1;
             @(posedge clk); #1;
         end
 
-        // CPU consume una unica vez
         @(negedge clk);
         rsp_ready = 1'b1;
         @(posedge clk); #1;
@@ -623,16 +691,15 @@ module tb_cache_l1;
         @(negedge clk);
         req_valid = 1'b1;
         req_write = 1'b0;
-        req_addr = 32'h00016048; // Conjunto 2, victima LRU ahora es via 1
+        req_addr = 32'h00016048;
         l2_ready = 1'b1;
         l2_accept_id = 2'd2;
-        wb_push_ready = 1'b0; // WB bloqueado
+        wb_push_ready = 1'b0;
         rsp_ready = 1'b0;
         @(posedge clk); #1;
         req_valid = 1'b0;
         l2_ready = 1'b0;
 
-        // Llega fill mientras WB sigue bloqueado -> se guarda en input_data_q
         @(negedge clk);
         fill_valid = 1'b1;
         fill_base = 32'h00016040;
@@ -644,8 +711,6 @@ module tb_cache_l1;
         if (dut.input_valid_q !== 1'b1 || dut.wb_push_valid_o !== 1'b1)
             $fatal(1, "Fill no espero en entrada mientras WB estaba bloqueado (13b)");
 
-        // Se desbloquea WB (wb_push_ready = 1) pero CPU sigue detenida (rsp_ready = 0):
-        // desaloja victima una sola vez e instala linea nueva reteniendo respuesta
         @(negedge clk);
         wb_push_ready = 1'b1;
         #1;
@@ -654,7 +719,6 @@ module tb_cache_l1;
             $fatal(1, "No desalojo ni respondio al liberarse WB en 13b");
         @(posedge clk); #1;
 
-        // En ciclos siguientes con rsp_ready = 0 y wb_push_ready = 1: no re-desaloja linea nueva
         for (integer stall_c = 0; stall_c < 3; stall_c++) begin
             if (dut.block_valid_q[2][1] !== 1'b1 ||
                 dut.block_data_q[2][1][95:64] !== 32'h8888_0002 ||

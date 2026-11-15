@@ -71,13 +71,6 @@ module cache_l1 #(
     /** @brief Eventos CPU-domain de aceptacion, victima y errores propios. */
     output pkg_metrics::l1_events_t perf_events_o
 );
-    /**
-     * @brief Geometria derivada de los parametros compartidos.
-     * @details Cada conjunto tiene L1_WAYS vias; cada via puede almacenar
-     * un bloque de LINE_BYTES bytes.
-     * La direccion se divide en tag, indice de conjunto y offset de bloque;
-     * con la configuracion actual son 21, 6 y 5 bits respectivamente.
-     */
     localparam integer SET_COUNT = pkg_memory::L1_BYTES /
         (pkg_memory::L1_WAYS * pkg_memory::LINE_BYTES);
     localparam integer BLOCK_OFFSET_W = $clog2(pkg_memory::LINE_BYTES);
@@ -126,6 +119,7 @@ module cache_l1 #(
     pkg_memory::byte_mask_t pending_wstrb_q;
     logic [WAY_INDEX_W-1:0] destination_way_q;
     logic l2_offered_q;
+    logic proto_err_reported_q;
 
     /** @brief Identificador recibido exclusivamente al aceptar L2 la solicitud. */
     logic [L2_ID_W-1:0] l2_id_q;
@@ -175,6 +169,8 @@ module cache_l1 #(
 
     logic fill_source_valid;
     logic fill_match;
+    logic expecting_fill_now;
+    logic foreign_fill_now;
     pkg_memory::line_t raw_install_line;
     logic raw_install_dirty;
     pkg_memory::fill_source_t raw_install_source;
@@ -220,12 +216,17 @@ module cache_l1 #(
     assign dest_way_dirty = block_dirty_q[pending_set][destination_way_q];
     assign way_available_now = !evict_pending_q || wb_push_handshake;
 
+    // Valida fuente, id (en L2/memoria) y base antes de habilitar fill_ready_o
     assign fill_source_valid =
         ((fill_source_i == pkg_memory::FILL_WB) && !l2_id_valid_q) ||
         (((fill_source_i == pkg_memory::FILL_L2) ||
           (fill_source_i == pkg_memory::FILL_MEMORY)) &&
          l2_id_valid_q && (fill_id_i == l2_id_q));
     assign fill_match = (fill_base_i == pending_block_base) && fill_source_valid;
+    assign expecting_fill_now = input_reserved_q && !input_valid_q &&
+        ((state_q == L1_WAIT_BLOCK) ||
+         ((state_q == L1_GET_BLOCK) && !l2_offered_q && wb_probe_hit_i && !wb_probe_busy_i));
+    assign foreign_fill_now = expecting_fill_now && fill_valid_i && !fill_match;
 
     always_comb begin
         hit_block_data = block_data_q[req_set][hit_way];
@@ -275,8 +276,8 @@ module cache_l1 #(
 
     /**
      * @brief Control combinacional de salidas, intenciones y proximo estado.
-     * @details Desacopla el desalojo de victima (evict_pending_q) de la retencion
-     * de respuesta CPU (response_valid_q) para no re-ofrecer lineas instaladas.
+     * @details Valida retornos antes de aceptarlos, diagnostica retornos ajenos
+     * una sola vez, clasifica accesos invalidos y evita duplicar errores propagados.
      */
     always_comb begin
         req_ready_internal = 1'b0;
@@ -314,6 +315,13 @@ module cache_l1 #(
             end
         end
 
+        // Diagnostico unico de protocolo si llega un retorno con base/id/fuente ajenos
+        if (foreign_fill_now && !proto_err_reported_q) begin
+            perf_events_o.error.valid = 1'b1;
+            perf_events_o.error.kind = pkg_metrics::ERROR_PROTOCOL;
+            perf_events_o.error.address = fill_base_i;
+        end
+
         case (state_q)
             L1_IDLE: begin
                 if (load_hit_now) begin
@@ -345,7 +353,11 @@ module cache_l1 #(
                     dmem_rsp_error_o = 1'b1;
                     dmem_rsp_origin_o = pkg_metrics::ORIGIN_ERROR;
                     if (dmem_req_handshake) begin
+                        perf_events_o.access_valid = 1'b1;
+                        perf_events_o.access_write = dmem_req_write_i;
+                        perf_events_o.access_result = pkg_metrics::ACCESS_INVALID;
                         perf_events_o.error.valid = 1'b1;
+                        perf_events_o.error.kind = pkg_metrics::ERROR_ADDRESS;
                         perf_events_o.error.address = dmem_req_addr_i;
                         if (!dmem_rsp_handshake) begin
                             next_state = L1_COMPLETE_ACCESS;
@@ -376,15 +388,15 @@ module cache_l1 #(
                 wb_probe_valid_internal = !l2_offered_q;
                 wb_probe_base_o = pending_block_base;
                 if (!l2_offered_q && wb_probe_hit_i && !wb_probe_busy_i) begin
-                    fill_ready_internal = input_reserved_q && !input_valid_q;
-                    if (fill_handshake && fill_match) begin
+                    // Solo acepta retorno si coincide con la demanda reservada
+                    fill_ready_internal = input_reserved_q && !input_valid_q &&
+                                          fill_valid_i && fill_match;
+                    if (fill_handshake) begin
                         if (fill_error_i) begin
                             fill_error_now = 1'b1;
                             rsp_valid_internal = 1'b1;
                             dmem_rsp_error_o = 1'b1;
                             dmem_rsp_origin_o = pkg_metrics::ORIGIN_ERROR;
-                            perf_events_o.error.valid = 1'b1;
-                            perf_events_o.error.address = pending_addr_q;
                             if (dmem_rsp_handshake) begin
                                 next_state = L1_IDLE;
                             end else begin
@@ -415,15 +427,15 @@ module cache_l1 #(
             end
 
             L1_WAIT_BLOCK: begin
-                fill_ready_internal = input_reserved_q && !input_valid_q;
-                if (fill_handshake && fill_match) begin
+                // Solo acepta retorno si base, id y fuente coinciden con lo esperado
+                fill_ready_internal = input_reserved_q && !input_valid_q &&
+                                      fill_valid_i && fill_match;
+                if (fill_handshake) begin
                     if (fill_error_i) begin
                         fill_error_now = 1'b1;
                         rsp_valid_internal = 1'b1;
                         dmem_rsp_error_o = 1'b1;
                         dmem_rsp_origin_o = pkg_metrics::ORIGIN_ERROR;
-                        perf_events_o.error.valid = 1'b1;
-                        perf_events_o.error.address = pending_addr_q;
                         if (dmem_rsp_handshake) begin
                             next_state = L1_IDLE;
                         end else begin
@@ -479,8 +491,6 @@ module cache_l1 #(
 
     /**
      * @brief Seguimiento de demanda pendiente, victima a desalojar, id L2 y retencion.
-     * @details evict_pending_q se mantiene hasta wb_push_handshake; pending_valid_q
-     * se cierra al instalar o fallar, delegando la retencion CPU a response_valid_q.
      */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -492,6 +502,7 @@ module cache_l1 #(
             pending_wstrb_q <= '0;
             destination_way_q <= '0;
             l2_offered_q <= 1'b0;
+            proto_err_reported_q <= 1'b0;
             l2_id_q <= '0;
             l2_id_valid_q <= 1'b0;
             input_reserved_q <= 1'b0;
@@ -526,8 +537,16 @@ module cache_l1 #(
                 destination_way_q <= victim_way;
                 input_reserved_q <= 1'b1;
                 l2_offered_q <= l2_get_valid_o && !l2_get_ready_i;
+                proto_err_reported_q <= 1'b0;
             end else if (state_q == L1_GET_BLOCK && l2_get_valid_o && !l2_get_ready_i) begin
                 l2_offered_q <= 1'b1;
+            end
+
+            // Recuerda reporte de error de protocolo hasta que cese el retorno ajeno
+            if (foreign_fill_now) begin
+                proto_err_reported_q <= 1'b1;
+            end else if (!fill_valid_i) begin
+                proto_err_reported_q <= 1'b0;
             end
 
             if (wb_push_handshake) begin
@@ -540,7 +559,7 @@ module cache_l1 #(
                 l2_offered_q <= 1'b0;
             end
 
-            if (fill_handshake && fill_match) begin
+            if (fill_handshake) begin
                 l2_id_valid_q <= 1'b0;
                 if (fill_error_now) begin
                     pending_valid_q <= 1'b0;
@@ -582,9 +601,6 @@ module cache_l1 #(
 
     /**
      * @brief Reset de validez/reemplazo, desalojo de victima, hit e instalacion.
-     * @details Invalidar todas las vias deja la cache vacia. En desalojo limpia
-     * la via victima; en hit actualiza LRU/store; en instalacion escribe tag,
-     * datos, valid, dirty y actualiza LRU una sola vez.
      */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -617,5 +633,4 @@ module cache_l1 #(
             end
         end
     end
-
 endmodule
