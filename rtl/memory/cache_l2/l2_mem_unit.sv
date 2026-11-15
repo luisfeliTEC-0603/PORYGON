@@ -1,44 +1,46 @@
 /**
  * @file l2_mem_unit.sv
- * @brief Canal mem_rd_req y observacion de mem_rd_rsp para miss L2.
+ * @brief Canal mem_rd_req y observación de mem_rd_rsp para miss L2.
  *
  * @details
- *   Selecciona la operacion en ST_MEMREQ mas antigua mediante l2_out_sel con
- *   lock estable. Ofrece eb_probe_valid/base durante toda la oferta de
- *   lectura. mem_rd_req_valid_o = eb_probe_valid_o && !eb_probe_hit_i: si el
- *   EB tiene una escritura pendiente para esa linea, no se emite la lectura
- *   hasta consumir su confirmacion (interfaces.md seccion 5).
+ *   Elige la operación en ST_MEMREQ más antigua con l2_out_sel (lock estable).
+ *   Ofrece eb_probe_valid/base durante toda la oferta. mem_rd_req_valid_o =
+ *   eb_probe_valid_o && !eb_probe_hit_i: si el EB tiene una escritura
+ *   pendiente para esa línea, no se emite la lectura hasta consumir su
+ *   confirmación.
  *
  *   Mientras el EB bloquea (eb_probe_hit_i=1), el lock de l2_out_sel no se
- *   activa (ext_valid_i = mem_rd_req_valid_o = 0), asi que otra operacion
- *   puede ser seleccionada en el siguiente ciclo. Es lo deseado: una
- *   operacion bloqueada por EB no bloquea a las demas (hierarchy.md seccion 5).
+ *   activa (ext_valid_i = mem_rd_req_valid_o = 0), así que otra operación
+ *   puede ser seleccionada en el siguiente ciclo. Una operación bloqueada por
+ *   EB no bloquea a las demás.
  *
- *   Al handshake mem_rd_req (valid && ready):
- *     - emite ev_mem para que l2_op_table pase a ST_MEMWAIT.
+ *   Al handshake mem_rd_req (valid && ready) emite ev_mem para que la tabla
+ *   pase a ST_MEMWAIT. Al observar mem_rd_rsp (valid && ready) emite ev_rsp
+ *   para el owner y la tabla pasa a ST_IDLE; no instala copia en L2
+ *   (exclusividad en miss).
  *
- *   Al observar mem_rd_rsp (valid && ready) L2 no genera el handshake: solo
- *   lo observa para finalizar su operacion. En ese flanco:
- *     - ev_rsp para el owner (rsp_id): l2_op_table pasa ST_MEMWAIT -> ST_IDLE.
- *     - Dos demandas a la misma base no coexisten: la segunda espera por
- *       conflicto de base en la admision (no hay MSHR ni waiters).
- *     - NO se instala copia en L2 (exclusividad en miss).
+ * @param N   Número de operaciones en vuelo.
+ * @param AW  Ancho de dirección.
+ * @param OPW Ancho de índice de operación, mínimo 1.
  *
+ * @input  req_mem_i          Solicitud de lectura a memoria por operación.
+ * @input  older_i            Matriz NxN de antigüedad.
+ * @input  t_base_i           Base por operación.
+ * @input  eb_probe_hit_i     1 si el EB tiene escritura pendiente para la base ofrecida.
+ * @input  mem_rd_req_ready_i 1 si el controlador acepta la lectura.
+ * @input  mem_rd_rsp_valid_i 1 si el controlador devuelve una línea.
+ * @input  mem_rd_rsp_ready_i 1 si L1/line_return acepta la línea.
+ * @input  mem_rd_rsp_id_i    Id del owner de la respuesta.
+ * @input  mem_rd_rsp_base_i  Base de la respuesta.
  *
- *   Precondiciones documentadas:
- *     - mem_rd_rsp_ready_i es la aceptacion de L1/line_return, no de L2;
- *       L2 solo observa valid && ready. El top lo cablea.
- *     - Un id en ST_MEMWAIT no se reutiliza hasta que llega su rsp y la
- *       operacion termina; por eso rsp_id identifica al owner sin ambiguedad.
- *     - Caso limite attach + rsp en el mismo ciclo: la politica es que el
- *       top bloquee la aceptacion del waiter en ese ciclo (l2_get_ready_o=0)
- *       para evitar un waiter colgado. Ver documentacion del top.
- *
- *   Los pulsos ev_mem y ev_rsp duran un solo ciclo.
- *
- * @param N     Numero de operaciones en vuelo.
- * @param AW    Ancho de direccion.
- * @param OPW   Ancho de indice de operacion.
+ * @output eb_probe_valid_o   1 si hay una operación ofreciendo probe al EB.
+ * @output eb_probe_base_o    Base a consultar en el EB.
+ * @output mem_rd_req_valid_o 1 si se emite lectura a memoria (probe sin hit en EB).
+ * @output mem_rd_req_id_o    Id de la operación que lee.
+ * @output mem_rd_req_base_o  Base de la lectura.
+ * @output ev_mem_valid_o     1 en el ciclo del handshake mem_rd_req.
+ * @output ev_mem_onehot_o    One-hot de la operación que emitió la lectura.
+ * @output ev_rsp_onehot_o    One-hot del owner que observó su respuesta.
  */
 
 module l2_mem_unit #(
@@ -81,13 +83,15 @@ module l2_mem_unit #(
     logic [N-1:0]     sel_onehot;
     logic [AW-1:0]    sel_base;
 
-    // Mascara de operaciones bloqueadas por conflicto con EB. Sin ella, el
-    // arbitro reelegiria cada ciclo a la operacion mas antigua aunque este
-    // bloqueada (eb_probe_hit=1) y una lectura independiente nunca avanzaria.
+    // Máscara de operaciones bloqueadas por EB. Sin ella, el árbitro reelegiría
+    // cada ciclo a la más antigua aunque esté bloqueada (eb_probe_hit=1) y una
+    // lectura independiente nunca avanzaría.
     logic [N-1:0] skip_q, req_eff, req_use;
     assign req_eff = req_mem_i & ~skip_q;
     assign req_use = (|req_eff) ? req_eff : req_mem_i;
 
+    // Árbitro del canal con lock: mantiene la oferta estable si el controlador
+    // no acepta la lectura.
     l2_out_sel #(.N(N)) u_sel (
         .clk_i, .rst_ni,
         .req_i(req_use), .older_i(older_i),
@@ -97,7 +101,8 @@ module l2_mem_unit #(
 
     assign sel_base = t_base_i[sel_idx*AW +: AW];
 
-    // Canal mem_rd_req
+    // Probe al EB: se ofrece siempre que hay operación elegida; la lectura
+    // solo se emite si el EB no tiene una escritura pendiente para esa base.
     assign eb_probe_valid_o   = rst_ni && sel_valid;
     assign eb_probe_base_o    = sel_base;
     assign mem_rd_req_valid_o = eb_probe_valid_o && !eb_probe_hit_i;
@@ -125,9 +130,8 @@ module l2_mem_unit #(
     assign ev_mem_valid_o  = mem_hs;
     assign ev_mem_onehot_o = mem_hs ? sel_onehot : '0;
 
-    // Observacion de mem_rd_rsp
-    // rsp_hs es el handshake del retorno controlador -> L1. L2 lo observa
-    // para finalizar su operacion y liberar el id, sin instalar copia.
+    // Observación de mem_rd_rsp: L2 no genera el handshake, solo lo observa
+    // para finalizar su operación. rsp_hs es el handshake controlador -> L1.
     logic rsp_hs;
     assign rsp_hs = rst_ni && mem_rd_rsp_valid_i && mem_rd_rsp_ready_i;
 
