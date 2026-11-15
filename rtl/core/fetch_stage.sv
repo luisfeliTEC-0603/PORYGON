@@ -1,18 +1,17 @@
 /**
- * @brief Mantiene PC y registra la frontera IF/ID.
+ * @brief Mantiene PC y registra los metadatos de la frontera IF/ID.
  *
- * @details La interfaz externa debe entregar combinacionalmente el bundle
- * del PC solicitado. En cada flanco se captura ese bundle y su PC; el PC
- * siguiente avanza ocho bytes o toma el destino BRUH. Un salto no invalida
- * IF/ID: los bundles jovenes son NOPs insertados por software.
+ * @details La ROM registra el bundle en el mismo flanco en que este bloque
+ * captura su PC y validez. El bundle se conecta directamente a ID: registrarlo
+ * otra vez agregaria una etapa. El PC siguiente avanza ocho bytes o toma el
+ * destino BRUH. Un salto conserva sus dos bundles de retardo por software.
  *
  * @input clk_i, rst_ni Reloj y reset activo bajo.
- * @input instruction_bundle_i Bundle correspondiente a instruction_address_o.
+ * @input instruction_bundle_i Respuesta registrada de la lectura IF anterior.
  * @input branch_taken_i, branch_target_i Decision EX aplicada en este flanco.
  * @output instruction_address_o, instruction_read_enable_o Solicitud IF.
- * @output bundle_o, bundle_pc_o, bundle_valid_o Frontera IF/ID registrada.
- * @note instruction_memory implementa este contrato combinacional. Una
- * memoria con latencia variable o respuesta sincronica no es compatible.
+ * @output bundle_o, bundle_pc_o, bundle_valid_o Bundle ROM y metadatos IF/ID.
+ * @note Requiere ROM sincrona de un ciclo; no admite latencia variable.
  */
 module fetch_stage #(
     parameter logic [pkg_vliw::ADDR_WIDTH-1:0] INITIAL_PC = pkg_vliw::RESET_PC
@@ -33,16 +32,15 @@ module fetch_stage #(
 
     assign instruction_address_o = pc_q;
     assign instruction_read_enable_o = rst_ni;
+    assign bundle_o = bundle_valid_o ? instruction_bundle_i : '0;
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             pc_q <= INITIAL_PC;
-            bundle_o <= '0;
             bundle_pc_o <= INITIAL_PC;
             bundle_valid_o <= 1'b0;
         end else begin
             pc_q <= branch_taken_i ? branch_target_i : pc_q + BUNDLE_BYTES;
-            bundle_o <= instruction_bundle_i;
             bundle_pc_o <= pc_q;
             bundle_valid_o <= 1'b1;
         end

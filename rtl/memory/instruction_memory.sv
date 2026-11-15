@@ -1,14 +1,17 @@
 /**
- * @brief Memoria combinacional de bundles del segmento de texto de 64 KiB.
+ * @brief ROM sincrona de bundles del segmento de texto de 64 KiB.
  *
  * @details Cada posicion contiene un bundle de 64 bits y la posicion cero
  * corresponde a BASE_ADDRESS. INIT_FILE usa el formato de $readmemh con una
  * palabra hexadecimal de 64 bits por bundle; slot 0 ocupa los bits [15:0].
  * Las posiciones no cargadas se inicializan con el bundle NOP completo.
  *
- * Una solicitud desalineada o fuera del segmento devuelve NOP y activa la
- * salida diagnostica out_of_range_o. No se introduce latencia ni estado, por
- * lo que el contrato combinacional de fetch_stage permanece sin cambios.
+ * @details La lectura se registra en el flanco positivo: esta salida es la
+ * frontera IF/ID del bundle, sin otro registro de datos en fetch_stage.
+ * read_enable_i=0 conserva el bundle; el diagnostico solo pulsa por lectura.
+ * Una lectura desalineada o fuera de rango registra NOP y out_of_range_o.
+ * @input clk_i, rst_ni Reloj CPU y reset asincrono activo bajo de las salidas.
+ * @note Reset no modifica la imagen de instrucciones inicializada.
  */
 module instruction_memory #(
     parameter integer MEMORY_BYTES = pkg_vliw::MEMORY_BYTES,
@@ -17,6 +20,8 @@ module instruction_memory #(
     parameter INIT_FILE = "",
     parameter integer INIT_BUNDLES = 0
 ) (
+    input logic clk_i,
+    input logic rst_ni,
     input pkg_vliw::address_t address_i,
     input logic read_enable_i,
     output pkg_vliw::bundle_t bundle_o,
@@ -37,10 +42,23 @@ module instruction_memory #(
     assign address_aligned = (address_i[$clog2(BUNDLE_BYTES)-1:0] == '0);
     assign address_in_range = (address_i >= BASE_ADDRESS) &&
                               (address_i <= LAST_BUNDLE_ADDRESS);
-    assign bundle_o = (read_enable_i && address_aligned && address_in_range)
-        ? memory[byte_offset / BUNDLE_BYTES] : '0;
-    assign out_of_range_o = read_enable_i &&
-                            (!address_aligned || !address_in_range);
+    /** @brief La salida registrada conserva el bundle cuando IF no lee. */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            bundle_o <= '0;
+            out_of_range_o <= 1'b0;
+        end else begin
+            out_of_range_o <= 1'b0;
+            if (read_enable_i) begin
+                out_of_range_o <= !address_aligned || !address_in_range;
+                if (address_aligned && address_in_range) begin
+                    bundle_o <= memory[byte_offset / BUNDLE_BYTES];
+                end else begin
+                    bundle_o <= '0;
+                end
+            end
+        end
+    end
 
     initial begin : initialize_memory
         integer bundle_index;

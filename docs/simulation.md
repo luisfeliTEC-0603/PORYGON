@@ -49,7 +49,9 @@ solicita la misma unidad en un bundle, `pipe_gate.sv` elige el de **menor
 índice**: el generador de código debe evitar esa colisión porque el otro slot
 no queda pendiente para un ciclo futuro.
 
-Las fronteras registradas son IF/ID en `fetch_stage.sv`, ID/EX en
+La frontera IF/ID conserva el bundle en la salida registrada de
+`instruction_memory.sv` y su PC y validez en `fetch_stage.sv`. No hay un segundo
+registro del bundle en fetch. Las otras fronteras son ID/EX en
 `vliw_processor.sv` y las salidas de ejecución que alimentan WB. En ID/EX se
 capturan tanto las instrucciones y sus PC como los operandos leídos. Distintos
 bundles pueden encontrarse simultáneamente en etapas distintas. Hay dos ALU
@@ -61,7 +63,7 @@ bundle.
 ```mermaid
 flowchart LR
     PC[PC] --> IM[Memoria de instrucciones]
-    IM --> IFID[Registro IF/ID]
+    IM --> IFID[IF/ID: salida ROM registrada y metadatos fetch]
     IFID --> IDD[Decode y dispatch]
     RF[Banco r0-r7] --> IDD
     IDD --> IDEX[Registro ID/EX]
@@ -150,13 +152,16 @@ El sistema de simulación conecta **64 KiB de memoria de instrucciones** y
 
 | Segmento | Direcciones inclusivas | Organización y acceso |
 |---|---|---|
-| Texto | `0x00000000`–`0x0000FFFF` | 8192 bundles de 64 bits; lectura combinacional; PC alineado a 8 bytes |
+| Texto | `0x00000000`–`0x0000FFFF` | 8192 bundles de 64 bits; lectura síncrona de un ciclo; PC alineado a 8 bytes |
 | Datos | `0x00010000`–`0x0001FFFF` | 65 536 bytes; lectura registrada en flanco positivo y escritura con máscara por byte |
 | Pila del programa Piper | `0x0001F000`–`0x0001FFFF` | Parte del segmento de datos; crece hacia abajo |
 
 Las posiciones no cargadas se inicializan en cero. En texto, cero equivale a
-un bundle NOP; un fetch desalineado o fuera de rango entrega NOP y activa
-`instruction_access_error_o`. En datos, una petición fuera del segmento activa
+un bundle NOP; una lectura habilitada registra el bundle al terminar IF.
+Si la dirección es desalineada o está fuera de rango, registra NOP y activa
+`instruction_access_error_o`, con el PC de esa solicitud registrado en paralelo.
+Sin lectura se conserva el bundle y se desactiva el diagnóstico. Reset limpia
+las salidas sin borrar la imagen cargada. En datos, una petición fuera del segmento activa
 `data_access_error_o`; la escritura se descarta, y una lectura devuelve cero
 con `read_valid_o=0` para suprimir el WB del load. Son diagnósticos, no
 excepciones con rutina de atención. Una lectura válida de datos conserva su

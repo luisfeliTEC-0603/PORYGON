@@ -7,7 +7,7 @@
  * los modelos de instrucciones y datos de simulacion.
  *
  * @input clk_i, rst_ni Reloj y reset activo bajo, sostenido por un posedge.
- * @input instruction_bundle_i Lectura combinacional del PC presentado.
+ * @input instruction_bundle_i Lectura ROM registrada del PC solicitado en IF.
  * @input data_read_data_i, data_read_valid_i Lectura sincronica de la solicitud
  * LSU anterior y validez de rango para calificar su WB.
  * @output instruction_address_o, instruction_read_enable_o Interfaz IF.
@@ -140,7 +140,6 @@ module vliw_processor #(
         .bruh_i(ex_operation[UNIT_BRUH]),
         .crypto_i(ex_operation[UNIT_CRYPTO]),
         .memory_read_data_i(data_read_data_i),
-        .memory_read_valid_i(data_read_valid_i),
         .alu0_wb_o(alu0_wb),
         .alu1_wb_o(alu1_wb),
         .load_wb_o(load_wb),

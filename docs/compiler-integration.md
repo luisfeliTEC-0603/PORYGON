@@ -98,6 +98,11 @@ offset = bundle_destino - bundle_salto
 PC_destino = PC_salto + 8 × offset
 ```
 
+La ROM de instrucciones registra su salida al terminar IF; esa salida es la
+frontera de datos IF/ID. Fetch registra su PC y validez en paralelo, sin añadir
+otro registro del bundle. Se conserva así el calendario y los dos bundles de
+retardo existentes.
+
 El scheduler resuelve las etiquetas después de distribuir las instrucciones.
 Los saltos directos con etiqueta se representan internamente en forma larga,
 con literal de 16 bits. `jr` recibe una dirección absoluta en bytes, alineada

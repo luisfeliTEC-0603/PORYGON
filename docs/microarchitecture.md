@@ -26,18 +26,18 @@ Cada bundle avanza una etapa por ciclo de reloj, de modo que hasta cuatro bundle
 
 **Módulo:** `fetch_stage.sv`
 
-Mantiene el Program Counter (`pc_q`) y captura el bundle correspondiente.
-La interfaz con la memoria de instrucciones es **combinacional**: la memoria debe entregar el bundle en el mismo ciclo en que se presenta la dirección.
+Mantiene el Program Counter (`pc_q`) y registra el PC y la validez de IF/ID.
+La interfaz con la memoria de instrucciones es **síncrona de un ciclo**: la ROM registra el bundle en el flanco que termina IF. Esa salida constituye la frontera de datos IF/ID; fetch la conecta directamente a decode, sin volver a registrarla. En paralelo, fetch captura el PC de esa lectura, de modo que bundle y PC corresponden a la misma solicitud.
 En cada flanco de reloj, el PC avanza ocho bytes (`BUNDLE_BYTES`) o toma el destino calculado por la BRU si `branch_taken_i` está activo.
 
 | Señal | Dirección | Descripción |
 |-------|-----------|-------------|
 | `instruction_address_o` | Salida | Dirección del bundle solicitado (PC actual) |
 | `instruction_read_enable_o` | Salida | Habilitador de lectura (activo si `rst_ni`) |
-| `instruction_bundle_i` | Entrada | Bundle correspondiente a la dirección presentada |
+| `instruction_bundle_i` | Entrada | Respuesta registrada de la lectura IF anterior |
 | `branch_taken_i` | Entrada | Decisión de salto de la BRU |
 | `branch_target_i` | Entrada | Dirección destino del salto |
-| `bundle_o` | Salida | Bundle capturado hacia la frontera IF/ID |
+| `bundle_o` | Salida | Salida registrada de ROM, calificada por validez IF/ID |
 | `bundle_pc_o` | Salida | PC del bundle capturado |
 | `bundle_valid_o` | Salida | Validez del bundle en IF/ID |
 
@@ -52,9 +52,9 @@ En cada flanco de reloj, el PC avanza ocho bytes (`BUNDLE_BYTES`) o toma el dest
 >
 > **Memoria de instrucciones (`instruction_memory.sv`):**
 >
-> Es un arreglo combinacional de bundles. Cada posición contiene 64 bits y la posición cero corresponde a `TEXT_BASE_ADDRESS` (`0x00000000`).
+> Es una ROM de bundles con salida registrada. Cada posición contiene 64 bits y la posición cero corresponde a `TEXT_BASE_ADDRESS` (`0x00000000`).
 > Las posiciones no cargadas se inicializan con el bundle NOP completo (`64'h0`).
-> Una solicitud desalineada o fuera del segmento devuelve NOP y activa `out_of_range_o`, que se expone como diagnóstico en el sistema.
+> Una lectura desalineada o fuera del segmento registra NOP y activa `out_of_range_o` para esa lectura. El wrapper registra el PC correspondiente en el mismo flanco. Sin habilitación de lectura se conserva el bundle y se desactiva el diagnóstico. Reset limpia las salidas, sin modificar la imagen de instrucciones. No se añade una etapa al pipeline ni se cambian los dos bundles de retardo.
 
 ### Decode/Dispatch (ID)
 
@@ -382,7 +382,7 @@ El hardware **no** resuelve dependencias de control. El scheduler debe garantiza
 
 | Frontera | Registro | Contenido |
 |----------|----------|-----------|
-| IF/ID | `fetch_stage.sv` | Bundle, PC, validez |
+| IF/ID | `instruction_memory.sv` y `fetch_stage.sv` | Bundle registrado en ROM; PC y validez registrados en fetch |
 | ID/EX | `vliw_processor.sv` (genvar) | `issued_op_t` para cada unidad |
 | EX/WB | `execution_stage.sv` | `wb_channel_t` para cada fuente |
 | WB/RF | `writeback_stage.sv` | Puertos de escritura del RF |

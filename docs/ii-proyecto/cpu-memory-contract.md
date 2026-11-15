@@ -11,6 +11,13 @@ entrega su resultado y cuándo se detiene o reanuda el pipeline.
 El acceso ocurre en EX. Un hit L1 se resuelve en un ciclo; una espera de memoria
 congela el pipeline completo, según la sección 3.3 del enunciado del Proyecto II.
 
+IF usa una ROM síncrona de un ciclo: su salida registrada constituye los datos
+de IF/ID y fetch registra el PC y la validez en paralelo. No hay otro registro
+del bundle en fetch ni una etapa adicional. Los saltos ordinarios conservan
+sus dos bundles de retardo. La lectura habilitada registra NOP y un diagnóstico
+con su PC ante dirección inválida; sin lectura conserva el bundle. El control
+global de retención y parada se incorpora con la adaptación del núcleo.
+
 ## 2. Responsabilidades
 
 | Parte | Responsabilidad |
@@ -232,3 +239,44 @@ en `E48`.
 
 Los accesos se cuentan al aceptarse, una vez; las esperas se cuentan por ciclo.
 Mantener un bundle o una solicitud durante un stall no genera accesos nuevos.
+
+## 6. Organización acordada de la LSU
+
+El control usa dos estados: `OFFER`, disponible para presentar la operación
+válida de EX, y `WAIT_RESPONSE`, solicitud aceptada cuya respuesta no se ha
+consumido. Sin aceptación se conserva `OFFER`; aceptar sin consumir conduce a
+`WAIT_RESPONSE`. Consumir tiene prioridad, por lo que un hit con aceptación y
+respuesta en el mismo flanco permanece en `OFFER`, sin ciclo adicional.
+
+Los campos de solicitud se derivan de la instrucción y operandos retenidos en
+ID/EX; no se duplican en registros de solicitud de la LSU. El núcleo debe
+conservar esos campos hasta completar la operación y avanzar EX en ese flanco.
+`completion_ready_i` expresa disponibilidad interna para capturar la respuesta,
+independiente del stall por memoria. `dmem_rsp_ready_o` requiere esa disponibilidad
+y una demanda ya aceptada o aceptándose en ese flanco. `dmem_done_o` indica
+exclusivamente el handshake de respuesta; no sustituye el diagnóstico local de
+desalineación. Reset cancela el estado e inhibe ambos handshakes.
+
+El formato del load es combinacional, usando función, destino y posición de
+byte conservados en ID/EX. `load_valid_o` identifica el consumo de una respuesta
+correcta de lectura; `load_rd_o` y `load_data_o` se entregan en ese mismo ciclo
+para capturarse hacia WB en el flanco de consumo. Sin resultado válido, destino
+y dato son cero. `dmem_error_o` indica una respuesta fallida consumida, tanto
+para load como para store; una respuesta retenida todavía no emite el evento.
+`execution_stage` captura el canal completo con PC e instrucción en `load_wb_q`.
+`advance_i` habilita esa frontera: durante su desactivación se conserva el canal
+completo. El control debe permitir avance en el mismo flanco de consumo de una
+respuesta. Reset cancela el resultado pendiente; el consumidor debe inhibir la
+escritura RF durante un stall. Los demás canales aún no usan ese habilitador.
+
+**Estado de implementación:** la FSM y el formato/error de respuesta se verifican
+aisladamente con `tests/unit/tb_lost_handshake.sv`. `tests/unit/tb_load_wb.sv`
+comprueba la captura y retención del canal completo en execution_stage, sin RF.
+Los campos aún usan los nombres
+de preparación anteriores (`memory_*`), calificados para CPU–L1 por
+`dmem_req_valid_o`. Las conexiones del núcleo a RAM todavía no usan el protocolo
+nuevo. Quedan pendientes el control de avance desde el núcleo, el consumo de
+diagnósticos y la integración del congelamiento global, incluida la inhibición
+de escrituras RF; esta etapa no constituye una integración funcional del
+núcleo con la jerarquía. Las pruebas anteriores de LSU con respuesta síncrona
+registrada necesitan adaptarse al nuevo contrato de consumo antes de reutilizarse.

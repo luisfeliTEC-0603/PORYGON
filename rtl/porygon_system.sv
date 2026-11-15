@@ -2,9 +2,10 @@
  * @brief Sistema de simulacion con nucleo, memoria de instrucciones y datos.
  *
  * @details Conserva vliw_processor como nucleo reusable con interfaces de
- * memoria explicitas. Este wrapper conecta la lectura combinacional de texto
+ * memoria explicitas. Este wrapper conecta la lectura sincrona de texto
  * y el puerto sincronico de datos requeridos por fetch y LOST.
- * Los errores de rango de memoria se exponen como diagnosticos de solicitud;
+ * El error de texto se registra junto con el PC de la lectura correspondiente.
+ * Los errores de rango de memoria se exponen como diagnosticos;
  * no se acumulan ni alteran el PC. La RAM invalida la respuesta de un load
  * fuera de rango y el nucleo suprime su escritura al RF.
  */
@@ -40,8 +41,16 @@ module porygon_system #(
     logic [3:0] data_write_enable;
     word_t data_write_data;
 
-    assign instruction_access_error_pc_o = instruction_address;
     assign data_access_error_pc_o = invalid_address_pc_o;
+
+    /** @brief PC de respuesta: avanza en paralelo al bundle y error de ROM. */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            instruction_access_error_pc_o <= INITIAL_PC;
+        end else if (instruction_read_enable) begin
+            instruction_access_error_pc_o <= instruction_address;
+        end
+    end
 
     instruction_memory #(
         .MEMORY_BYTES(MEMORY_BYTES),
@@ -49,6 +58,8 @@ module porygon_system #(
         .INIT_FILE(INSTRUCTION_INIT_FILE),
         .INIT_BUNDLES(INSTRUCTION_INIT_BUNDLES)
     ) u_instruction_memory (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
         .address_i(instruction_address),
         .read_enable_i(instruction_read_enable),
         .bundle_o(instruction_bundle),

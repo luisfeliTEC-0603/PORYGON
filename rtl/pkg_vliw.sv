@@ -35,7 +35,7 @@ package pkg_vliw;
     localparam integer WB_CRYPTO_L = 3;
     localparam integer WB_CRYPTO_R = 4;
     localparam integer BUNDLE_BYTES = BUNDLE_WIDTH / 8;
-    // Dos bundles jovenes para instruction_memory combinacional + IF/ID + ID/EX.
+    // Dos bundles jovenes para salida ROM registrada (IF/ID) + ID/EX.
     localparam integer BRANCH_NOP_BUNDLES = 2;
     localparam address_t RESET_PC = TEXT_BASE_ADDRESS;
 

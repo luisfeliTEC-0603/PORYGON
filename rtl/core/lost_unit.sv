@@ -1,5 +1,13 @@
-// LOST presenta la solicitud durante EX y procesa la respuesta registrada
-// por una memoria de lectura sincrona durante el ciclo siguiente.
+/**
+ * @brief LSU en adaptacion al protocolo CPU-L1 en EX.
+ * @details La FSM sigue aceptacion y consumo de una sola demanda. Sus campos
+ * se derivan de ID/EX, que debe conservarse hasta la finalizacion. Los enables
+ * de memoria actuales describen la preparacion; dmem_req_valid_o califica la
+ * oferta CPU-L1. El load se selecciona y extiende antes del flanco de consumo;
+ * execution_stage lo captura junto con su destino, PC e instruccion al avanzar.
+ * La conexion del protocolo y del control de avance al nucleo sigue pendiente.
+ * @see docs/ii-proyecto/cpu-memory-contract.md
+ */
 module lost_unit #(
     parameter integer DATA_WIDTH = pkg_vliw::DATA_WIDTH,
     parameter integer ADDR_WIDTH = pkg_vliw::ADDR_WIDTH
@@ -13,7 +21,17 @@ module lost_unit #(
     input  logic [DATA_WIDTH-1:0]            store_data_i,
     input  logic [DATA_WIDTH-1:0]            memory_read_data_i,
 
-    // Solicitud combinacional, estable antes del flanco que captura la RAM.
+    /** @brief Control CPU-L1; la disponibilidad de captura es independiente del stall. */
+    input  logic                             dmem_req_ready_i,
+    input  logic                             dmem_rsp_valid_i,
+    input  logic                             dmem_rsp_error_i,
+    input  logic                             completion_ready_i,
+    output logic                             dmem_req_valid_o,
+    output logic                             dmem_rsp_ready_o,
+    output logic                             dmem_done_o,
+    output logic                             dmem_error_o,
+
+    /** @brief Campos preparados combinacionalmente; dmem_req_valid_o califica la oferta. */
     output logic [ADDR_WIDTH-1:0]            effective_address_o,
     output logic [ADDR_WIDTH-1:0]            memory_address_o,
     output logic                             memory_read_enable_o,
@@ -21,7 +39,7 @@ module lost_unit #(
     output logic [DATA_WIDTH-1:0]            memory_write_data_o,
     output logic                             invalid_address_o,
 
-    // Respuesta del load solicitada en el flanco anterior.
+    /** @brief Resultado combinacional para capturar en el flanco de consumo. */
     output logic                             load_valid_o,
     output logic [2:0]                       load_rd_o,
     output logic [DATA_WIDTH-1:0]            load_data_o
@@ -34,12 +52,42 @@ module lost_unit #(
     logic word_aligned;
     logic half_aligned;
 
-    // La RAM registra read_data en el mismo flanco en que LOST guarda estos
-    // metadatos. La direccion de la solicitud no pasa por un registro previo.
-    logic load_pending_q;
-    logic [2:0] load_rd_q;
-    logic [3:0] load_function_q;
-    logic [1:0] load_lane_q;
+    /** @brief Una demanda: los campos permanecen en ID/EX hasta completar. */
+    typedef enum logic {OFFER, WAIT_RESPONSE} request_state_t;
+    request_state_t request_state_q, request_state_d;
+    logic request_fire;
+
+    assign dmem_req_valid_o = rst_ni && (request_state_q == OFFER) &&
+                              (memory_read_enable_o || (|memory_write_enable_o));
+    assign request_fire = dmem_req_valid_o && dmem_req_ready_i;
+    assign dmem_rsp_ready_o = rst_ni && completion_ready_i &&
+                              ((request_state_q == WAIT_RESPONSE) || request_fire);
+    assign dmem_done_o = dmem_rsp_valid_i && dmem_rsp_ready_o;
+    assign dmem_error_o = dmem_done_o && dmem_rsp_error_i;
+
+    /**
+     * @brief Consumir tiene prioridad: un hit no deja una demanda pendiente.
+     * @details Tras aceptar sin consumir se baja req_valid, aunque EX siga
+     * retenido. Una respuesta disponible espera completion_ready_i.
+     */
+    always_comb begin
+        request_state_d = request_state_q;
+        if (dmem_done_o) begin
+            request_state_d = OFFER;
+        end else if (request_fire) begin
+            request_state_d = WAIT_RESPONSE;
+        end
+    end
+
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            request_state_q <= OFFER;
+        end else begin
+            request_state_q <= request_state_d;
+        end
+    end
+
+    /** @brief Los metadatos permanecen en ID/EX hasta consumir la respuesta. */
     logic [4:0] load_byte_shift;
     logic [DATA_WIDTH-1:0] selected_word;
     logic [DATA_WIDTH-1:0] signed_byte_data;
@@ -103,23 +151,14 @@ module lost_unit #(
         end
     end
 
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-            load_pending_q <= 1'b0;
-            load_rd_q <= '0;
-            load_function_q <= '0;
-            load_lane_q <= '0;
-        end else begin
-            load_pending_q <= memory_read_enable_o;
-            load_rd_q <= instruction_i.rd;
-            load_function_q <= instruction_i.funct;
-            load_lane_q <= incoming_address[1:0];
-        end
-    end
-
-    // Respuesta: read_data y los metadatos registrados pertenecen al mismo load.
-    assign load_rd_o = load_pending_q ? load_rd_q : '0;
-    assign load_byte_shift = {load_lane_q, 3'b000};
+    /**
+     * @brief Formatea la palabra de respuesta con la operacion retenida en EX.
+     * @details Se usa el mismo camino para hit y respuesta tardia. Un store o
+     * una respuesta con error completa el acceso sin producir un load valido.
+     * Dato y destino solo se usan al capturarse load_valid_o en un flanco.
+     */
+    assign load_rd_o = load_valid_o ? instruction_i.rd : '0;
+    assign load_byte_shift = {incoming_address[1:0], 3'b000};
     assign selected_word = memory_read_data_i >> load_byte_shift;
     assign signed_byte_data = {{(DATA_WIDTH-8){selected_word[7]}}, selected_word[7:0]};
     assign unsigned_byte_data = {{(DATA_WIDTH-8){1'b0}}, selected_word[7:0]};
@@ -127,10 +166,10 @@ module lost_unit #(
     assign unsigned_half_data = {{(DATA_WIDTH-16){1'b0}}, selected_word[15:0]};
 
     always_comb begin
-        load_valid_o = load_pending_q;
+        load_valid_o = dmem_done_o && memory_read_enable_o && !dmem_rsp_error_i;
         load_data_o = '0;
-        if (load_pending_q) begin
-            case (load_function_q)
+        if (load_valid_o) begin
+            case (instruction_i.funct)
                 LOST_LOW:  load_data_o = memory_read_data_i;
                 LOST_LOB:  load_data_o = signed_byte_data;
                 LOST_LOBU: load_data_o = unsigned_byte_data;

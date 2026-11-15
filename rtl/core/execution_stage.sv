@@ -1,15 +1,18 @@
 /**
  * @brief Integra unidades funcionales a partir de la frontera ID/EX.
  *
- * @details ALU0 registra su resultado; LOST reutiliza los metadatos de su
- * respuesta sincronica; CRYPTO conserva crypto_wb como unica frontera local.
+ * @details ALU0 registra su resultado; LOST captura el canal completo al
+ * avanzar; CRYPTO conserva crypto_wb como unica frontera local.
  * Los PC e instrucciones se registran en paralelo a los datos de cada unidad.
  * BRUH permanece combinacional y fetch aplica su decision en issue+1.
  *
  * @input clk_i, rst_ni Reloj y reset comun; mantener reset por un posedge.
  * @input alu0_i, alu1_i, lsu_i, bruh_i, crypto_i Operaciones capturadas en ID/EX.
- * @input memory_read_data_i, memory_read_valid_i Respuesta RAM registrada y
- * calificador que suprime WB cuando la solicitud estaba fuera del segmento.
+ * @input memory_read_data_i Palabra completa de respuesta CPU-L1.
+ * @input advance_i Avance efectivo; habilita por ahora la frontera WB del load.
+ * @input completion_ready_i Capacidad de consumo, independiente del stall.
+ * @input dmem_req_ready_i, dmem_rsp_valid_i, dmem_rsp_error_i Handshake CPU-L1.
+ * @output dmem_* Control LSU para la futura conexion del nucleo a CPU-L1.
  * @output *_wb_o Canales de resultado para el RF, sin arbitraje dinamico.
  * @output memory_* Solicitud LSU para memoria sincronica externa.
  * @output branch_* Decision de salto sin flush ni stall.
@@ -26,7 +29,15 @@ module execution_stage (
     input pkg_vliw::issued_op_t bruh_i,
     input pkg_vliw::issued_op_t crypto_i,
     input pkg_vliw::word_t memory_read_data_i,
-    input logic memory_read_valid_i,
+    input logic advance_i,
+    input logic completion_ready_i,
+    input logic dmem_req_ready_i,
+    input logic dmem_rsp_valid_i,
+    input logic dmem_rsp_error_i,
+    output logic dmem_req_valid_o,
+    output logic dmem_rsp_ready_o,
+    output logic dmem_done_o,
+    output logic dmem_error_o,
     output pkg_vliw::wb_channel_t alu0_wb_o,
     output pkg_vliw::wb_channel_t alu1_wb_o,
     output pkg_vliw::wb_channel_t load_wb_o,
@@ -58,13 +69,14 @@ module execution_stage (
     reg_index_t alu0_destination;
     logic alu0_enable;
     wb_channel_t alu0_wb_q;
+    wb_channel_t load_wb_q;
     word_t alu1_data;
     reg_index_t alu1_destination;
     logic alu1_enable;
     logic alu1_is_mul;
     completion_tag_t mul_tag1_q, mul_tag2_q;
     wb_channel_t alu1_wb_q;
-    completion_tag_t load_tag_q, crypto_tag_q;
+    completion_tag_t crypto_tag_q;
     logic load_valid;
     reg_index_t load_destination;
     word_t load_data;
@@ -112,6 +124,14 @@ module execution_stage (
         .base_address_i(lsu_i.operand_b),
         .store_data_i(lsu_i.operand_a),
         .memory_read_data_i(memory_read_data_i),
+        .dmem_req_ready_i(dmem_req_ready_i),
+        .dmem_rsp_valid_i(dmem_rsp_valid_i),
+        .dmem_rsp_error_i(dmem_rsp_error_i),
+        .completion_ready_i(completion_ready_i),
+        .dmem_req_valid_o(dmem_req_valid_o),
+        .dmem_rsp_ready_o(dmem_rsp_ready_o),
+        .dmem_done_o(dmem_done_o),
+        .dmem_error_o(dmem_error_o),
         .effective_address_o(), // La direccion alineada es la interfaz RAM.
         .memory_address_o(memory_address_o),
         .memory_read_enable_o(memory_read_enable_o),
@@ -154,14 +174,12 @@ module execution_stage (
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             alu0_wb_q <= '0;
-            load_tag_q <= '0;
             crypto_tag_q <= '0;
             mul_tag1_q <= '0;
             mul_tag2_q <= '0;
         end else begin
             alu0_wb_q <= {alu0_enable, alu0_destination, alu0_data,
                           alu0_i.pc, alu0_i.instruction};
-            load_tag_q <= {lsu_i.valid, lsu_i.pc, lsu_i.instruction};
             crypto_tag_q <= {crypto_i.valid, crypto_i.pc, crypto_i.instruction};
             mul_tag1_q <= {alu1_is_mul, alu1_i.pc, alu1_i.instruction};
             mul_tag2_q <= mul_tag1_q;
@@ -188,12 +206,25 @@ module execution_stage (
         end
     end
 
+    /**
+     * @brief Frontera unica del load: valor y procedencia avanzan juntos.
+     * @details La frontera conserva el canal durante advance_i=0; el consumidor
+     * inhibira su escritura RF hasta reanudar. Al consumir una respuesta, el control
+     * debe activar advance_i en ese flanco; LSU ya califica errores y stores.
+     * Reset cancela el resultado pendiente. Los campos se usan solo con valid.
+     */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            load_wb_q <= '0;
+        end else if (advance_i) begin
+            load_wb_q <= {load_valid, load_destination, load_data,
+                          lsu_i.pc, lsu_i.instruction};
+        end
+    end
+
     assign alu0_wb_o = rst_ni ? alu0_wb_q : '0;
     assign alu1_wb_o = rst_ni ? alu1_wb_q : '0;
-    assign load_wb_o = {rst_ni && load_valid && load_tag_q.valid &&
-                        memory_read_valid_i,
-                        load_destination, load_data, load_tag_q.pc,
-                        load_tag_q.instruction};
+    assign load_wb_o = rst_ni ? load_wb_q : '0;
     assign crypto_left_wb_o = {rst_ni && crypto_enable[0] && crypto_tag_q.valid,
                                crypto_destination[0], crypto_data[0],
                                crypto_tag_q.pc, crypto_tag_q.instruction};

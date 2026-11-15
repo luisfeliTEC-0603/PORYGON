@@ -22,7 +22,9 @@ metadatos constantes de configuración.
 | [performance_counters.sv](../../rtl/metrics/performance_counters.sv) | Observación de eventos y conservación de contadores. | P2-10 |
 | [data_memory_hierarchy.sv](../../rtl/memory/data_memory_hierarchy.sv) | Conexión estructural de los componentes anteriores. | P2-11 |
 
-`porygon_system`, el núcleo y las memorias existentes conservan su implementación.
+La ROM existente usa salida síncrona de un ciclo como frontera de datos IF/ID;
+fetch registra sus metadatos en paralelo. `porygon_system` conserva la conexión
+a la RAM de datos anterior; el núcleo aún no incorpora los stalls CPU–L1.
 La conexión de la CPU al wrapper nuevo corresponde a los issues de integración.
 Los archivos nuevos quedan fuera del flujo de construcción actual.
 
