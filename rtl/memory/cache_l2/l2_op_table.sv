@@ -1,55 +1,89 @@
 /**
  * @file l2_op_table.sv
- * @brief Tabla de operaciones en vuelo de L2 
+ * @brief Tabla de operaciones en vuelo de L2.
  *
  * @details
- *   Guarda el estado, los metadatos y los datos de cada operación, la matriz
- *   de antigüedad y la consulta de conflcto por base. Una posición y su id
- *   permanecen ocupados hasta el handshake de finalización (fill, wb_done o
- *   respuesta de memoria observada).
+ *   Guarda estado, metadatos, datos y antigüedad de cada operación, y expone
+ *   la consulta de conflicto por base. Una posición y su id quedan ocupados
+ *   hasta el handshake de finalización (fill, wb_done o respuesta de memoria
+ *   observada).
  *
- *   Estados (todos codificados en 4 bits):
- *     IDLE      : posición libre.
- *     PIPE      : la operación atraviesa el pipeline interno.
- *     FILL      : demanda con hit L2; espera handshake de fill hacia L1.
- *     MEMREQ    : demanda con miss; solicita lectura a memoria.
- *     MEMWAIT   : demanda esperando la respuesta de memoria (owner de la lectura).
- *     EBOFF     : install con víctima sucia; espera aceptación del eviction
- *                 buffer antes de escribir.
- *     WRITE     : install escribiendo en el arreglo de datos.
- *     DONE      : install esperando confirmación wb_done.
+ *   Estados: IDLE, PIPE (en pipeline), FILL (hit L2 esperando L1), MEMREQ
+ *   (miss solicitando memoria), MEMWAIT (esperando rsp), EBOFF (install con
+ *   víctima sucia esperando EB), WRITE (install escribiendo arreglo), DONE
+ *   (install esperando wb_done).
  *
  *   Transiciones:
- *     IDLE -> PIPE               al alloc.
- *     PIPE -> FILL               demanda con hit, al terminar el pipeline.
- *     PIPE -> MEMREQ             demanda con miss, al terminar el pipeline.
- *     PIPE -> EBOFF/WRITE        install, al terminar el pipeline (según
- *                                víctima sucia o limpia).
- *     FILL -> IDLE               al handshake de fill.
- *     MEMREQ -> MEMWAIT          al emitir la solicitud de memoria.
- *     MEMWAIT -> IDLE            al observar la respuesta de memoria (owner).
- *     EBOFF -> WRITE             al aceptar el eviction buffer.
- *     WRITE -> DONE              al completar la escritura.
- *     DONE -> IDLE               al handshake de wb_done.
+ *     IDLE    -> PIPE      al alloc.
+ *     PIPE    -> FILL      demanda con hit, al terminar pipeline.
+ *     PIPE    -> MEMREQ    demanda con miss, al terminar pipeline.
+ *     PIPE    -> EBOFF     install con víctima sucia, al terminar pipeline.
+ *     PIPE    -> WRITE     install con víctima limpia o inexistente.
+ *     FILL    -> IDLE      al handshake de fill.
+ *     MEMREQ  -> MEMWAIT   al emitir la solicitud de memoria.
+ *     MEMWAIT -> IDLE      al observar la respuesta (owner).
+ *     EBOFF   -> WRITE     al aceptar el EB.
+ *     WRITE   -> DONE      al completar la escritura.
+ *     DONE    -> IDLE      al handshake de wb_done.
  *
- *   Los eventos ev_*_i son one-hot por operación e indican que el handshake
- *   del canal correspondiente ocurrió en este ciclo. ev_rsp_i
- *   corresponde solo al owner de la lectura (una demanda por base).
+ *   Los ev_*_i son one-hot e indican que el handshake del canal ocurrió este
+ *   ciclo. ev_rsp_i corresponde solo al owner de la lectura.
  *
- *   Antigüedad: older_o[j*N + i] = 1 indica que j es más antigua que i. Se
- *   construye al alloc (toda operación activa es más antigua que la nueva) y
- *   se conserva durante las esperas. El desempate "más antigua que pueda
- *   avanzar; empate -> drenado" lo resuelve el consumidor a partir de esta
- *   matriz; la tabla no lo calcula.
+ *   Antigüedad: older_o[j*N+i]=1 si j es más antigua que i. Se construye al
+ *   alloc (toda activa es más antigua que la nueva) y se conserva durante las
+ *   esperas. El desempate "más antigua que pueda; empate -> drenado" lo
+ *   aplica el consumidor, no la tabla.
  *
- *   conflict_a_o / conflict_b_o son independientes: si qa_base_i == qb_base_i,
- *   ambas salidas reflejan el mismo conflicto.
+ *   conflict_a_o y conflict_b_o son independientes: si qa_base_i == qb_base_i,
+ *   ambas reflejan el mismo conflicto.
  *
- * @param N     Número de posiciones (equivale a L2_MAX_INFLIGHT).
+ * @param N     Número de posiciones, equivale a L2_MAX_INFLIGHT.
  * @param AW    Ancho de dirección.
  * @param LW    Ancho de línea en bits.
  * @param WAY_W Ancho de índice de vía.
- * @param OPW   Ancho de índice de operación (mínimo 1).
+ * @param OPW   Ancho de índice de operación, mínimo 1.
+ *
+ * @input  alloc_valid_i   1 si el top acepta una operación este ciclo.
+ * @input  alloc_kind_i    0 demanda, 1 instalación.
+ * @input  alloc_base_i    Base de la operación.
+ * @input  alloc_way_i     Vía de la operación.
+ * @input  alloc_hit_i     1 si la operación acierta en L2 (solo demanda).
+ * @input  alloc_vvalid_i  1 si la víctima de la vía es válida (solo install).
+ * @input  alloc_vdirty_i  1 si la víctima es sucia (solo install).
+ * @input  alloc_vbase_i   Base de la víctima (solo install).
+ * @input  alloc_data_i    Línea a instalar (solo install).
+ * @input  alloc_dirty_i   Dirty a instalar (solo install).
+ * @input  pipe_end_valid_i 1 si una operación terminó el pipeline.
+ * @input  pipe_end_idx_i   Índice de la operación que terminó el pipeline.
+ * @input  ev_fill_i       Handshake de fill por operación.
+ * @input  ev_mem_i        Handshake de mem_rd_req por operación.
+ * @input  ev_rsp_i        Respuesta de memoria observada, solo owner.
+ * @input  ev_eb_i         Handshake de eb_push por operación.
+ * @input  ev_wr_i         Handshake de escritura de arreglo por operación.
+ * @input  ev_done_i       Handshake de wb_done por operación.
+ * @input  qa_base_i       Base a consultar para conflicto A (demanda).
+ * @input  qb_base_i       Base a consultar para conflicto B (install).
+ *
+ * @output free_any_o      1 si hay al menos una posición libre.
+ * @output alloc_idx_o      Índice de la posición libre elegida.
+ * @output req_fill_o       Solicitud de fill por operación.
+ * @output req_mem_o        Solicitud de lectura a memoria por operación.
+ * @output req_eb_o         Solicitud de push al EB por operación.
+ * @output req_wr_o         Solicitud de escritura de arreglo por operación.
+ * @output req_done_o       Solicitud de wb_done por operación.
+ * @output busy_o           1 si la posición está ocupada.
+ * @output older_o          Matriz N×N de antigüedad.
+ * @output base_o           Base por operación.
+ * @output vbase_o          Base de la víctima por operación.
+ * @output way_o            Vía por operación.
+ * @output data_o           Línea a instalar por operación.
+ * @output dirty_o          Dirty por operación.
+ * @output hit_o            Hit por operación.
+ * @output kind_o           0 demanda, 1 instalación, por operación.
+ * @output vvalid_o         Validez de la víctima por operación.
+ * @output vdirty_o         Dirty de la víctima por operación.
+ * @output conflict_a_o     1 si qa_base_i coincide con alguna base activa.
+ * @output conflict_b_o     1 si qb_base_i coincide con alguna base activa.
  */
 
 module l2_op_table #(
@@ -132,13 +166,14 @@ module l2_op_table #(
     logic [N*LW-1:0]    data_q;
     logic [N*N-1:0]     older_q;
 
-    // Salidas combinacionales
+    // Salidas combinacionales: slot libre, solicitudes por estado, conflicto
+    // por base contra operaciones activas.
     always_comb begin
         free_any_o   = 1'b0;
         alloc_idx_o  = '0;
         conflict_a_o = 1'b0;
         conflict_b_o = 1'b0;
-        // Elección de slot libre: recorrido descendente, gana el menor índice.
+        // Descendente + sobrescritura: si hay varias libres, gana la menor.
         for (int i = N-1; i >= 0; i--) begin
             if (st_q[i*4 +: 4] == ST_IDLE) begin
                 free_any_o  = 1'b1;
@@ -217,6 +252,9 @@ module l2_op_table #(
                 vbase_q[alloc_idx_o*AW +: AW]     <= alloc_vbase_i;
                 way_q[alloc_idx_o*WAY_W +: WAY_W] <= alloc_way_i;
                 data_q[alloc_idx_o*LW +: LW]      <= alloc_data_i;
+                
+                // Toda posición activa es más antigua que la nueva (alloc_idx_o); la nueva
+                // no es más antigua que nadie.
                 for (int j = 0; j < N; j++) begin
                     older_q[j*N + alloc_idx_o] <= (st_q[j*4 +: 4] != ST_IDLE);
                     older_q[alloc_idx_o*N + j] <= 1'b0;
