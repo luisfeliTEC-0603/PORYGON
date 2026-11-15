@@ -4,31 +4,24 @@
  *        la operación a ST_DONE.
  *
  * @details
- *   Selecciona la operación en ST_WRITE más antigua mediante `l2_out_sel` en
- *   modo interno (sin lock: el consumidor es el propio arreglo de datos, que
- *   acepta en el mismo ciclo).
+ *   Elige la operación en ST_WRITE más antigua con l2_out_sel en modo interno
+ *   (sin lock: el consumidor es el arreglo, que acepta en el mismo ciclo).
  *
- *   Separación de responsabilidades entre escritura y efectos laterales:
+ *   Separa dos tipos de efecto:
+ *     - Escritura de arreglos (tag, valid, dirty, línea): NIVEL que permanece
+ *       activo mientras la operación está seleccionada. Reescribir el mismo
+ *       valor es idempotente, así que no hay daño si la operación tarda en
+ *       transicionar a ST_DONE. Robusto ante latencia de la tabla.
+ *     - Efectos laterales (ev_wr, plru_touch, resv_clr): PULSOS de un ciclo en
+ *       la primera selección (first_sel). No son idempotentes: repetir ev_wr
+ *       contaría dos eventos, plru_touch corrompería la política, resv_clr
+ *       liberaría una reserva ya liberada. Se protegen con eff_q/eff_idx_q.
  *
- *   - La escritura de arreglos (tag, valid, dirty, línea) es un NIVEL que
- *     permanece activo mientras la operación está seleccionada en ST_WRITE.
- *     Escribir el mismo valor en ciclos consecutivos es idempotente, así que
- *     no hay daño si la operación tarda más de un ciclo en transicionar a
- *     ST_DONE. Esta forma es robusta ante latencia de la tabla de operaciones.
+ *   wb_done no se emite aquí: lo genera el top desde req_done_o cuando la
+ *   operación está en ST_DONE.
  *
- *   - Los efectos laterales (`ev_wr`, `plru_touch`, `resv_clr`) se emiten
- *     como PULSOS de un solo ciclo en la primera selección de la operación
- *     (`first_sel`). No son idempotentes: repetir `ev_wr` podría interpretarse
- *     como dos eventos, repetir `plru_touch` corrompería la política de
- *     reemplazo, y repetir `resv_clr` liberaría una reserva ya liberada. Por
- *     eso se protegen con el registro `eff_q`/`eff_idx_q`.
- *
- *   `wb_done` no se emite aquí: lo genera el top a partir de `req_done_o` de
- *   la tabla de operaciones cuando la operación está en ST_DONE.
- *
- *   El merge de dirty en un install hit (dirty = wb_dirty | dirty_previo) lo
- *   realiza el top al aceptar la operación, y lo entrega en `t_dirty_i`. Este
- *   módulo se limita a escribir el valor recibido.
+ *   El merge de dirty en install hit (wb_dirty | dirty_previo) lo hace el top
+ *   al aceptar y lo entrega en t_dirty_i; este módulo solo escribe ese valor.
  *
  * @param N     Número de operaciones en vuelo.
  * @param AW    Ancho de dirección.
@@ -36,7 +29,30 @@
  * @param WAY_W Ancho de índice de vía.
  * @param SET_W Ancho de índice de conjunto.
  * @param TAG_W Ancho de tag.
- * @param OPW   Ancho de índice de operación.
+ * @param OPW   Ancho de índice de operación, mínimo 1.
+ *
+ * @input  req_wr_i    Solicitud de escritura por operación.
+ * @input  older_i     Matriz N×N de antigüedad.
+ * @input  t_base_i    Base por operación.
+ * @input  t_way_i     Vía por operación.
+ * @input  t_data_i    Línea a instalar por operación.
+ * @input  t_dirty_i   Dirty a instalar por operación.
+ *
+ * @output wr_valid_o       1 si hay una operación escribiendo los arreglos.
+ * @output wr_set_o         Conjunto de la vía a escribir.
+ * @output wr_way_o         Vía a escribir.
+ * @output wr_tag_o         Tag a escribir.
+ * @output wr_dirty_o       Dirty a escribir.
+ * @output wr_data_o        Línea a escribir.
+ * @output wr_idx_o         Índice de la operación que escribe.
+ * @output plru_touch_valid_o 1 en la primera selección (actualizar PLRU).
+ * @output plru_touch_set_o  Conjunto de la vía usada por la instalación.
+ * @output plru_touch_way_o  Vía usada por la instalación.
+ * @output resv_clr_valid_o  1 en la primera selección (liberar reserva).
+ * @output resv_clr_set_o    Conjunto de la reserva a liberar.
+ * @output resv_clr_way_o    Vía de la reserva a liberar.
+ * @output ev_wr_valid_o     1 en la primera selección (avanzar a ST_DONE).
+ * @output ev_wr_onehot_o    One-hot de la operación que completó la escritura.
  */
 
 module l2_install_unit #(
@@ -97,16 +113,16 @@ module l2_install_unit #(
         .sel_valid_o(sel_valid), .sel_idx_o(sel_idx),
         .sel_onehot_o(sel_onehot));
 
-    // Descomposición de la base de la operación seleccionada.
+    // Descomposición de la base de la operación elegida: set para indexar el
+    // arreglo, way para elegir la vía.
     assign sel_base = t_base_i[sel_idx*AW +: AW];
     assign sel_set  = sel_base[$clog2(pkg_memory::LINE_BYTES) +: SET_W];
     assign sel_way  = t_way_i[sel_idx*WAY_W +: WAY_W];
 
-    // Detección de primera activación
-    // Protege los efectos laterales NO idempotentes (evento, touch de PLRU,
-    // clear de reserva) para que se apliquen una sola vez por operación,
-    // aunque la operación permanezca en ST_WRITE más de un ciclo. La
-    // escritura de arreglos NO usa este registro: es de nivel, idempotente.
+    // Detección de primera selección: protege los efectos no idempotentes
+    // (ev_wr, plru_touch, resv_clr) para que se apliquen una sola vez por
+    // operación aunque ST_WRITE dure más de un ciclo. La escritura de
+    // arreglos no usa este registro: es de nivel, idempotente.
     logic             eff_q;
     logic [OPW-1:0]   eff_idx_q;
 
@@ -125,7 +141,7 @@ module l2_install_unit #(
         end
     end
 
-    // Escritura de arreglos: nivel, robusto ante latencia de la op_table.
+    // Escritura de arreglos: nivel, robusto ante latencia de la tabla.
     // Reescribir el mismo valor en ciclos consecutivos es idempotente.
     assign wr_valid_o = rst_ni && sel_valid;
     assign wr_set_o   = sel_set;
