@@ -75,7 +75,7 @@ module tb_cache_l2 #(parameter int N = 4);
   // ---------------- modelo de memoria: varios bursts en vuelo, orden de respuesta configurable ----------------
   // rsp_gate=0 retiene respuestas; rsp_newest=1 responde primero a la peticion mas reciente (fuera de orden).
   localparam int MP = 8;
-  logic mem_en = 1, rsp_ready_en = 0, rsp_gate = 1, rsp_newest = 0;
+  logic mem_en = 1, rsp_ready_en = 0, rsp_gate = 1, rsp_newest = 0, mem_keep_on_reset = 0;
   reg [MP-1:0] mp_v = 0, mp_sent = 0;
   integer mp_cnt [0:MP-1];
   integer mp_seq [0:MP-1];
@@ -87,8 +87,11 @@ module tb_cache_l2 #(parameter int N = 4);
   assign mem_rd_rsp_ready_i = rsp_ready_en;
   always @(posedge clk or negedge rst_ni) begin
     if (!rst_ni) begin
-      mp_v <= 0; mp_sent <= 0; mem_rd_rsp_valid_i <= 0; mem_rd_rsp_id_i <= 0; mem_rd_rsp_base_i <= 0;
-      seq_ctr = 0; rsp_idx = 0;
+      // mem_keep_on_reset=1 modela un controlador externo que NO descarta lo pendiente (respuesta residual)
+      if (!mem_keep_on_reset) begin
+        mp_v <= 0; mp_sent <= 0; mem_rd_rsp_valid_i <= 0; mem_rd_rsp_id_i <= 0; mem_rd_rsp_base_i <= 0;
+        seq_ctr = 0; rsp_idx = 0;
+      end
     end else begin
       for (pi = 0; pi < MP; pi = pi + 1)
         if (mp_v[pi] && mp_cnt[pi] > 0) mp_cnt[pi] <= mp_cnt[pi] - 1;
@@ -123,6 +126,9 @@ module tb_cache_l2 #(parameter int N = 4);
   int get_cnt = 0, inst_cnt = 0, fill_cnt = 0, done_cnt = 0, push_cnt = 0, memreq_cnt = 0, rsp_cnt = 0;
   int get_cyc, fill_cyc, inst_cyc, memreq_cyc;
   int pc_getacc = 0, pc_getdone = 0, pc_promo = 0, pc_clean = 0, pc_dirtyev = 0;
+  int pc_lookup = 0, pc_lkhit = 0, pc_instlk = 0, stale_rsp = 0;
+  logic [IDW-1:0] getdone_id_log [$];
+  logic [IDW-1:0] gd_tmp;
   address_t last_clean_base, last_dirtyev_base, last_promo_base; logic last_promo_dirty;
   address_t fill_base_log [$];
   logic [IDW-1:0] done_id_log [$];
@@ -135,6 +141,15 @@ module tb_cache_l2 #(parameter int N = 4);
   logic [IDW-1:0] memreq_id_log [$];
   bit stale_check = 0; // tras reset: ninguna entrega
   int deliveries_after_reset = 0;
+
+  // Durante reset ninguna salida valid/ready puede estar activa (no se aceptan ni ofrecen handshakes)
+  always @(posedge clk) if (!rst_ni) begin
+    if ((l2_get_ready_o | wb_install_ready_o | l2_fill_valid_o | wb_done_valid_o |
+         eb_push_valid_o | eb_probe_valid_o | mem_rd_req_valid_o) === 1'b1) begin
+      errors++; $display("[%0t] ERR: salida activa durante reset (get_rdy=%b inst_rdy=%b fill=%b done=%b push=%b probe=%b memreq=%b)",
+        $time, l2_get_ready_o, wb_install_ready_o, l2_fill_valid_o, wb_done_valid_o, eb_push_valid_o, eb_probe_valid_o, mem_rd_req_valid_o);
+    end
+  end
 
   // estabilidad (valid && !ready => se conserva)
   bit p_fill, p_done, p_push, p_mem; bit p_fill_dirty, p_push_dirty; address_t p_fill_b, p_push_b, p_mem_b; line_t p_fill_d, p_push_d;
@@ -164,7 +179,9 @@ module tb_cache_l2 #(parameter int N = 4);
       if (mem_rd_req_valid_o && mem_rd_req_ready_i) begin memreq_cnt++; memreq_cyc = cyc; memreq_log.push_back(mem_rd_req_base_o); memreq_id_log.push_back(mem_rd_req_id_o); end
       if (mem_rd_rsp_valid_i && mem_rd_rsp_ready_i) begin rsp_cnt++; rsp_id_log.push_back(mem_rd_rsp_id_i); rsp_base_log.push_back(mem_rd_rsp_base_i); end
       if (perf.get_accept.valid) pc_getacc++;
-      if (perf.get_done.valid)   pc_getdone++;
+      if (perf.get_done.valid)   begin pc_getdone++; gd_tmp = perf.get_done.id; getdone_id_log.push_back(gd_tmp); end
+      if (perf.lookup.valid)     begin pc_lookup++; if (perf.lookup_hit) pc_lkhit++; end
+      if (dut.look_valid && dut.t_kind[dut.look_idx]) pc_instlk++;   // referencia independiente de l2_perf
       if (perf.promotion.valid)  begin pc_promo++; last_promo_base = perf.promotion.base; last_promo_dirty = perf.promotion.dirty; end
       if (perf.clean_discard.valid)  begin pc_clean++;   last_clean_base = perf.clean_discard.base; end
       if (perf.dirty_eviction.valid) begin pc_dirtyev++; last_dirtyev_base = perf.dirty_eviction.base; end
@@ -211,6 +228,7 @@ module tb_cache_l2 #(parameter int N = 4);
     end
 
   // ---------------- pruebas ----------------
+  int snap_getacc, snap_lookup, snap_lkhit, snap_inst, snap_instlk, snap_promo, gd0;
   int c0, c1, f0, d0, p0, m0, id_a, id_b, r0, i0, g0, K, pm0, pc0, pd0, pg0;
   address_t Xb, B2, M3;
   logic [IDW-1:0] id_A, id_B, id_B2;
@@ -236,6 +254,7 @@ module tb_cache_l2 #(parameter int N = 4);
     chk(pc_promo == pm0 + 1, "promotion debe pulsar una vez por fill");
     chk(last_promo_base == A && last_promo_dirty == 1, "promotion base/dirty");
     tick(4);
+    gd0 = pc_getdone; pm0 = pc_promo;
     m0 = memreq_cnt; f0 = fill_cnt; do_get(A);   // ya no esta en L2 (exclusiva)
     `WAIT_CNT(memreq_cnt, m0, 60, "mem_rd_req (miss tras promocion)")
     chk(memreq_log[$] == A, "mem_rd_req base");
@@ -243,6 +262,9 @@ module tb_cache_l2 #(parameter int N = 4);
     tick(MEM_LAT + 10);
     chk(fill_cnt == f0, "miss no debe entregar por l2_fill (retorno directo)");
     chk(rsp_cnt >= 1, "rsp de memoria no consumido");
+    chk(pc_getdone == gd0 + 1, "miss: get_done debe pulsar al consumirse la rsp de memoria");
+    chk(getdone_id_log[$] == last_get_id, "miss: get_done debe llevar el id de la demanda");
+    chk(pc_promo == pm0, "miss: promotion no debe pulsar (es exclusivo del hit L2)");
 
     // T2: vias invalidas primero, luego PLRU (victima = via 0 tras 4 instalaciones)
     $display("T2 PLRU / victima sucia");
@@ -343,6 +365,7 @@ module tb_cache_l2 #(parameter int N = 4);
     stale_check = 0; rsp_ready_en = 1; rsp_gate = 1; rsp_newest = 0; mem_en = 1;
     l2_fill_ready_i = 1; wb_done_ready_i = 1; eb_ready_en = 1;
     tick(MEM_LAT + 20);
+    snap_getacc = pc_getacc; snap_lookup = pc_lookup; snap_lkhit = pc_lkhit; snap_inst = inst_cnt; snap_instlk = pc_instlk; snap_promo = pc_promo;
 
     // T8: latencia de miss (8 ciclos hasta mem_rd_req) y liberacion de id en el handshake de rsp
     $display("T8 latencia miss + retencion/liberacion de id");
@@ -498,10 +521,138 @@ module tb_cache_l2 #(parameter int N = 4);
       tick(30);
     end else $display("T14 SKIP (requiere N>=2)");
 
+
+    // T17: la admision respeta la antiguedad; el drenado de WB gana solo en empate
+    $display("T17 antiguedad en la admision");
+    mem_en = 0; rsp_ready_en = 1; rsp_gate = 1; l2_fill_ready_i = 1; wb_done_ready_i = 1;
+    for (int i = 0; i < N; i++) do_get(mkbase(80 + i, 3));     // ocupan las N posiciones (misses detenidos)
+    g0 = get_cnt; i0 = inst_cnt;
+    l2_get_base_i = mkbase(84, 3); l2_get_valid_i = 1;           // demanda: llega primero
+    tick(3);
+    wb_install_base_i = mkbase(85, 3); wb_install_data_i = mkdata(160); wb_install_dirty_i = 0; wb_install_valid_i = 1;
+    tick(5);
+    chk(get_cnt == g0 && inst_cnt == i0, "T17: sin posicion libre no debe aceptarse ninguna");
+    mem_en = 1;                                                  // se liberan posiciones
+    for (int t = 0; t < 300 && (get_cnt == g0 || inst_cnt == i0); t++) begin
+      tick();
+      if (get_cnt != g0) l2_get_valid_i = 0;
+      if (inst_cnt != i0) wb_install_valid_i = 0;
+    end
+    chk(get_cnt != g0 && inst_cnt != i0, "T17: ambas deben terminar aceptandose");
+    chk(get_cyc < inst_cyc, "T17: la demanda mas antigua debe aceptarse antes que el install que llego despues");
+    tick(3 * (MEM_LAT + 15));
+    if (N >= 2) begin
+      // la mas antigua esta bloqueada (misma base que un miss en vuelo): la mas joven puede avanzar
+      mem_en = 0; Xb = mkbase(86, 3); do_get(Xb);
+      g0 = get_cnt; i0 = inst_cnt;
+      l2_get_base_i = Xb; l2_get_valid_i = 1; tick(3);
+      wb_install_base_i = mkbase(87, 3); wb_install_data_i = mkdata(161); wb_install_dirty_i = 0; wb_install_valid_i = 1;
+      for (int t = 0; t < 20 && inst_cnt == i0; t++) tick();
+      wb_install_valid_i = 0;
+      chk(inst_cnt != i0 && get_cnt == g0, "T17: una demanda mas antigua bloqueada no debe impedir avanzar al install");
+      mem_en = 1;
+      for (int t = 0; t < 300 && get_cnt == g0; t++) tick();
+      l2_get_valid_i = 0;
+      chk(get_cnt != g0, "T17: la demanda bloqueada debe aceptarse al liberarse el conflicto");
+      tick(3 * (MEM_LAT + 15));
+    end
+
+    // T18: dos finalizaciones de demanda en el mismo flanco (hit por fill y miss por memoria)
+    if (N >= 2) begin
+      $display("T18 get_done simultaneos (fill y rsp de memoria)");
+      A = mkbase(88, 3); d0 = done_cnt; do_install(A, mkdata(162), 0); `WAIT_CNT(done_cnt, d0, 60, "wb_done")
+      l2_fill_ready_i = 0; rsp_ready_en = 0; mem_en = 1; rsp_gate = 1;
+      gd0 = pc_getdone; pm0 = pc_promo;
+      do_get(A);                                  // hit: fill pendiente
+      do_get(mkbase(89, 3));                      // miss: rsp de memoria pendiente de consumo
+      tick(MEM_LAT + 25);
+      chk(pc_getdone == gd0, "T18: sin handshakes no debe haber get_done");
+      l2_fill_ready_i = 1; rsp_ready_en = 1;      // ambos handshakes en el mismo flanco
+      tick(8);
+      chk(pc_getdone == gd0 + 2, $sformatf("T18: dos finalizaciones deben producir dos get_done (hubo %0d)", pc_getdone - gd0));
+      chk(getdone_id_log[getdone_id_log.size()-1] != getdone_id_log[getdone_id_log.size()-2], "T18: los dos get_done deben llevar ids distintos");
+      chk(pc_promo == pm0 + 1, "T18: promotion solo para el hit L2");
+      tick(MEM_LAT + 10);
+    end
+
+    // T18b: tres finalizaciones consecutivas (fill, fill y rsp): la cola de get_done no pierde ninguna
+    if (N >= 3) begin
+      $display("T18b get_done: cola con finalizaciones consecutivas");
+      A = mkbase(100, 4); B2 = mkbase(101, 4);
+      d0 = done_cnt; do_install(A, mkdata(163), 0);  `WAIT_CNT(done_cnt, d0, 60, "wb_done A")
+      d0 = done_cnt; do_install(B2, mkdata(164), 0); `WAIT_CNT(done_cnt, d0, 60, "wb_done B")
+      l2_fill_ready_i = 0; rsp_ready_en = 0; mem_en = 1; rsp_gate = 1;
+      gd0 = pc_getdone; pm0 = pc_promo;
+      do_get(A); do_get(B2); do_get(mkbase(102, 4));
+      tick(MEM_LAT + 25);
+      chk(pc_getdone == gd0, "T18b: sin handshakes no debe haber get_done");
+      l2_fill_ready_i = 1; rsp_ready_en = 1;
+      tick(12);
+      chk(pc_getdone == gd0 + 3, $sformatf("T18b: tres finalizaciones deben producir tres get_done (hubo %0d)", pc_getdone - gd0));
+      chk(pc_promo == pm0 + 2, "T18b: promotion solo para los dos hits");
+      begin : distinct_ids
+        int n_ids; n_ids = getdone_id_log.size();
+        chk(getdone_id_log[n_ids-1] != getdone_id_log[n_ids-2] && getdone_id_log[n_ids-2] != getdone_id_log[n_ids-3] &&
+            getdone_id_log[n_ids-1] != getdone_id_log[n_ids-3], "T18b: los tres get_done deben llevar ids distintos");
+      end
+      tick(MEM_LAT + 10);
+    end
+
+    // Consistencia de metricas de demanda frente a instalaciones (intervalo sin resets)
+    $display("T19 lookup solo para demandas");
+    chk(pc_lookup - snap_lookup == pc_getacc - snap_getacc,
+        $sformatf("T19: lookups de demanda=%0d vs demandas aceptadas=%0d", pc_lookup - snap_lookup, pc_getacc - snap_getacc));
+    chk(pc_lkhit - snap_lkhit == pc_promo - snap_promo,
+        $sformatf("T19: hits de lookup=%0d vs promociones=%0d", pc_lkhit - snap_lkhit, pc_promo - snap_promo));
+    chk(pc_instlk - snap_instlk == inst_cnt - snap_inst,
+        $sformatf("T19: lookups de install=%0d vs installs aceptados=%0d", pc_instlk - snap_instlk, inst_cnt - snap_inst));
+
+    // T16: reset con lectura en vuelo y controlador externo que conserva una respuesta residual
+    $display("T16 reset con respuesta residual de memoria");
+    mem_keep_on_reset = 1; rsp_gate = 0; rsp_newest = 0; rsp_ready_en = 1; mem_en = 1;
+    l2_fill_ready_i = 1; wb_done_ready_i = 1;
+    tick(MEM_LAT + 20);
+    Xb = mkbase(105, 1); m0 = memreq_cnt; do_get(Xb);
+    for (int t = 0; t < 60 && memreq_cnt == m0; t++) tick();
+    chk(memreq_cnt != m0, "T16: la lectura previa al reset debia emitirse");
+    id_A = last_get_id;
+    rst_ni = 0; l2_get_valid_i = 0; wb_install_valid_i = 0; tick(2);
+    // se mantiene un get/install "pegado" durante el reset: no deben aceptarse
+    g0 = get_cnt; i0 = inst_cnt;
+    l2_get_base_i = mkbase(107, 1); l2_get_valid_i = 1;
+    wb_install_base_i = mkbase(108, 1); wb_install_data_i = mkdata(150); wb_install_valid_i = 1;
+    tick(2);
+    chk(get_cnt == g0 && inst_cnt == i0, "T16: no deben aceptarse handshakes durante reset");
+    l2_get_valid_i = 0; wb_install_valid_i = 0;
+    rst_ni = 1; tick(2);
+    chk(perf.inflight == 0, "T16: tras reset no deben quedar operaciones en vuelo");
+    B2 = mkbase(106, 1); m0 = memreq_cnt; do_get(B2);
+    for (int t = 0; t < 60 && memreq_cnt == m0; t++) tick();
+    chk(memreq_cnt != m0, "T16: la lectura nueva debia emitirse");
+    chk(last_get_id == id_A, "T16: la operacion nueva reutiliza el mismo id que la residual");
+    tick(MEM_LAT + 5);
+    r0 = rsp_cnt; f0 = fill_cnt; d0 = done_cnt; rsp_gate = 1;       // FIFO: llega primero la residual
+    for (int t = 0; t < 60 && rsp_cnt == r0; t++) tick();
+    chk(rsp_cnt != r0 && rsp_base_log[r0] == Xb, "T16: la primera rsp debia ser la residual");
+    rsp_gate = 0;
+    chk(perf.inflight == 1, "T16: la rsp residual no debe liberar la operacion nueva");
+    tick(5);
+    chk(perf.inflight == 1, "T16: la operacion nueva sigue esperando su propia rsp");
+    rsp_gate = 1;
+    for (int t = 0; t < 60 && rsp_cnt < r0 + 2; t++) tick();
+    chk(rsp_cnt == r0 + 2 && rsp_base_log[r0 + 1] == B2, "T16: segunda rsp debia ser la de la operacion nueva");
+    tick(3);
+    chk(perf.inflight == 0, "T16: la rsp propia debe liberar la operacion");
+    chk(fill_cnt == f0 && done_cnt == d0, "T16: no deben entregarse resultados de operaciones previas");
+    stale_rsp = 1;                       // la rsp residual no corresponde a ninguna operacion viva
+    mem_keep_on_reset = 0;
+
     // Consistencia global de metricas
     $display("T15 consistencia de metricas");
     chk(pc_getacc == get_cnt, $sformatf("get_accept pulsos=%0d vs handshakes=%0d", pc_getacc, get_cnt));
-    chk(pc_getdone == fill_cnt && pc_promo == fill_cnt, $sformatf("get_done/promotion pulsos=%0d/%0d vs fills=%0d", pc_getdone, pc_promo, fill_cnt));
+    chk(pc_promo == fill_cnt, $sformatf("promotion pulsos=%0d vs fills=%0d", pc_promo, fill_cnt));
+    chk(pc_getdone == fill_cnt + rsp_cnt - stale_rsp,
+        $sformatf("get_done pulsos=%0d vs demandas completadas (fills=%0d + rsp de memoria=%0d)", pc_getdone, fill_cnt, rsp_cnt - stale_rsp));
     chk(pc_dirtyev == push_cnt, $sformatf("dirty_eviction pulsos=%0d vs eb_push=%0d", pc_dirtyev, push_cnt));
 
     tick(20);
