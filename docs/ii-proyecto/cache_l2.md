@@ -1,3 +1,8 @@
+# `cache_l2.md` — versión actualizada
+
+Mantengo el formato, el tono y la estructura de secciones. Los cambios principales son: añadir `l2_admit_arb` como módulo, actualizar la tabla de requisitos (Fallo 1, 2, 3 y antigüedad de admisión), ajustar la sección del top (ya no tiene la lógica de antigüedad inline), añadir la cola de `get_done` en `l2_perf`, y actualizar los diagramas afectados.
+
+```markdown
 # Arquitectura de L2: módulos, conexiones y cómo resuelven P2-07 y P2-08
 
 Guía de lectura del RTL de `rtl/memory/cache_l2`. Cada módulo se explica con cuatro cosas: qué hace, cómo contribuye a los issues, con quién se conecta y un diagrama de su estructura.
@@ -6,11 +11,11 @@ Guía de lectura del RTL de `rtl/memory/cache_l2`. Cada módulo se explica con c
 
 L2 es exclusiva (una línea válida vive en L1 o en L2), de 16 KiB, con 4 vías, 128 conjuntos, líneas de 32 bytes, write-back y tree-PLRU. Puede tener en vuelo hasta `L2_MAX_INFLIGHT` operaciones (1 a 4). Entran dos tipos de solicitud: una demanda de L1 (`get`) y una instalación del write buffer (`install`). Salen cuatro canales (`fill` hacia L1, `wb_done` hacia el WB, `eb_push` hacia el eviction buffer y `mem_rd_req` hacia memoria) y L2 observa el retorno directo de memoria (`mem_rd_rsp`).
 
-La idea central: el top solo cablea y decide la admisión. Cada operación aceptada ocupa una posición de la tabla `l2_op_table` y avanza por estados. Cada canal de salida tiene su propia unidad, que arbitra entre las operaciones que lo piden (gana la más antigua) y aplica los efectos en el flanco del handshake.
+La idea central: el top cablea y decide la admisión; `l2_admit_arb` resuelve el desempate entre get e install respetando la antigüedad de espera. Cada operación aceptada ocupa una posición de la tabla `l2_op_table` y avanza por estados. Cada canal de salida tiene su propia unidad, que arbitra entre las operaciones que lo piden (gana la más antigua) y aplica los efectos en el flanco del handshake.
 
 ```mermaid
 flowchart LR
-  L1[L1 demanda get] --> ADM[Admision en cache_l2]
+  L1[L1 demanda get] --> ADM[Admisión: l2_admit_arb]
   WB[Write buffer install] --> ADM
   ADM --> TAB[l2_op_table]
   ADM --> PIPE[l2_pipe 7 etapas]
@@ -43,24 +48,22 @@ flowchart LR
 | P2-08: posición ocupada hasta el handshake | estados de la tabla y eventos `ev_*` |
 | P2-08: A espera memoria y B avanza | un estado por operación; `skip_q` en `l2_mem_unit` |
 | P2-08: misma línea o vía, la segunda espera | `conflict_a/b` de la tabla y reservas de vía |
-| P2-08: la más antigua que pueda avanzar; drenado en empate | matriz `older` + `l2_out_sel`; el `get_ready` cede ante un install |
+| P2-08: la más antigua que pueda avanzar; drenado en empate | matriz `older` + `l2_out_sel`; `l2_admit_arb` para la cola de admisión |
 | P2-08: resultado detenido conserva datos, efectos una vez | datos en la tabla; lock de `l2_out_sel`; `first_sel` en `l2_install_unit` |
 | P2-08: ocho ciclos adicionales; id libre al ver el handshake de retorno | `l2_pipe` y `ev_rsp` de `l2_mem_unit` |
+| Fallo 1: antigüedad de espera en la admisión | `l2_admit_arb` (get/install pendientes + `get_first_q`) |
+| Fallo 2: lookup solo para demandas; installs aparte | `l2_perf` filtra `lookup` con `!lookup_is_write_i`; expone `install_lookup_o`/`install_lookup_hit_o` |
+| Fallo 3: get_done en hit y miss | `l2_perf` une `fill_hs_i` y `rsp_done_i` con una cola `gd_q` |
 
 ## 3. Módulos
 
 ### 3.1 cache\_l2 (top)
 
-**Qué hace.** Instancia todos los módulos, decodifica la dirección (5 bits de offset, 7 de conjunto, el resto es tag) y decide la admisión. Hace el lookup de la demanda sobre la fila A de los arreglos y el de la instalación sobre la fila B.
-
-**Reglas de admisión** (una aceptación por ciclo):
-
-- `get_ready` = hay posición libre, el hit no cae en vía reservada, no hay operación activa con la misma base y no hay un install válido y aceptable en ese ciclo (el drenado gana el empate).
-- `install_ready` = hay posición libre, `l2_way_select` encontró vía (o hay hit sobre vía no reservada) y no hay conflicto de base.
+**Qué hace.** Instancia todos los módulos, decodifica la dirección (5 bits de offset, 7 de conjunto, el resto es tag) y decide la admisión. Hace el lookup de la demanda sobre la fila A de los arreglos y el de la instalación sobre la fila B. Delega el desempate entre get e install en `l2_admit_arb`.
 
 Al aceptar: el id es la posición libre (`alloc_idx`), se reserva la vía (siempre para install; para get solo si hay hit), se escribe la operación en la tabla y se lanza el pipeline. Para un install se calcula también la víctima (línea válida de la vía elegida, con su base reconstruida desde el tag) y el dirty final (`wb_dirty` o el dirty previo si había hit).
 
-**Con quién se conecta.** Las lecturas de datos se reparten así: `rd0` la fija `l2_fill_unit` y `rd1` la fija `l2_evict_unit`. La escritura (tag y dato) la genera `l2_install_unit`; la invalidación, `l2_fill_unit`; el touch de PLRU, `l2_install_unit`. Las reservas se liberan por `l2_fill_unit` (clr0) y `l2_install_unit` (clr1). Los eventos `ev_*` de las cinco unidades vuelven a la tabla, y la tabla entrega `req_*` y `older` a las unidades.
+**Con quién se conecta.** Las lecturas de datos se reparten así: `rd0` la fija `l2_fill_unit` y `rd1` la fija `l2_evict_unit`. La escritura (tag y dato) la genera `l2_install_unit`; la invalidación, `l2_fill_unit`; el touch de PLRU, `l2_install_unit`. Las reservas se liberan por `l2_fill_unit` (clr0) y `l2_install_unit` (clr1). Los eventos `ev_*` de las cinco unidades vuelven a la tabla, y la tabla entrega `req_*` y `older` a las unidades. `l2_perf` recibe las señales de aceptación, handshakes, lookup, ocupación y esperas.
 
 ```mermaid
 flowchart TB
@@ -71,13 +74,15 @@ flowchart TB
   TAGS --> LKI
   RESV[l2_way_resv] --> WS
   PLRU[l2_plru] --> WS
-  LKG --> ADM[Admision: ready de get e install]
-  LKI --> ADM
-  WS --> ADM
-  TAB[l2_op_table] -->|free_any, conflict| ADM
-  ADM -->|alloc| TAB
-  ADM -->|in_valid, idx| PIPE[l2_pipe]
-  ADM -->|reserva de via| RESV
+  LKG --> PRE[get_pre / install_pre]
+  LKI --> PRE
+  WS --> PRE
+  TAB[l2_op_table] -->|free_any, conflict| PRE
+  PRE --> ADM[l2_admit_arb]
+  ADM -->|get_ready, inst_ready| ACC[accept]
+  ACC -->|alloc| TAB
+  ACC -->|in_valid, idx| PIPE[l2_pipe]
+  ACC -->|reserva de via| RESV
   PIPE -->|fin de pipeline| TAB
   TAB -->|req, older, campos| UNITS[fill, install, evict, mem, done]
   UNITS -->|ev| TAB
@@ -251,7 +256,34 @@ flowchart TB
   EXT[ext_valid y ext_ready] --> LOCK
 ```
 
-### 3.11 l2\_fill\_unit
+### 3.11 l2\_admit\_arb
+
+**Qué hace.** Árbitro de la cola de admisión. Decide quién gana la única aceptación por ciclo cuando una demanda y un install compiten por entrar. Mantiene tres bits: `get_pend_q`/`inst_pend_q` (qué tipo está esperando) y `get_first_q` (cuál llegó primero cuando ambas esperaban). `get_older` traduce ese estado a "la demanda es la más antigua". Las reglas de `ready` ceden el paso a la otra solicitud solo si la otra es la más antigua **y puede avanzar** (`pre`): una solicitud bloqueada no frena a la otra.
+
+**Aporte a los issues.** Resuelve Fallo 1: la antigüedad de espera se respeta antes de aceptar, no solo después. El drenado de WB gana solo en empate (ambas llegan en el mismo ciclo, ninguna esperaba).
+
+**Conexiones.** Entradas: `get_valid_i`/`get_pre_i` y `inst_valid_i`/`inst_pre_i` desde el top. Salidas: `get_ready_o`/`inst_ready_o`. No calcula `pre` (eso depende de tablas, reservas y `way_select`); solo decide quién avanza.
+
+```mermaid
+flowchart TB
+  GV[get_valid] --> CASE{get_pend, inst_pend}
+  IV[inst_valid] --> CASE
+  CASE -->|solo get pend| O1[get_older = 1]
+  CASE -->|solo inst pend| O2[get_older = 0]
+  CASE -->|ambos| O3[get_older = get_first_q]
+  CASE -->|ninguno| O4[get_older = 0: drenado WB]
+  GP[get_pre] --> RDY[ready de get e install]
+  IP[inst_pre] --> RDY
+  O1 --> RDY
+  O2 --> RDY
+  O3 --> RDY
+  O4 --> RDY
+  GV --> PEND[actualiza get_pend/inst_pend/get_first]
+  IV --> PEND
+  RDY --> PEND
+```
+
+### 3.12 l2\_fill\_unit
 
 **Qué hace.** Canal de entrega de un hit hacia L1. Arbitra entre las operaciones en `ST_FILL`, ofrece id, base, línea y dirty. Al handshake (`valid && ready`) ocurren tres efectos en el mismo flanco: invalida la vía en el arreglo de tags, libera la reserva y emite `ev_fill` para que la tabla libere posición e id.
 
@@ -271,7 +303,7 @@ flowchart LR
   HS --> EV[ev_fill a la tabla]
 ```
 
-### 3.12 l2\_install\_unit
+### 3.13 l2\_install\_unit
 
 **Qué hace.** Canal de escritura de una instalación. Arbitra entre las operaciones en `ST_WRITE` y escribe tag, dirty y línea. La escritura de arreglos es un nivel idempotente; los efectos que no se pueden repetir (`ev_wr`, touch de PLRU y liberación de reserva) salen como un solo pulso en la primera selección (`first_sel`).
 
@@ -289,7 +321,7 @@ flowchart LR
   FS --> CLR[libera reserva]
 ```
 
-### 3.13 l2\_evict\_unit
+### 3.14 l2\_evict\_unit
 
 **Qué hace.** Canal que entrega la víctima sucia al eviction buffer. Arbitra entre las operaciones en `ST_EBOFF`; ofrece la base de la víctima (`vbase`, no la base de la línea entrante), la línea leída por `rd1` y dirty=1. Al handshake emite `ev_eb` y la operación pasa a `ST_WRITE`.
 
@@ -307,7 +339,7 @@ flowchart LR
   HS --> EV[ev_eb: la tabla pasa a WRITE]
 ```
 
-### 3.14 l2\_mem\_unit
+### 3.15 l2\_mem\_unit
 
 **Qué hace.** Maneja el miss. Arbitra entre las operaciones en `ST_MEMREQ`, sondea el eviction buffer con la base elegida (`eb_probe`) y solo emite `mem_rd_req` si EB no tiene una escritura pendiente de esa línea. Para que una operación bloqueada por EB no frene a las demás, mantiene una máscara `skip_q`: la candidata bloqueada se marca y se prueba la siguiente; un handshake limpia la máscara. Además observa `mem_rd_rsp`: cuando hay handshake y coinciden id y base con la operación que espera, emite `ev_rsp` y la tabla libera la posición sin instalar copia.
 
@@ -328,7 +360,7 @@ flowchart LR
   CHK -->|si| EVR[ev_rsp: libera posicion e id]
 ```
 
-### 3.15 l2\_done\_unit
+### 3.16 l2\_done\_unit
 
 **Qué hace.** Canal de confirmación de instalación hacia el write buffer. Arbitra entre las operaciones en `ST_DONE` y ofrece su id; al handshake emite `ev_done` y la tabla libera posición e id. No lee arreglos ni libera reservas (eso ya ocurrió al escribir).
 
@@ -345,19 +377,20 @@ flowchart LR
   HS --> PF[pulso para metricas]
 ```
 
-### 3.16 l2\_perf
+### 3.17 l2\_perf
 
-**Qué hace.** Convierte señales internas en los eventos de métricas de `pkg_metrics::l2_events_t`: `get_accept`, `get_done`, `lookup`, `promotion`, `clean_discard`, `dirty_eviction`, ocupación, capacidad y espera. Los conceptos sin campo en el paquete salen como puertos auxiliares.
+**Qué hace.** Convierte señales internas en los eventos de métricas de `pkg_metrics::l2_events_t`: `get_accept`, `get_done`, `lookup`, `promotion`, `clean_discard`, `dirty_eviction`, ocupación, capacidad y espera. Los conceptos sin campo en el paquete salen como puertos auxiliares (`install_lookup_o`, `install_lookup_hit_o`, `install_accept_o`, `install_done_o`, waits, `gd_overflow_o`).
 
-**Aporte a los issues.** Da visibilidad verificable de promociones, descartes limpios y desalojos sucios (un pulso por evento).
+**Aporte a los issues.** Resuelve el Fallo 2 (`lookup` solo para demandas; installs en `install_lookup_o`/`install_lookup_hit_o`) y el Fallo 3 (`get_done` une `fill_hs_i` y `rsp_done_i` con una cola `gd_q` que retiene finalizaciones coincidentes). La cola protege contra overflow (`gd_overflow_o`) y limpia con reset.
 
-**Conexiones.** Solo recibe señales del top (aceptaciones, handshakes de fill, `eb_push` y `wb_done`, ocupación de la tabla). No influye en el control.
+**Conexiones.** Solo recibe señales del top (aceptaciones, handshakes de fill, `eb_push` y `wb_done`, `rsp_done` de `l2_mem_unit`, ocupación de la tabla). No influye en el control.
 
 ```mermaid
 flowchart LR
   S1[aceptaciones y handshakes] --> PF[l2_perf]
   S2[lookup de etapa 3 e indice de escritura] --> PF
-  S3[ocupacion y esperas] --> PF
+  S3[rsp_done de mem_unit y ocupacion] --> PF
+  PF --> COL[cola gd_q: get_done hit + miss]
   PF --> EV[perf_events_o: l2_events_t]
   PF --> AUX[puertos auxiliares]
 ```
@@ -380,7 +413,7 @@ sequenceDiagram
 
 ### 4.2 Demanda con miss
 
-No se reserva ninguna vía. Tras el pipeline, L2 sondea el eviction buffer; si la línea no está pendiente de escritura, emite la lectura. La línea llega a L1 directamente y L2 solo observa el handshake para liberar el id.
+No se reserva ninguna vía. Tras el pipeline, L2 sondea el eviction buffer; si la línea no está pendiente de escritura, emite la lectura. La línea llega a L1 directamente y L2 solo observa el handshake para liberar el id. `l2_perf` emite `get_done` con el id de la demanda (Fallo 3).
 
 ```mermaid
 sequenceDiagram
@@ -394,11 +427,12 @@ sequenceDiagram
   L2->>MEM: mem_rd_req id y base
   MEM->>L1: mem_rd_rsp linea completa
   Note over L2: observa el handshake, libera el id, sin copia
+  Note over L2: l2_perf: get_done con id (hit + miss)
 ```
 
 ### 4.3 Instalación con víctima sucia
 
-El write buffer entrega una línea; si la vía elegida tiene una línea sucia, esta se envía al eviction buffer antes de escribir. La confirmación solo sale después de instalar.
+El write buffer entrega una línea; si la vía elegida tiene una línea sucia, esta se envía al eviction buffer antes de escribir. La confirmación solo sale después de instalar. Si get e install compiten en el mismo ciclo, `l2_admit_arb` decide: gana la solicitud más antigua que pueda avanzar; el drenado de WB gana solo en empate.
 
 ```mermaid
 sequenceDiagram
@@ -412,4 +446,21 @@ sequenceDiagram
   Note over L2: escribe tag, dato y dirty, touch de PLRU, libera reserva
   L2->>WB: wb_done id
   WB-->>L2: consume wb_done
+```
+
+### 4.4 Admisión con competencia (Fallo 1)
+
+Cuando get e install llegan al mismo tiempo o uno de ellos lleva esperando, `l2_admit_arb` decide con `get_pend_q`/`inst_pend_q`/`get_first_q`. Si solo uno esperaba, ese gana. Si ambos esperaban, gana el que llegó primero. Si ambos llegan en el mismo ciclo, gana el install (drenado). Una solicitud bloqueada (`pre=0`) no frena a la otra.
+
+```mermaid
+sequenceDiagram
+  participant L1
+  participant WB
+  participant ARB as l2_admit_arb
+  participant L2 as cache_l2
+  L1->>ARB: get_valid + get_pre
+  WB->>ARB: inst_valid + inst_pre
+  Note over ARB: get_pend/inst_pend/get_first deciden
+  ARB-->>L2: get_ready o inst_ready
+  Note over L2: accept en el mismo ciclo, pipe en T
 ```
