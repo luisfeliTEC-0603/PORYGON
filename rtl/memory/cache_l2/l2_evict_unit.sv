@@ -1,32 +1,46 @@
 /**
  * @file l2_evict_unit.sv
- * @brief Canal eb_push: entrega de victima sucia de L2 al eviction buffer.
+ * @brief Canal eb_push: entrega de víctima sucia de L2 al eviction buffer.
  *
  * @details
- *   Selecciona la operacion en ST_EBOFF mas antigua mediante l2_out_sel con
- *   lock estable. Ofrece base de la victima (t_vbase_i), linea leida del
- *   arreglo (rd1_data_i) y dirty=1. Al handshake (eb_push_valid_o &
- *   eb_push_ready_i):
- *     - emite ev_eb para que l2_op_table pase a ST_WRITE,
- *     - la via queda libre para reutilizarse al instalar la nueva linea
- *       (no se espera la escritura a memoria, interfaces.md seccion 5).
+ *   Elige la operación en ST_EBOFF más antigua con l2_out_sel (lock estable)
+ *   y ofrece al EB la base de la víctima (t_vbase_i), la línea leída del
+ *   arreglo (rd1_data_i) y dirty=1. En el handshake (eb_push_valid_o &
+ *   eb_push_ready_i) emite ev_eb para que la tabla pase a ST_WRITE; la vía
+ *   queda libre para reutilizarse al instalar la nueva línea, sin esperar la
+ *   escritura a memoria.
  *
- *   Solo se usa para victimas sucias. Una victima limpia se invalida sin
- *   pasar por aqui (el top la lleva directo a ST_WRITE sin pasar por
- *   ST_EBOFF).
+ *   Solo se usa para víctimas sucias. Una víctima limpia se invalida sin
+ *   pasar por aquí: el top la lleva directo a ST_WRITE sin pasar por EBOFF.
  *
- *   El top debe cablear rd1_set_i/rd1_way_i del arreglo de datos con las
- *   salidas sel_set_o/sel_way_o de este modulo, de modo que rd1_data_i
- *   corresponda a la victima de la operacion elegida en el mismo ciclo.
+ *   La línea se lee combinacionalmente del data array. El top debe cablear
+ *   rd1_set_i/rd1_way_i con sel_set_o/sel_way_o para que rd1_data_i
+ *   corresponda a la víctima de la operación elegida en el mismo ciclo.
  *
- *   El pulso ev_eb dura un solo ciclo, el del handshake.
+ *   ev_eb dura un solo ciclo, el del handshake.
  *
- * @param N     Numero de operaciones en vuelo.
- * @param AW    Ancho de direccion.
- * @param LW    Ancho de linea.
- * @param WAY_W Ancho de via.
- * @param SET_W Ancho de conjunto.
- * @param OPW   Ancho de indice de operacion.
+ * @param N     Número de operaciones en vuelo.
+ * @param AW    Ancho de dirección.
+ * @param LW    Ancho de línea.
+ * @param WAY_W Ancho de índice de vía.
+ * @param SET_W Ancho de índice de conjunto.
+ * @param OPW   Ancho de índice de operación, mínimo 1.
+ *
+ * @input  req_eb_i     Solicitud de eb_push por operación.
+ * @input  older_i      Matriz N×N de antigüedad.
+ * @input  t_vbase_i    Base de la víctima por operación.
+ * @input  t_way_i      Vía por operación.
+ * @input  rd1_data_i   Línea leída del data array para la operación elegida.
+ * @input  eb_push_ready_i 1 si el EB acepta la víctima.
+ *
+ * @output eb_push_valid_o 1 si hay una operación ofreciendo eb_push.
+ * @output eb_push_base_o  Base de la víctima ofrecida.
+ * @output eb_push_data_o  Línea de la víctima ofrecida.
+ * @output eb_push_dirty_o Siempre 1: solo se empujan víctimas sucias.
+ * @output ev_eb_valid_o   1 en el ciclo del handshake.
+ * @output ev_eb_onehot_o  One-hot de la operación que completó eb_push.
+ * @output sel_set_o       Conjunto de la víctima elegida, para cablear rd1.
+ * @output sel_way_o       Vía de la víctima elegida, para cablear rd1.
  */
 
 module l2_evict_unit #(
@@ -70,6 +84,7 @@ module l2_evict_unit #(
     logic [AW-1:0]    sel_vbase;
     logic [WAY_W-1:0] sel_way;
 
+    // Árbitro del canal con lock: mantiene la oferta estable si el EB no acepta.
     l2_out_sel #(.N(N)) u_sel (
         .clk_i, .rst_ni,
         .req_i(req_eb_i), .older_i(older_i),
@@ -77,6 +92,8 @@ module l2_evict_unit #(
         .sel_valid_o(sel_valid), .sel_idx_o(sel_idx),
         .sel_onehot_o(sel_onehot));
 
+    // Descomposición de la base de la víctima: set para indexar el arreglo,
+    // way para elegir la línea dentro del set.
     assign sel_vbase = t_vbase_i[sel_idx*AW +: AW];
     assign sel_way   = t_way_i[sel_idx*WAY_W +: WAY_W];
 
@@ -86,13 +103,14 @@ module l2_evict_unit #(
     assign eb_push_data_o  = eb_push_valid_o ? rd1_data_i : '0;
     assign eb_push_dirty_o = 1'b1;
 
+    // Handshake: único ciclo en que se emite el evento a la tabla.
     logic eb_hs;
     assign eb_hs = eb_push_valid_o && eb_push_ready_i;
 
     assign ev_eb_valid_o  = eb_hs;
     assign ev_eb_onehot_o = eb_hs ? sel_onehot : '0;
 
-    // El top cablea rd1_set_i = sel_set_o, rd1_way_i = sel_way_o.
+    // Selección expuesta para que el top cablee rd1 del data array.
     assign sel_set_o = sel_vbase[$clog2(pkg_memory::LINE_BYTES) +: SET_W];
     assign sel_way_o = sel_way;
 endmodule
