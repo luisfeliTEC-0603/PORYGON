@@ -56,17 +56,17 @@
  * @output perf_events_o          Eventos de métricas según pkg_metrics::l2_events_t.
  */
 
-module cache_l2 #(
+ module cache_l2 #(
     parameter integer L2_MAX_INFLIGHT = pkg_memory::L2_MAX_INFLIGHT_DEFAULT
 ) (
     input logic clk_i,
     input logic rst_ni,
-
+ 
     input logic l2_get_valid_i,
     output logic l2_get_ready_o,
     input pkg_memory::address_t l2_get_base_i,
     output logic [pkg_memory::id_width(L2_MAX_INFLIGHT)-1:0] l2_get_accept_id_o,
-
+ 
     output logic l2_fill_valid_o,
     input logic l2_fill_ready_i,
     output logic [pkg_memory::id_width(L2_MAX_INFLIGHT)-1:0] l2_fill_id_o,
@@ -74,7 +74,7 @@ module cache_l2 #(
     output pkg_memory::line_t l2_fill_data_o,
     output logic l2_fill_dirty_o,
     output logic l2_fill_error_o,
-
+ 
     input logic wb_install_valid_i,
     output logic wb_install_ready_o,
     input pkg_memory::address_t wb_install_base_i,
@@ -84,28 +84,28 @@ module cache_l2 #(
     output logic wb_done_valid_o,
     input logic wb_done_ready_i,
     output logic [pkg_memory::id_width(L2_MAX_INFLIGHT)-1:0] wb_done_id_o,
-
+ 
     output logic eb_push_valid_o,
     input logic eb_push_ready_i,
     output pkg_memory::address_t eb_push_base_o,
     output pkg_memory::line_t eb_push_data_o,
     output logic eb_push_dirty_o,
-
+ 
     output logic eb_probe_valid_o,
     output pkg_memory::address_t eb_probe_base_o,
     input logic eb_probe_hit_i,
-
+ 
     output logic mem_rd_req_valid_o,
     input logic mem_rd_req_ready_i,
     output logic [pkg_memory::id_width(L2_MAX_INFLIGHT)-1:0] mem_rd_req_id_o,
     output pkg_memory::address_t mem_rd_req_base_o,
-
+ 
     input logic mem_rd_rsp_valid_i,
     input logic mem_rd_rsp_ready_i,
     input logic [pkg_memory::id_width(L2_MAX_INFLIGHT)-1:0] mem_rd_rsp_id_i,
     input pkg_memory::address_t mem_rd_rsp_base_i,
     input logic mem_rd_rsp_error_i,
-
+ 
     output pkg_metrics::l2_events_t perf_events_o
 );
     // ------------------------------------------------------------------
@@ -121,16 +121,16 @@ module cache_l2 #(
     localparam int TAG_W    = AW - SET_W - OFFSET_W;
     localparam int PIPE_STAGES  = 7;
     localparam int TAG_LAST_STG = 3;
-
+ 
     localparam int N    = L2_MAX_INFLIGHT;
     localparam int ID_W = pkg_memory::id_width(N);
     localparam int OPW  = (N > 1) ? $clog2(N) : 1;
-
+ 
     initial begin
         if (N < 1 || N > 4) $display("ERROR cache_l2: L2_MAX_INFLIGHT fuera de 1..4");
         if (WAYS != 4) $display("ERROR cache_l2: tree-PLRU implementado para 4 vias");
     end
-
+ 
     // ------------------------------------------------------------------
     // Decodificacion de direcciones
     // ------------------------------------------------------------------
@@ -143,13 +143,13 @@ module cache_l2 #(
     assign get_tag   = get_base[OFFSET_W+SET_W +: TAG_W];
     assign inst_set  = inst_base[OFFSET_W +: SET_W];
     assign inst_tag  = inst_base[OFFSET_W+SET_W +: TAG_W];
-
+ 
     // ------------------------------------------------------------------
     // Arreglos, PLRU, reservas
     // ------------------------------------------------------------------
     logic [WAYS*TAG_W-1:0] a_tags, b_tags;
     logic [WAYS-1:0] a_valid, b_valid, a_dirty, b_dirty, a_resv, b_resv;
-
+ 
     // Escritura de install (desde l2_install_unit)
     logic             wr_valid;
     logic [SET_W-1:0] wr_set;
@@ -159,23 +159,23 @@ module cache_l2 #(
     logic [LW-1:0]    wr_data;
     logic [OPW-1:0]   wr_idx;
     logic             wr_first;
-
+ 
     // Invalidacion de fill (desde l2_fill_unit)
     logic             inv_valid;
     logic [SET_W-1:0] inv_set;
     logic [WAY_W-1:0] inv_way;
-
+ 
     // Lecturas de datos
     logic [LW-1:0]    rd0_data, rd1_data;
     logic [SET_W-1:0] rd0_set, rd1_set;
     logic [WAY_W-1:0] rd0_way, rd1_way;
-
+ 
     // Salidas de la tabla
     logic [N*AW-1:0]    t_base, t_vbase;
     logic [N*WAY_W-1:0] t_way;
     logic [N*LW-1:0]    t_data;
     logic [N-1:0]       t_dirty;
-
+ 
     l2_tag_array #(.SETS(SETS), .WAYS(WAYS), .TAG_W(TAG_W)) u_tags (
         .clk_i, .rst_ni,
         .rd_a_set_i(get_set),  .rd_a_tag_o(a_tags), .rd_a_valid_o(a_valid), .rd_a_dirty_o(a_dirty),
@@ -184,7 +184,7 @@ module cache_l2 #(
         .wr_tag_i(wr_tag), .wr_dirty_i(wr_dirty),
         .inv_valid_i(inv_valid), .inv_set_i(inv_set), .inv_way_i(inv_way)
     );
-
+ 
     l2_data_array #(.SETS(SETS), .WAYS(WAYS), .LW(LW)) u_data (
         .clk_i,
         .rd0_set_i(rd0_set), .rd0_way_i(rd0_way), .rd0_data_o(rd0_data),
@@ -192,20 +192,20 @@ module cache_l2 #(
         .wr_valid_i(wr_valid), .wr_set_i(wr_set), .wr_way_i(wr_way),
         .wr_data_i(wr_data)
     );
-
+ 
     // PLRU: query = set de install (para elegir victima); touch = write de install
     logic [1:0] plru_way;
     logic       plru_touch_valid;
     logic [SET_W-1:0] plru_touch_set;
     logic [WAY_W-1:0] plru_touch_way;
-
+ 
     l2_plru #(.SETS(SETS)) u_plru (
         .clk_i, .rst_ni,
         .query_set_i(inst_set), .victim_way_o(plru_way),
         .touch_valid_i(plru_touch_valid), .touch_set_i(plru_touch_set),
         .touch_way_i(plru_touch_way)
     );
-
+ 
     // Reservas: set al aceptar (hit de demanda o via de install), clears de fill/install
     logic             resv_set_valid;
     logic [SET_W-1:0] resv_set_set;
@@ -216,7 +216,7 @@ module cache_l2 #(
     logic             resv_clr1_valid;   // install
     logic [SET_W-1:0] resv_clr1_set;
     logic [WAY_W-1:0] resv_clr1_way;
-
+ 
     l2_way_resv #(.SETS(SETS), .WAYS(WAYS)) u_resv (
         .clk_i, .rst_ni,
         .rd_a_set_i(get_set),  .rd_a_resv_o(a_resv),
@@ -225,7 +225,7 @@ module cache_l2 #(
         .clr0_valid_i(resv_clr0_valid), .clr0_set_i(resv_clr0_set), .clr0_way_i(resv_clr0_way),
         .clr1_valid_i(resv_clr1_valid), .clr1_set_i(resv_clr1_set), .clr1_way_i(resv_clr1_way)
     );
-
+ 
     // ------------------------------------------------------------------
     // Lookup de demanda e install, eleccion de via
     // ------------------------------------------------------------------
@@ -235,13 +235,13 @@ module cache_l2 #(
         .tags_i(a_tags), .valid_i(a_valid), .tag_i(get_tag), .hit_o(get_hit), .way_o(get_hit_way));
     l2_lookup #(.WAYS(WAYS), .TAG_W(TAG_W)) u_look_inst (
         .tags_i(b_tags), .valid_i(b_valid), .tag_i(inst_tag), .hit_o(inst_hit), .way_o(inst_hit_way));
-
+ 
     logic [WAY_W-1:0] sel_way;
     logic             sel_ok;
     l2_way_select #(.WAYS(WAYS), .WAY_W(WAY_W)) u_way_sel (
         .valid_i(b_valid), .resv_i(b_resv), .plru_way_i(plru_way),
         .way_o(sel_way), .ok_o(sel_ok));
-
+ 
     logic [WAY_W-1:0] inst_way;
     logic             inst_way_ok, inst_vvalid, inst_vdirty, inst_dirty_in;
     logic [AW-1:0]    inst_vbase;
@@ -251,7 +251,7 @@ module cache_l2 #(
     assign inst_vdirty  = inst_vvalid && b_dirty[inst_way];
     assign inst_vbase   = {b_tags[inst_way*TAG_W +: TAG_W], inst_set, {OFFSET_W{1'b0}}};
     assign inst_dirty_in = wb_install_dirty_i | (inst_hit & b_dirty[inst_hit_way]);
-
+ 
     // ------------------------------------------------------------------
     // Tabla de operaciones, pipeline
     // ------------------------------------------------------------------
@@ -265,28 +265,38 @@ module cache_l2 #(
     logic [OPW-1:0]   pipe_end_idx;
     logic [PIPE_STAGES-1:0]     stage_valid;
     logic [PIPE_STAGES*OPW-1:0] stage_idx;
-
-    // Admision (una sola aceptacion por ciclo; drenado WB gana en empate):
+ 
+    // Admision (una sola aceptacion por ciclo; gana la solicitud mas antigua que
+    // pueda avanzar y el drenado del WB gana solo en empate):
     // - get con hit en via reservada -> espera
     // - get/install con base ya activa en la tabla -> espera (conflicto)
     // - get hit -> reserva la via; get miss -> sin reserva, lectura a memoria
     // - install -> reserva la via destino (invalida no reservada o PLRU)
     logic get_hit_blocked;
     assign get_hit_blocked = get_hit && a_resv[get_hit_way];
-
+ 
+    // Admisión: pre = puede avanzar (slot, conflicto, reserva, vía)
     logic get_pre, install_pre;
-    assign get_pre      = rst_ni && free_any && !get_hit_blocked && !conflict_a;
-    assign install_pre  = rst_ni && free_any && inst_way_ok && !conflict_b;
-    assign wb_install_ready_o = install_pre;
-    assign l2_get_ready_o = get_pre && !(wb_install_valid_i && install_pre);
+    assign get_pre     = rst_ni && free_any && !get_hit_blocked && !conflict_a;
+    assign install_pre = rst_ni && free_any && inst_way_ok && !conflict_b;
+
+    // Árbitro de entrada: respeta antigüedad de espera; drenado WB en empate
+    l2_admit_arb u_admit (
+        .clk_i, .rst_ni,
+        .get_valid_i (l2_get_valid_i),
+        .get_pre_i   (get_pre),
+        .inst_valid_i(wb_install_valid_i),
+        .inst_pre_i  (install_pre),
+        .get_ready_o (l2_get_ready_o),
+        .inst_ready_o(wb_install_ready_o));
 
     logic get_accept, install_accept;
-    assign get_accept     = l2_get_valid_i && l2_get_ready_o;
+    assign get_accept     = l2_get_valid_i     && l2_get_ready_o;
     assign install_accept = wb_install_valid_i && wb_install_ready_o;
 
     assign l2_get_accept_id_o     = alloc_idx;
     assign wb_install_accept_id_o = alloc_idx;
-
+ 
     l2_op_table #(.N(N), .AW(AW), .LW(LW), .WAY_W(WAY_W)) u_table (
         .clk_i, .rst_ni,
         .alloc_valid_i(get_accept | install_accept),
@@ -312,26 +322,26 @@ module cache_l2 #(
         .qa_base_i(get_base), .qb_base_i(inst_base),
         .conflict_a_o(conflict_a), .conflict_b_o(conflict_b)
     );
-
+ 
     l2_pipe #(.STAGES(PIPE_STAGES), .OPW(OPW)) u_pipe (
         .clk_i, .rst_ni,
         .in_valid_i(get_accept | install_accept), .in_idx_i(alloc_idx),
         .stage_valid_o(stage_valid), .stage_idx_o(stage_idx),
         .end_valid_o(pipe_end_valid), .end_idx_o(pipe_end_idx)
     );
-
+ 
     // Reserva al aceptar: via de hit (demanda) o via destino (instalacion)
     assign resv_set_valid = install_accept | (get_accept & get_hit);
     assign resv_set_set   = install_accept ? inst_set : get_set;
     assign resv_set_way   = install_accept ? inst_way : get_hit_way;
-
+ 
     // ------------------------------------------------------------------
     // l2_fill_unit (canal fill)
     // ------------------------------------------------------------------
     logic [SET_W-1:0] fill_sel_set;
     logic [WAY_W-1:0] fill_sel_way;
     logic             ev_fill_valid;
-
+ 
     l2_fill_unit #(.N(N), .AW(AW), .LW(LW), .WAY_W(WAY_W), .SET_W(SET_W), .OPW(OPW)) u_fill (
         .clk_i, .rst_ni,
         .req_fill_i(req_fill), .older_i(older),
@@ -346,7 +356,7 @@ module cache_l2 #(
         .resv_clr_way_o(resv_clr0_way),
         .sel_set_o(fill_sel_set), .sel_way_o(fill_sel_way)
     );
-
+ 
     // ------------------------------------------------------------------
     // l2_install_unit (canal de escritura)
     // ------------------------------------------------------------------
@@ -364,13 +374,13 @@ module cache_l2 #(
         .resv_clr_way_o(resv_clr1_way),
         .ev_wr_valid_o(wr_first), .ev_wr_onehot_o(ev_wr)
     );
-
+ 
     // ------------------------------------------------------------------
     // l2_evict_unit (canal eb_push)
     // ------------------------------------------------------------------
     logic [SET_W-1:0] evict_sel_set;
     logic [WAY_W-1:0] evict_sel_way;
-
+ 
     l2_evict_unit #(.N(N), .AW(AW), .LW(LW), .WAY_W(WAY_W),
                     .SET_W(SET_W), .OPW(OPW)) u_evict (
         .clk_i, .rst_ni,
@@ -382,7 +392,7 @@ module cache_l2 #(
         .ev_eb_valid_o(), .ev_eb_onehot_o(ev_eb),
         .sel_set_o(evict_sel_set), .sel_way_o(evict_sel_way)
     );
-
+ 
     // ------------------------------------------------------------------
     // l2_mem_unit (canal mem_rd_req + observacion de rsp)
     // ------------------------------------------------------------------
@@ -398,7 +408,7 @@ module cache_l2 #(
         .ev_mem_valid_o(), .ev_mem_onehot_o(ev_mem),
         .ev_rsp_onehot_o(ev_rsp)
     );
-
+ 
     // ------------------------------------------------------------------
     // Seleccion de lecturas de datos: rd0 = fill, rd1 = evict
     // ------------------------------------------------------------------
@@ -406,7 +416,7 @@ module cache_l2 #(
     assign rd0_way = fill_sel_way;
     assign rd1_set = evict_sel_set;
     assign rd1_way = evict_sel_way;
-
+ 
     // ------------------------------------------------------------------
     // Canal wb_done (desde ST_DONE de la tabla)
     // ------------------------------------------------------------------
@@ -417,7 +427,7 @@ module cache_l2 #(
         .wb_done_valid_o(wb_done_valid_o), .wb_done_ready_i(wb_done_ready_i),
         .wb_done_id_o(wb_done_id_o),
         .ev_done_valid_o(done_hs), .ev_done_onehot_o(ev_done));
-
+ 
     // ------------------------------------------------------------------
     // Metricas
     // ------------------------------------------------------------------
@@ -425,14 +435,15 @@ module cache_l2 #(
     logic look_valid;
     assign look_valid = stage_valid[TAG_LAST_STG];
     assign look_idx   = stage_idx[TAG_LAST_STG*OPW +: OPW];
-
+ 
     logic [7:0] occupancy;
     always_comb begin
         occupancy = '0;
         for (int i = 0; i < N; i++) occupancy = occupancy + busy[i];
     end
-
+ 
     l2_perf #(.AW(AW), .ID_W(ID_W)) u_perf (
+        .clk_i, .rst_ni,
         .get_accept_i(get_accept), .get_base_i(get_base), .get_id_i(alloc_idx),
         .fill_hs_i(l2_fill_valid_o && l2_fill_ready_i),
         .fill_base_i(l2_fill_base_o), .fill_dirty_i(l2_fill_dirty_o), .fill_id_i(l2_fill_id_o),
@@ -444,6 +455,7 @@ module cache_l2 #(
         .evict_base_i(eb_push_base_o),
         .inst_accept_i(install_accept), .inst_accept_id_i(alloc_idx),
         .inst_done_i(done_hs), .inst_done_id_i(wb_done_id_o),
+        .rsp_done_i(|ev_rsp), .rsp_done_id_i(mem_rd_rsp_id_i),
         .occupancy_i(occupancy), .capacity_i(N[7:0]),
         .get_wait_i(l2_get_valid_i && !l2_get_ready_o),
         .inst_wait_i(wb_install_valid_i && !wb_install_ready_o),
@@ -451,7 +463,7 @@ module cache_l2 #(
         .eb_wait_i(eb_push_valid_o && !eb_push_ready_i),
         .perf_events_o(perf_events_o),
         .lookup_is_write_o(), .install_accept_o(), .install_accept_id_o(),
-        .install_done_o(), .install_done_id_o(), .inst_wait_o(),
+        .install_done_o(), .install_done_id_o(), .install_lookup_o(), .install_lookup_hit_o(), .inst_wait_o(),
         .mem_wait_o(), .eb_wait_o()
     );
 endmodule
