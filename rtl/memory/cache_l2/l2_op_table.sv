@@ -72,7 +72,7 @@
  * @output req_wr_o         Solicitud de escritura de arreglo por operación.
  * @output req_done_o       Solicitud de wb_done por operación.
  * @output busy_o           1 si la posición está ocupada.
- * @output older_o          Matriz N×N de antigüedad.
+ * @output older_o          Matriz NxN de antigüedad.
  * @output base_o           Base por operación.
  * @output vbase_o          Base de la víctima por operación.
  * @output way_o            Vía por operación.
