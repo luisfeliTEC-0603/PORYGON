@@ -1,27 +1,59 @@
 /**
- * @brief L2 exclusiva: 16 KiB, cuatro vias, tree-PLRU, write-back, non-blocking.
- * @param L2_MAX_INFLIGHT Operaciones aceptadas hasta finalizacion consumida;
- * cuatro por defecto, rango 1..4. No determina bancos ni busquedas simultaneas.
- * @details Top de solo cableado y reglas de admision. Submodulos: l2_tag_array,
- * l2_data_array, l2_plru, l2_way_resv, l2_lookup, l2_way_select,
- * l2_op_table, l2_pipe, l2_fill_unit, l2_install_unit, l2_done_unit,
- * l2_evict_unit, l2_mem_unit, l2_perf. Cada unidad de canal instancia su propio
- * l2_out_sel; el top no contiene logica de canal.
+ * @file cache_l2.sv
+ * @brief L2 exclusiva: 16 KiB, cuatro vías, tree-PLRU, write-back, non-blocking.
  *
- * Exclusividad: hit L2 -> L1 invalida en L2 al aceptar L1; miss L2 -> retorno
- * directo (L2 solo observa mem_rd_rsp valid&&ready y libera el id); instalacion
- * WB conserva dirty y ofrece wb_done solo despues de escribir los arreglos.
- * Latencia: accept (ciclo T) -> fill_valid / mem_rd_req_valid en T+8.
+ * @details
+ *   Top de solo cableado y reglas de admisión. Instancia los arreglos
+ *   (l2_tag_array, l2_data_array), la política de reemplazo (l2_plru), las
+ *   reservas (l2_way_resv), los comparadores (l2_lookup, l2_way_select), la
+ *   tabla de operaciones (l2_op_table), el pipeline (l2_pipe) y los cinco
+ *   canales de salida (fill, evict, mem, install, done), cada uno con su
+ *   propio l2_out_sel. El top no contiene lógica de canal; solo compone
+ *   admisión, decodifica direcciones y cablea lecturas de datos.
  *
- * Demandas a una misma base: no se admite una segunda mientras exista una
- * operacion activa con esa base (conflict_a); espera y, al terminar la
- * primera, se evalua de nuevo. No hay MSHR ni waiters.
+ * @param L2_MAX_INFLIGHT Operaciones aceptadas hasta finalización consumida.
  *
- * Reset: asincrono (rst_ni) sobre todo el estado (tags, reservas, PLRU, tabla,
- * pipeline, arbitros); las salidas valid se fuerzan a 0 con rst_ni.
+ * @input  clk_i                  Reloj.
+ * @input  rst_ni                 Reset asíncrono activo bajo.
+ * @input  l2_get_valid_i        1 si L1 solicita una demanda.
+ * @input  l2_get_base_i          Base de la demanda.
+ * @input  wb_install_valid_i     1 si WB solicita instalar una línea.
+ * @input  wb_install_base_i      Base del install.
+ * @input  wb_install_data_i      Línea del install.
+ * @input  wb_install_dirty_i     Dirty del install.
+ * @input  l2_fill_ready_i       1 si L1 acepta la línea de un hit L2.
+ * @input  wb_done_ready_i       1 si WB acepta la confirmación de install.
+ * @input  eb_push_ready_i       1 si EB acepta la víctima sucia.
+ * @input  eb_probe_hit_i        1 si EB tiene escritura pendiente para la base ofrecida.
+ * @input  mem_rd_req_ready_i    1 si el controlador acepta la lectura.
+ * @input  mem_rd_rsp_valid_i    1 si el controlador devuelve una línea.
+ * @input  mem_rd_rsp_ready_i    1 si L1/line_return acepta la línea.
+ * @input  mem_rd_rsp_id_i       Id del owner de la respuesta.
+ * @input  mem_rd_rsp_base_i     Base de la respuesta.
+ * @input  mem_rd_rsp_error_i    Error de la respuesta (no usado por L2).
  *
- * Nota: la via de una victima sucia no se invalida al aceptarla EB; permanece
- * reservada (nadie puede acertarla ni elegirla) y se sobrescribe al instalar.
+ * @output l2_get_ready_o         1 si L2 acepta la demanda este ciclo.
+ * @output l2_get_accept_id_o     Id asignado a la demanda aceptada.
+ * @output l2_fill_valid_o        1 si hay una operación ofreciendo fill.
+ * @output l2_fill_id_o           Id de la operación ofrecida.
+ * @output l2_fill_base_o         Base de la operación ofrecida.
+ * @output l2_fill_data_o         Línea de la operación ofrecida.
+ * @output l2_fill_dirty_o        Dirty de la operación ofrecida.
+ * @output l2_fill_error_o        Siempre 0; el error viaja por line_return.
+ * @output wb_install_ready_o     1 si L2 acepta el install este ciclo.
+ * @output wb_install_accept_id_o Id asignado al install aceptado.
+ * @output wb_done_valid_o        1 si hay una operación ofreciendo confirmación.
+ * @output wb_done_id_o           Id de la operación confirmada.
+ * @output eb_push_valid_o        1 si hay una víctima sucia ofreciendo eb_push.
+ * @output eb_push_base_o         Base de la víctima ofrecida.
+ * @output eb_push_data_o         Línea de la víctima ofrecida.
+ * @output eb_push_dirty_o        Siempre 1: solo se empujan víctimas sucias.
+ * @output eb_probe_valid_o       1 si hay una operación ofreciendo probe al EB.
+ * @output eb_probe_base_o        Base a consultar en el EB.
+ * @output mem_rd_req_valid_o     1 si L2 emite lectura a memoria.
+ * @output mem_rd_req_id_o        Id de la operación que lee.
+ * @output mem_rd_req_base_o      Base de la lectura.
+ * @output perf_events_o          Eventos de métricas según pkg_metrics::l2_events_t.
  */
 
 module cache_l2 #(
