@@ -27,7 +27,7 @@
  * @param OPW   Ancho de índice de operación, mínimo 1.
  *
  * @input  req_eb_i     Solicitud de eb_push por operación.
- * @input  older_i      Matriz N×N de antigüedad.
+ * @input  older_i      Matriz NxN de antigüedad.
  * @input  t_vbase_i    Base de la víctima por operación.
  * @input  t_way_i      Vía por operación.
  * @input  rd1_data_i   Línea leída del data array para la operación elegida.
