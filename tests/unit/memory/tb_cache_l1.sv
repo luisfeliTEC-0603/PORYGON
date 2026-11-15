@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 
 /**
- * @brief Prueba aislada de L1-D: matriz completa L1-T1..L1-T14 (L1-1..L1-8).
+ * @brief Prueba aislada de L1-D: matriz completa L1-T1..L1-T14 + retencion en miss.
  */
 module tb_cache_l1;
     localparam integer SET_COUNT = pkg_memory::L1_BYTES /
@@ -50,8 +50,9 @@ module tb_cache_l1;
                        dut.wb_push_valid_o, dut.wb_probe_valid_o,
                        dut.l2_get_valid_o, dut.fill_ready_o} !== 6'b0)
             $fatal(1, "Reset permite oferta/aceptacion de L1");
-        if ({dut.pending_valid_q, dut.l2_id_valid_q, dut.input_reserved_q,
-             dut.input_valid_q, dut.response_valid_q, dut.l2_offered_q} !== 6'b0)
+        if ({dut.pending_valid_q, dut.evict_pending_q, dut.l2_id_valid_q,
+             dut.input_reserved_q, dut.input_valid_q, dut.response_valid_q,
+             dut.l2_offered_q} !== 7'b0)
             $fatal(1, "Reset incompleto: seguimiento o reservas activos");
         if ({dut.pending_addr_q, dut.pending_write_q, dut.pending_wdata_q,
              dut.pending_wstrb_q, dut.destination_way_q, dut.l2_id_q,
@@ -84,6 +85,7 @@ module tb_cache_l1;
             end
         end
         dut.pending_valid_q = 1'b1;
+        dut.evict_pending_q = 1'b1;
         dut.input_reserved_q = 1'b1;
         dut.input_valid_q = 1'b1;
         dut.response_valid_q = 1'b1;
@@ -344,7 +346,7 @@ module tb_cache_l1;
             dut.block_data_q[1][0][127:96] !== 32'h5566_7788)
             $fatal(1, "Write-allocate no instalo bloque sucio con dato escrito");
 
-        /** 7. L1-7 (Caso L1-T10): Respuesta retenida cuando dmem_rsp_ready_i == 0 */
+        /** 7. L1-7 (Caso L1-T10): Respuesta retenida en hit cuando dmem_rsp_ready_i == 0 */
         @(negedge clk);
         req_valid = 1'b1;
         req_write = 1'b0;
@@ -433,19 +435,17 @@ module tb_cache_l1;
         @(negedge clk);
         req_valid = 1'b1;
         req_write = 1'b0;
-        req_addr = 32'h00012000; // Conjunto 0, via 0 vacia
+        req_addr = 32'h00012000;
         wb_probe_hit = 1'b1;
-        wb_probe_busy = 1'b1; // WB tiene el bloque pero esta ocupado instalandolo en L2
+        wb_probe_busy = 1'b1;
         l2_ready = 1'b1;
         @(posedge clk); #1;
         req_valid = 1'b0;
 
-        // Mientras wb_probe_busy == 1: no debe pedir a L2 ni habilitar fill_ready_o
         if (dut.state_q !== dut.L1_GET_BLOCK || dut.l2_get_valid_o !== 1'b0 ||
             dut.fill_ready_o !== 1'b0)
             $fatal(1, "L1 no espero mientras wb_probe_busy_i == 1");
 
-        // WB termina instalacion en L2: baja hit y busy -> L1 ofrece l2_get
         @(negedge clk);
         wb_probe_hit = 1'b0;
         wb_probe_busy = 1'b0;
@@ -466,15 +466,14 @@ module tb_cache_l1;
         check_empty();
 
         /** 12. L1-8: Verificacion de latencias contractuales sin contencion (E1, E9, E48) */
-        // 12a. E9: Miss en L1 + acierto en L2 en 8 ciclos -> respuesta en el flanco 9 (E9)
         @(negedge clk);
         req_valid = 1'b1;
         req_write = 1'b0;
-        req_addr = 32'h00013008; // Conjunto 0, via 0 vacia, palabra 2
+        req_addr = 32'h00013008;
         l2_ready = 1'b1;
         l2_accept_id = 2'd1;
         rsp_ready = 1'b1;
-        @(posedge clk); // E1: aceptacion de miss y l2_get
+        @(posedge clk);
         #1;
         req_valid = 1'b0;
         l2_ready = 1'b0;
@@ -483,7 +482,6 @@ module tb_cache_l1;
             if (dut.dmem_rsp_valid_o !== 1'b0)
                 $fatal(1, "Respuesta prematura antes de E9 en ciclo %0d", cyc);
         end
-        // En el ciclo 9 (antes de E9), L2 entrega el bloque
         @(negedge clk);
         fill_valid = 1'b1;
         fill_base = 32'h00013000;
@@ -494,14 +492,13 @@ module tb_cache_l1;
         if (dut.dmem_rsp_valid_o !== 1'b1 || dut.dmem_rsp_rdata_o !== 32'hE9E9_E9E9 ||
             dut.dmem_rsp_origin_o !== pkg_metrics::ORIGIN_L2)
             $fatal(1, "Miss con hit L2 no entrega dato valido en E9");
-        @(posedge clk); // E9: handshake final
+        @(posedge clk);
         #1;
         fill_valid = 1'b0;
         rsp_ready = 1'b0;
         if (dut.state_q !== dut.L1_IDLE)
             $fatal(1, "L1 no quedo libre tras E9");
 
-        // 12b. E1: Hit inmediato en la misma palabra recién instalada
         @(negedge clk);
         req_valid = 1'b1;
         rsp_ready = 1'b1;
@@ -509,19 +506,18 @@ module tb_cache_l1;
         if (dut.dmem_req_ready_o !== 1'b1 || dut.dmem_rsp_valid_o !== 1'b1 ||
             dut.dmem_rsp_rdata_o !== 32'hE9E9_E9E9)
             $fatal(1, "Hit posterior no responde en E1");
-        @(posedge clk); // E1
+        @(posedge clk);
         #1;
         req_valid = 1'b0;
         rsp_ready = 1'b0;
 
-        // 12c. E48: Miss en L1 y L2 con retorno desde memoria en el flanco 48 (E48)
         @(negedge clk);
         req_valid = 1'b1;
-        req_addr = 32'h0001400C; // Conjunto 0, via 1 vacia, palabra 3
+        req_addr = 32'h0001400C;
         l2_ready = 1'b1;
         l2_accept_id = 2'd2;
         rsp_ready = 1'b1;
-        @(posedge clk); // E1
+        @(posedge clk);
         #1;
         req_valid = 1'b0;
         l2_ready = 1'b0;
@@ -540,12 +536,144 @@ module tb_cache_l1;
         if (dut.dmem_rsp_valid_o !== 1'b1 || dut.dmem_rsp_rdata_o !== 32'hE48E_4848 ||
             dut.dmem_rsp_origin_o !== pkg_metrics::ORIGIN_MEMORY)
             $fatal(1, "Miss hasta memoria no entrega dato valido en E48");
-        @(posedge clk); // E48
+        @(posedge clk);
         #1;
         fill_valid = 1'b0;
         rsp_ready = 1'b0;
         if (dut.state_q !== dut.L1_IDLE)
             $fatal(1, "L1 no quedo libre tras E48");
+
+        /**
+         * 13. Fix desalojo: instalacion tras miss con dmem_rsp_ready_i == 0
+         * (WB disponible y WB bloqueado) no vuelve a desalojar la linea recien instalada.
+         */
+        #1 rst_n = 1'b0;
+        #1 rst_n = 1'b1;
+        @(negedge clk);
+        check_empty();
+
+        // Poblar conjunto 2: via 0 valida (victima LRU = 0) y via 1 valida
+        dut.block_valid_q[2][0] = 1'b1;
+        dut.block_tag_q[2][0] = 21'h10;
+        dut.block_dirty_q[2][0] = 1'b1;
+        dut.block_data_q[2][0] = {8{32'h1111_2222}};
+        dut.block_valid_q[2][1] = 1'b1;
+        dut.block_tag_q[2][1] = 21'h11;
+        dut.lru_victim_q[2] = 1'b0;
+
+        // 13a. WB disponible durante todo el recorrido y dmem_rsp_ready_i == 0
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b0;
+        req_addr = 32'h00015044; // Conjunto 2 (0x40), palabra 1
+        l2_ready = 1'b1;
+        l2_accept_id = 2'd1;
+        wb_push_ready = 1'b1;
+        rsp_ready = 1'b0;
+        @(posedge clk); #1;
+        req_valid = 1'b0;
+        l2_ready = 1'b0;
+
+        // Victima desalojada en el ciclo siguiente; luego wb_push_valid_o debe quedar en 0
+        if (dut.wb_push_valid_o !== 1'b1 || dut.perf_events_o.eviction.valid !== 1'b1)
+            $fatal(1, "Victima original no se desalojo en 13a");
+        @(posedge clk); #1;
+        if (dut.wb_push_valid_o !== 1'b0 || dut.evict_pending_q !== 1'b0)
+            $fatal(1, "wb_push_valid_o no bajo tras handshake de victima");
+
+        // Llega fill mientras rsp_ready = 0 y wb_push_ready = 1
+        @(negedge clk);
+        fill_valid = 1'b1;
+        fill_base = 32'h00015040;
+        fill_source = pkg_memory::FILL_L2;
+        fill_id = 2'd1;
+        fill_dirty = 1'b0;
+        for (integer w_idx = 0; w_idx < 8; w_idx++) begin
+            fill_data[32 * w_idx +: 32] = 32'h7777_0000 + w_idx;
+        end
+        @(posedge clk); #1;
+        fill_valid = 1'b0;
+
+        // Sostener rsp_ready = 0 por 4 ciclos con wb_push_ready = 1:
+        // la linea instalada debe seguir valida con sus datos y sin re-ofrecerse a WB
+        for (integer stall_c = 0; stall_c < 4; stall_c++) begin
+            if (dut.state_q !== dut.L1_COMPLETE_ACCESS ||
+                dut.block_valid_q[2][0] !== 1'b1 ||
+                dut.block_tag_q[2][0] !== 21'h2A ||
+                dut.block_data_q[2][0][63:32] !== 32'h7777_0001 ||
+                dut.wb_push_valid_o !== 1'b0 ||
+                dut.perf_events_o.eviction.valid !== 1'b0 ||
+                dut.dmem_rsp_valid_o !== 1'b1 ||
+                dut.dmem_rsp_rdata_o !== 32'h7777_0001 ||
+                dut.dmem_rsp_origin_o !== pkg_metrics::ORIGIN_L2)
+                $fatal(1, "Linea instalada se desalojo o respuesta inestable en stall ciclo %0d (13a)", stall_c);
+            @(posedge clk); #1;
+        end
+
+        // CPU consume una unica vez
+        @(negedge clk);
+        rsp_ready = 1'b1;
+        @(posedge clk); #1;
+        rsp_ready = 1'b0;
+        if (dut.state_q !== dut.L1_IDLE || dut.dmem_rsp_valid_o !== 1'b0 ||
+            dut.block_valid_q[2][0] !== 1'b1 || dut.block_data_q[2][0][63:32] !== 32'h7777_0001)
+            $fatal(1, "Fallo tras consumo unico de CPU en 13a");
+
+        // 13b. WB bloqueado al llegar fill y desbloqueado despues con rsp_ready = 0
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b0;
+        req_addr = 32'h00016048; // Conjunto 2, victima LRU ahora es via 1
+        l2_ready = 1'b1;
+        l2_accept_id = 2'd2;
+        wb_push_ready = 1'b0; // WB bloqueado
+        rsp_ready = 1'b0;
+        @(posedge clk); #1;
+        req_valid = 1'b0;
+        l2_ready = 1'b0;
+
+        // Llega fill mientras WB sigue bloqueado -> se guarda en input_data_q
+        @(negedge clk);
+        fill_valid = 1'b1;
+        fill_base = 32'h00016040;
+        fill_source = pkg_memory::FILL_L2;
+        fill_id = 2'd2;
+        fill_data[95:64] = 32'h8888_0002;
+        @(posedge clk); #1;
+        fill_valid = 1'b0;
+        if (dut.input_valid_q !== 1'b1 || dut.wb_push_valid_o !== 1'b1)
+            $fatal(1, "Fill no espero en entrada mientras WB estaba bloqueado (13b)");
+
+        // Se desbloquea WB (wb_push_ready = 1) pero CPU sigue detenida (rsp_ready = 0):
+        // desaloja victima una sola vez e instala linea nueva reteniendo respuesta
+        @(negedge clk);
+        wb_push_ready = 1'b1;
+        #1;
+        if (dut.perf_events_o.eviction.valid !== 1'b1 || dut.dmem_rsp_valid_o !== 1'b1 ||
+            dut.dmem_rsp_rdata_o !== 32'h8888_0002)
+            $fatal(1, "No desalojo ni respondio al liberarse WB en 13b");
+        @(posedge clk); #1;
+
+        // En ciclos siguientes con rsp_ready = 0 y wb_push_ready = 1: no re-desaloja linea nueva
+        for (integer stall_c = 0; stall_c < 3; stall_c++) begin
+            if (dut.block_valid_q[2][1] !== 1'b1 ||
+                dut.block_data_q[2][1][95:64] !== 32'h8888_0002 ||
+                dut.wb_push_valid_o !== 1'b0 ||
+                dut.perf_events_o.eviction.valid !== 1'b0 ||
+                dut.dmem_rsp_valid_o !== 1'b1 ||
+                dut.dmem_rsp_rdata_o !== 32'h8888_0002)
+                $fatal(1, "Linea nueva re-desalojada en stall ciclo %0d (13b)", stall_c);
+            @(posedge clk); #1;
+        end
+
+        @(negedge clk);
+        rsp_ready = 1'b1;
+        @(posedge clk); #1;
+        rsp_ready = 1'b0;
+        wb_push_ready = 1'b0;
+        if (dut.state_q !== dut.L1_IDLE || dut.dmem_rsp_valid_o !== 1'b0 ||
+            dut.block_valid_q[2][1] !== 1'b1)
+            $fatal(1, "Fallo tras consumo unico de CPU en 13b");
 
         $display("PASS L1: reset inicial, repetido y conservacion de invalidez");
         $display("PASS L1: id valido solo tras aceptacion L2 y cancelado por reset");
@@ -557,6 +685,7 @@ module tb_cache_l1;
         $display("PASS L1: fill, desalojo WB limpio/sucio, write-allocate y forwarding (L1-6)");
         $display("PASS L1: respuesta retenida, error de rango, retorno ajeno y fill_error (L1-7)");
         $display("PASS L1: contencion wb_probe_busy, reset en vuelo y latencias E1/E9/E48 (L1-8)");
+        $display("PASS L1: instalacion tras miss con respuesta retenida sin re-desalojar linea nueva");
         $finish;
     end
 endmodule

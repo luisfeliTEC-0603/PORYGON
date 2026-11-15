@@ -87,13 +87,6 @@ module cache_l1 #(
     localparam integer WAY_INDEX_W = pkg_memory::id_width(pkg_memory::L1_WAYS);
     localparam integer L2_ID_W = pkg_memory::id_width(L2_MAX_INFLIGHT);
 
-    /**
-     * @brief Frontera de reset para las ofertas y aceptaciones de L1.
-     * @details El emisor presenta valid y el receptor ready; solo ambos a uno
-     * en el flanco positivo transfieren una operacion. Con rst_ni=0, L1 baja
-     * su lado de cada canal y evita transferencias aunque el vecino lo active.
-     * La consulta WB no tiene handshake, pero tambien se desactiva en reset.
-     */
     logic req_ready_internal;
     logic rsp_valid_internal;
     logic wb_push_valid_internal;
@@ -108,25 +101,12 @@ module cache_l1 #(
     assign l2_get_valid_o = rst_ni && l2_get_valid_internal;
     assign fill_ready_o = rst_ni && fill_ready_internal;
 
-    /**
-     * @brief Datos y metadatos registrados, indexados por conjunto y via.
-     * @details valid autoriza el uso de tag/datos; dirty indica cambios que
-     * deben conservarse al desalojar. La victima permanecera en su propia via
-     * hasta que WB la acepte, sin duplicarla en otro registro de bloque.
-     * lru_victim identifica la via a reemplazar cuando ambas estan validas:
-     * acceder a via 0 dejara victima 1 y acceder a via 1 dejara victima 0.
-     */
     pkg_memory::line_t block_data_q [0:SET_COUNT-1][0:pkg_memory::L1_WAYS-1];
     logic [TAG_W-1:0] block_tag_q [0:SET_COUNT-1][0:pkg_memory::L1_WAYS-1];
     logic block_valid_q [0:SET_COUNT-1][0:pkg_memory::L1_WAYS-1];
     logic block_dirty_q [0:SET_COUNT-1][0:pkg_memory::L1_WAYS-1];
     logic lru_victim_q [0:SET_COUNT-1];
 
-    /**
-     * @brief Fase de la demanda atendida por L1, no estado de un bloque.
-     * @details El enum da nombres a cuatro valores de dos bits. El hit de un
-     * ciclo se completa en L1_IDLE sin recorrer las fases de miss.
-     */
     typedef enum logic [1:0] {
         L1_IDLE,             /** Sin demanda; permite comenzar una busqueda. */
         L1_GET_BLOCK,        /** Consultar WB u ofrecer la solicitud a L2. */
@@ -137,8 +117,9 @@ module cache_l1 #(
     l1_state_t state_q;
     l1_state_t next_state;
 
-    /** @brief Una demanda pendiente y su via destino. */
+    /** @brief Demanda pendiente, victima pendiente de desalojo y via destino. */
     logic pending_valid_q;
+    logic evict_pending_q;
     pkg_memory::address_t pending_addr_q;
     logic pending_write_q;
     pkg_memory::word_t pending_wdata_q;
@@ -161,11 +142,6 @@ module cache_l1 #(
     logic response_error_q;
     pkg_metrics::demand_origin_t response_origin_q;
 
-    /**
-     * @brief Decodificacion de direccion, busqueda de hit/victima y estado de miss.
-     * @details Extrae conjunto [10:5], tag [31:11] y palabra [4:2]. Compara
-     * tags en paralelo en ambas vias y deriva los campos de la demanda pendiente.
-     */
     logic [SET_INDEX_W-1:0] req_set;
     logic [TAG_W-1:0] req_tag;
     logic [2:0] req_word_idx;
@@ -192,7 +168,6 @@ module cache_l1 #(
     logic wb_push_handshake;
     logic fill_handshake;
 
-    logic dest_way_valid;
     pkg_memory::address_t dest_way_base;
     pkg_memory::line_t dest_way_data;
     logic dest_way_dirty;
@@ -239,12 +214,11 @@ module cache_l1 #(
     assign victim_way = !block_valid_q[req_set][0] ? 1'b0 :
                         (!block_valid_q[req_set][1] ? 1'b1 : lru_victim_q[req_set]);
 
-    assign dest_way_valid = block_valid_q[pending_set][destination_way_q];
     assign dest_way_base = {block_tag_q[pending_set][destination_way_q],
                             pending_set, {BLOCK_OFFSET_W{1'b0}}};
     assign dest_way_data = block_data_q[pending_set][destination_way_q];
     assign dest_way_dirty = block_dirty_q[pending_set][destination_way_q];
-    assign way_available_now = !dest_way_valid || wb_push_handshake;
+    assign way_available_now = !evict_pending_q || wb_push_handshake;
 
     assign fill_source_valid =
         ((fill_source_i == pkg_memory::FILL_WB) && !l2_id_valid_q) ||
@@ -300,9 +274,9 @@ module cache_l1 #(
     end
 
     /**
-     * @brief Control combinacional de salidas, intenciones y proximo estado (L1-3..L1-7).
-     * @details Valores por defecto inactivos evitan latches. Gestiona hits E1,
-     * respuestas retenidas, errores de rango/fill, desalojo WB e instalacion.
+     * @brief Control combinacional de salidas, intenciones y proximo estado.
+     * @details Desacopla el desalojo de victima (evict_pending_q) de la retencion
+     * de respuesta CPU (response_valid_q) para no re-ofrecer lineas instaladas.
      */
     always_comb begin
         req_ready_internal = 1'b0;
@@ -327,8 +301,8 @@ module cache_l1 #(
         store_in_input_now = 1'b0;
         fill_error_now = 1'b0;
 
-        // Desalojo continuo de victima mientras siga ocupando la via destino
-        if (pending_valid_q && dest_way_valid) begin
+        // Desalojo continuo exclusivo de la victima original hasta wb_push_handshake
+        if (evict_pending_q) begin
             wb_push_valid_internal = 1'b1;
             wb_push_base_o = dest_way_base;
             wb_push_data_o = dest_way_data;
@@ -504,13 +478,14 @@ module cache_l1 #(
     end
 
     /**
-     * @brief Seguimiento de demanda pendiente, entrada reservada, id L2 y retencion.
-     * @details Reset domina incluso con valid/ready activos. Retiene respuestas
-     * cuando !dmem_rsp_ready_i y limpia reservas al completarse la entrega.
+     * @brief Seguimiento de demanda pendiente, victima a desalojar, id L2 y retencion.
+     * @details evict_pending_q se mantiene hasta wb_push_handshake; pending_valid_q
+     * se cierra al instalar o fallar, delegando la retencion CPU a response_valid_q.
      */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             pending_valid_q <= 1'b0;
+            evict_pending_q <= 1'b0;
             pending_addr_q <= '0;
             pending_write_q <= 1'b0;
             pending_wdata_q <= '0;
@@ -543,6 +518,7 @@ module cache_l1 #(
 
             if (dmem_req_handshake && miss_now) begin
                 pending_valid_q <= 1'b1;
+                evict_pending_q <= block_valid_q[req_set][victim_way];
                 pending_addr_q <= dmem_req_addr_i;
                 pending_write_q <= dmem_req_write_i;
                 pending_wdata_q <= dmem_req_wdata_i;
@@ -554,6 +530,10 @@ module cache_l1 #(
                 l2_offered_q <= 1'b1;
             end
 
+            if (wb_push_handshake) begin
+                evict_pending_q <= 1'b0;
+            end
+
             if (l2_get_handshake) begin
                 l2_id_q <= l2_get_accept_id_i;
                 l2_id_valid_q <= 1'b1;
@@ -563,10 +543,9 @@ module cache_l1 #(
             if (fill_handshake && fill_match) begin
                 l2_id_valid_q <= 1'b0;
                 if (fill_error_now) begin
+                    pending_valid_q <= 1'b0;
                     input_reserved_q <= 1'b0;
-                    if (dmem_rsp_handshake) begin
-                        pending_valid_q <= 1'b0;
-                    end else begin
+                    if (!dmem_rsp_handshake) begin
                         response_valid_q <= 1'b1;
                         response_data_q <= 32'b0;
                         response_error_q <= 1'b1;
@@ -581,6 +560,7 @@ module cache_l1 #(
             end
 
             if (install_now) begin
+                pending_valid_q <= 1'b0;
                 input_valid_q <= 1'b0;
                 input_reserved_q <= 1'b0;
                 if (!dmem_rsp_handshake) begin
