@@ -17,8 +17,6 @@
  *   rd1_set_i/rd1_way_i con sel_set_o/sel_way_o para que rd1_data_i
  *   corresponda a la víctima de la operación elegida en el mismo ciclo.
  *
- *   ev_eb dura un solo ciclo, el del handshake.
- *
  * @param N     Número de operaciones en vuelo.
  * @param AW    Ancho de dirección.
  * @param LW    Ancho de línea.
