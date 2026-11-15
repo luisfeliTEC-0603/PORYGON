@@ -1,8 +1,3 @@
-# `cache_l2.md` — versión actualizada
-
-Mantengo el formato, el tono y la estructura de secciones. Los cambios principales son: añadir `l2_admit_arb` como módulo, actualizar la tabla de requisitos (Fallo 1, 2, 3 y antigüedad de admisión), ajustar la sección del top (ya no tiene la lógica de antigüedad inline), añadir la cola de `get_done` en `l2_perf`, y actualizar los diagramas afectados.
-
-```markdown
 # Arquitectura de L2: módulos, conexiones y cómo resuelven P2-07 y P2-08
 
 Guía de lectura del RTL de `rtl/memory/cache_l2`. Cada módulo se explica con cuatro cosas: qué hace, cómo contribuye a los issues, con quién se conecta y un diagrama de su estructura.
