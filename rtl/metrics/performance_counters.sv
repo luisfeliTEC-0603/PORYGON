@@ -65,6 +65,21 @@ module performance_counters #(
         C_ID_OCCUPIED, C_ID_TRANSFERS, C_ID_STALLS,
         C_EX_OCCUPIED, C_EX_TRANSFERS, C_EX_STALLS,
         C_WB_OCCUPIED, C_WB_TRANSFERS, C_WB_STALLS,
+        C_DM_COMPLETED, C_DM_FAILED, C_DM_READS, C_DM_WRITES,
+        C_DM_LATENCY, C_DM_READ_LATENCY, C_DM_WRITE_LATENCY,
+        C_DM_MISS_WB, C_DM_MISS_L2, C_DM_MISS_MEM,
+        C_L1_READS, C_L1_WRITES,
+        C_L1_READ_HITS, C_L1_READ_MISSES, C_L1_WRITE_HITS, C_L1_WRITE_MISSES,
+        C_L1_INVALID_READS, C_L1_INVALID_WRITES,
+        C_L1_EVICT_CLEAN, C_L1_EVICT_DIRTY,
+        C_L2_DEMANDS, C_L2_HITS, C_L2_MISSES, C_L2_PROMOTIONS,
+        C_L2_EVICT_CLEAN, C_L2_EVICT_DIRTY,
+        C_L2_INFLIGHT_SUM, C_L2_FULL, C_L2_GET_WAIT,
+        C_WBUF_ENQUEUED, C_WBUF_FORWARDED, C_WBUF_SENT, C_WBUF_INSTALLED,
+        C_WBUF_OCC_SUM, C_WBUF_FULL,
+        C_WBUF_PUSH_WAIT, C_WBUF_INSTALL_WAIT, C_WBUF_RAW_WAIT,
+        C_EB_ENQUEUED, C_EB_SENT, C_EB_WRITTEN,
+        C_EB_OCC_SUM, C_EB_FULL, C_EB_PUSH_WAIT, C_EB_RAW_WAIT,
         C_TOTAL
     } counter_id_e;
 
@@ -88,6 +103,44 @@ module performance_counters #(
 
     /** @brief Suma de 65 bits; el bit alto delata el desbordamiento. */
     logic [64:0] wide_sum;
+
+    /**
+     * @brief Seguimiento de la demanda CPU en vuelo.
+     * @details La LSU mantiene una sola demanda pendiente, asi que basta un
+     * registro y no una tabla. El tiempo arranca en la primera presentacion
+     * en EX y termina al consumir la respuesta; los ciclos de espera por miss
+     * se guardan hasta el cierre para repartirlos segun el origen.
+     * @see docs/ii-proyecto/metrics.md seccion 4
+     */
+    logic demand_active_q;
+    logic demand_write_q;
+    pkg_metrics::counter_t demand_cycles_q;
+    pkg_metrics::counter_t demand_miss_q;
+
+    logic demand_is_write;
+    logic demand_miss_cycle;
+    pkg_metrics::counter_t demand_cycles_now;
+    pkg_metrics::counter_t demand_miss_now;
+
+    /** @brief Maximos de ocupacion; se actualizan por comparacion, no por suma. */
+    pkg_metrics::counter_t l2_inflight_max_q;
+    pkg_metrics::counter_t wb_occupancy_max_q;
+    pkg_metrics::counter_t eb_occupancy_max_q;
+
+    /** @brief Ciclo de congelamiento global atribuible a un miss en curso. */
+    assign demand_miss_cycle = cpu_events_i.stall &&
+        (cpu_events_i.wait_reason == pkg_metrics::WAIT_MISS);
+
+    /**
+     * @details Si la presentacion y el consumo caen en el mismo flanco la
+     * demanda dura un ciclo; en general la latencia es
+     * flanco_fin - flanco_inicio + 1.
+     */
+    assign demand_cycles_now = (cpu_events_i.dmem_begin && !demand_active_q)
+        ? 64'd1 : demand_cycles_q + 64'd1;
+    assign demand_miss_now = demand_miss_q + (demand_miss_cycle ? 64'd1 : 64'd0);
+    assign demand_is_write = (cpu_events_i.dmem_begin && !demand_active_q)
+        ? cpu_events_i.dmem_write : demand_write_q;
 
     /**
      * @brief Aceptacion de los controles del entorno.
@@ -151,6 +204,93 @@ module performance_counters #(
         delta[C_WB_OCCUPIED] = cpu_events_i.stage_occupied[3] ? 64'd1 : 64'd0;
         delta[C_WB_TRANSFERS] = cpu_events_i.stage_transfers[3] ? 64'd1 : 64'd0;
         delta[C_WB_STALLS] = cpu_events_i.stage_mem_stalls[3] ? 64'd1 : 64'd0;
+
+        // Demanda CPU: la latencia solo se acumula si termino correctamente,
+        // y sus ciclos de miss se cargan al origen que la resolvio.
+        if (cpu_events_i.dmem_done) begin
+            if (cpu_events_i.dmem_error) begin
+                delta[C_DM_FAILED] = 64'd1;
+            end else begin
+                delta[C_DM_COMPLETED] = 64'd1;
+                delta[C_DM_LATENCY] = demand_cycles_now;
+                if (demand_is_write) begin
+                    delta[C_DM_WRITES] = 64'd1;
+                    delta[C_DM_WRITE_LATENCY] = demand_cycles_now;
+                end else begin
+                    delta[C_DM_READS] = 64'd1;
+                    delta[C_DM_READ_LATENCY] = demand_cycles_now;
+                end
+                case (cpu_events_i.dmem_origin)
+                    pkg_metrics::ORIGIN_WB: delta[C_DM_MISS_WB] = demand_miss_now;
+                    pkg_metrics::ORIGIN_L2: delta[C_DM_MISS_L2] = demand_miss_now;
+                    pkg_metrics::ORIGIN_MEMORY: delta[C_DM_MISS_MEM] = demand_miss_now;
+                    default: ;
+                endcase
+            end
+        end
+
+        // L1: una solicitud invalida se cuenta como acceso pero no clasifica
+        // hit ni miss.
+        if (l1_events_i.access_valid) begin
+            if (l1_events_i.access_write) begin
+                delta[C_L1_WRITES] = 64'd1;
+            end else begin
+                delta[C_L1_READS] = 64'd1;
+            end
+            case (l1_events_i.access_result)
+                pkg_metrics::ACCESS_HIT:
+                    if (l1_events_i.access_write) delta[C_L1_WRITE_HITS] = 64'd1;
+                    else delta[C_L1_READ_HITS] = 64'd1;
+                pkg_metrics::ACCESS_MISS:
+                    if (l1_events_i.access_write) delta[C_L1_WRITE_MISSES] = 64'd1;
+                    else delta[C_L1_READ_MISSES] = 64'd1;
+                default:
+                    if (l1_events_i.access_write) delta[C_L1_INVALID_WRITES] = 64'd1;
+                    else delta[C_L1_INVALID_READS] = 64'd1;
+            endcase
+        end
+        if (l1_events_i.eviction.valid) begin
+            if (l1_events_i.eviction.dirty) delta[C_L1_EVICT_DIRTY] = 64'd1;
+            else delta[C_L1_EVICT_CLEAN] = 64'd1;
+        end
+
+        // L2: la demanda y su busqueda son eventos distintos; las
+        // instalaciones de WB no entran en hits ni misses de demanda.
+        delta[C_L2_DEMANDS] = l2_events_i.get_accept.valid ? 64'd1 : 64'd0;
+        if (l2_events_i.lookup.valid) begin
+            if (l2_events_i.lookup_hit) delta[C_L2_HITS] = 64'd1;
+            else delta[C_L2_MISSES] = 64'd1;
+        end
+        delta[C_L2_PROMOTIONS] = l2_events_i.promotion.valid ? 64'd1 : 64'd0;
+        delta[C_L2_EVICT_CLEAN] = l2_events_i.clean_discard.valid ? 64'd1 : 64'd0;
+        delta[C_L2_EVICT_DIRTY] = l2_events_i.dirty_eviction.valid ? 64'd1 : 64'd0;
+        delta[C_L2_INFLIGHT_SUM] = {32'd0, l2_events_i.inflight};
+        delta[C_L2_FULL] =
+            (l2_events_i.inflight == l2_events_i.capacity) ? 64'd1 : 64'd0;
+        delta[C_L2_GET_WAIT] = l2_events_i.get_wait ? 64'd1 : 64'd0;
+
+        // Write buffer: send_wait del estado describe la espera de instalacion.
+        delta[C_WBUF_ENQUEUED] = wb_events_i.enqueued.valid ? 64'd1 : 64'd0;
+        delta[C_WBUF_FORWARDED] = wb_events_i.forwarded.valid ? 64'd1 : 64'd0;
+        delta[C_WBUF_SENT] = wb_events_i.install_accept.valid ? 64'd1 : 64'd0;
+        delta[C_WBUF_INSTALLED] = wb_events_i.install_done.valid ? 64'd1 : 64'd0;
+        delta[C_WBUF_OCC_SUM] = {32'd0, wb_events_i.state.occupancy};
+        delta[C_WBUF_FULL] =
+            (wb_events_i.state.occupancy == wb_events_i.state.capacity) ? 64'd1 : 64'd0;
+        delta[C_WBUF_PUSH_WAIT] = wb_events_i.state.push_wait ? 64'd1 : 64'd0;
+        delta[C_WBUF_INSTALL_WAIT] = wb_events_i.state.send_wait ? 64'd1 : 64'd0;
+        delta[C_WBUF_RAW_WAIT] = wb_events_i.state.raw_wait ? 64'd1 : 64'd0;
+
+        // Eviction buffer: solo se cuenta como escrita la confirmacion correcta.
+        delta[C_EB_ENQUEUED] = eb_events_i.enqueued.valid ? 64'd1 : 64'd0;
+        delta[C_EB_SENT] = eb_events_i.write_accept.valid ? 64'd1 : 64'd0;
+        delta[C_EB_WRITTEN] =
+            (eb_events_i.write_done.valid && !eb_events_i.write_error) ? 64'd1 : 64'd0;
+        delta[C_EB_OCC_SUM] = {32'd0, eb_events_i.state.occupancy};
+        delta[C_EB_FULL] =
+            (eb_events_i.state.occupancy == eb_events_i.state.capacity) ? 64'd1 : 64'd0;
+        delta[C_EB_PUSH_WAIT] = eb_events_i.state.push_wait ? 64'd1 : 64'd0;
+        delta[C_EB_RAW_WAIT] = eb_events_i.state.raw_wait ? 64'd1 : 64'd0;
     end
 
     /**
@@ -171,6 +311,9 @@ module performance_counters #(
             for (int i = 0; i < NUM_COUNTERS; i++) begin
                 counters_q[i] <= '0;
             end
+            l2_inflight_max_q <= '0;
+            wb_occupancy_max_q <= '0;
+            eb_occupancy_max_q <= '0;
         end else if (start_accepted) begin
             running_q <= 1'b1;
             snapshot_valid_q <= 1'b0;
@@ -179,6 +322,9 @@ module performance_counters #(
             for (int i = 0; i < NUM_COUNTERS; i++) begin
                 counters_q[i] <= '0;
             end
+            l2_inflight_max_q <= '0;
+            wb_occupancy_max_q <= '0;
+            eb_occupancy_max_q <= '0;
         end else if (running_q) begin
             for (int i = 0; i < NUM_COUNTERS; i++) begin
                 wide_sum = {1'b0, counters_q[i]} + {1'b0, delta[i]};
@@ -187,10 +333,46 @@ module performance_counters #(
                     overflow_q <= 1'b1;
                 end
             end
+            if ({32'd0, l2_events_i.inflight} > l2_inflight_max_q) begin
+                l2_inflight_max_q <= {32'd0, l2_events_i.inflight};
+            end
+            if ({32'd0, wb_events_i.state.occupancy} > wb_occupancy_max_q) begin
+                wb_occupancy_max_q <= {32'd0, wb_events_i.state.occupancy};
+            end
+            if ({32'd0, eb_events_i.state.occupancy} > eb_occupancy_max_q) begin
+                eb_occupancy_max_q <= {32'd0, eb_events_i.state.occupancy};
+            end
             if (stop_accepted) begin
                 running_q <= 1'b0;
                 snapshot_valid_q <= 1'b1;
                 failed_q <= perf_stop_error_i;
+            end
+        end
+    end
+
+    /**
+     * @details El seguimiento solo vive dentro de la ventana. Al consumir la
+     * respuesta se libera, incluso si la presentacion ocurrio en ese mismo
+     * flanco, porque la latencia ya se publico como delta.
+     */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni || start_accepted) begin
+            demand_active_q <= 1'b0;
+            demand_write_q <= 1'b0;
+            demand_cycles_q <= '0;
+            demand_miss_q <= '0;
+        end else if (running_q) begin
+            if (cpu_events_i.dmem_done) begin
+                demand_active_q <= 1'b0;
+                demand_cycles_q <= '0;
+                demand_miss_q <= '0;
+            end else if (cpu_events_i.dmem_begin || demand_active_q) begin
+                demand_active_q <= 1'b1;
+                demand_cycles_q <= demand_cycles_now;
+                demand_miss_q <= demand_miss_now;
+                if (cpu_events_i.dmem_begin && !demand_active_q) begin
+                    demand_write_q <= cpu_events_i.dmem_write;
+                end
             end
         end
     end
@@ -232,5 +414,58 @@ module performance_counters #(
         perf_snapshot_o.cpu.stage_wb.occupied = counters_q[C_WB_OCCUPIED];
         perf_snapshot_o.cpu.stage_wb.transfers = counters_q[C_WB_TRANSFERS];
         perf_snapshot_o.cpu.stage_wb.mem_stalls = counters_q[C_WB_STALLS];
+
+        perf_snapshot_o.dmem.completed = counters_q[C_DM_COMPLETED];
+        perf_snapshot_o.dmem.failed = counters_q[C_DM_FAILED];
+        perf_snapshot_o.dmem.reads_completed = counters_q[C_DM_READS];
+        perf_snapshot_o.dmem.writes_completed = counters_q[C_DM_WRITES];
+        perf_snapshot_o.dmem.latency_sum = counters_q[C_DM_LATENCY];
+        perf_snapshot_o.dmem.read_latency_sum = counters_q[C_DM_READ_LATENCY];
+        perf_snapshot_o.dmem.write_latency_sum = counters_q[C_DM_WRITE_LATENCY];
+        perf_snapshot_o.dmem.miss_stalls_wb = counters_q[C_DM_MISS_WB];
+        perf_snapshot_o.dmem.miss_stalls_l2 = counters_q[C_DM_MISS_L2];
+        perf_snapshot_o.dmem.miss_stalls_mem = counters_q[C_DM_MISS_MEM];
+
+        perf_snapshot_o.l1.reads = counters_q[C_L1_READS];
+        perf_snapshot_o.l1.writes = counters_q[C_L1_WRITES];
+        perf_snapshot_o.l1.read_hits = counters_q[C_L1_READ_HITS];
+        perf_snapshot_o.l1.read_misses = counters_q[C_L1_READ_MISSES];
+        perf_snapshot_o.l1.write_hits = counters_q[C_L1_WRITE_HITS];
+        perf_snapshot_o.l1.write_misses = counters_q[C_L1_WRITE_MISSES];
+        perf_snapshot_o.l1.invalid_reads = counters_q[C_L1_INVALID_READS];
+        perf_snapshot_o.l1.invalid_writes = counters_q[C_L1_INVALID_WRITES];
+        perf_snapshot_o.l1.evictions_clean = counters_q[C_L1_EVICT_CLEAN];
+        perf_snapshot_o.l1.evictions_dirty = counters_q[C_L1_EVICT_DIRTY];
+
+        perf_snapshot_o.l2.demands = counters_q[C_L2_DEMANDS];
+        perf_snapshot_o.l2.hits = counters_q[C_L2_HITS];
+        perf_snapshot_o.l2.misses = counters_q[C_L2_MISSES];
+        perf_snapshot_o.l2.promotions = counters_q[C_L2_PROMOTIONS];
+        perf_snapshot_o.l2.evictions_clean = counters_q[C_L2_EVICT_CLEAN];
+        perf_snapshot_o.l2.evictions_dirty = counters_q[C_L2_EVICT_DIRTY];
+        perf_snapshot_o.l2.inflight_sum = counters_q[C_L2_INFLIGHT_SUM];
+        perf_snapshot_o.l2.inflight_max = l2_inflight_max_q;
+        perf_snapshot_o.l2.full_cycles = counters_q[C_L2_FULL];
+        perf_snapshot_o.l2.get_wait_cycles = counters_q[C_L2_GET_WAIT];
+
+        perf_snapshot_o.wb.enqueued = counters_q[C_WBUF_ENQUEUED];
+        perf_snapshot_o.wb.forwarded = counters_q[C_WBUF_FORWARDED];
+        perf_snapshot_o.wb.sent = counters_q[C_WBUF_SENT];
+        perf_snapshot_o.wb.installed = counters_q[C_WBUF_INSTALLED];
+        perf_snapshot_o.wb.occupancy_sum = counters_q[C_WBUF_OCC_SUM];
+        perf_snapshot_o.wb.occupancy_max = wb_occupancy_max_q;
+        perf_snapshot_o.wb.full_cycles = counters_q[C_WBUF_FULL];
+        perf_snapshot_o.wb.push_wait_cycles = counters_q[C_WBUF_PUSH_WAIT];
+        perf_snapshot_o.wb.install_wait_cycles = counters_q[C_WBUF_INSTALL_WAIT];
+        perf_snapshot_o.wb.raw_wait_cycles = counters_q[C_WBUF_RAW_WAIT];
+
+        perf_snapshot_o.eb.enqueued = counters_q[C_EB_ENQUEUED];
+        perf_snapshot_o.eb.sent = counters_q[C_EB_SENT];
+        perf_snapshot_o.eb.written = counters_q[C_EB_WRITTEN];
+        perf_snapshot_o.eb.occupancy_sum = counters_q[C_EB_OCC_SUM];
+        perf_snapshot_o.eb.occupancy_max = eb_occupancy_max_q;
+        perf_snapshot_o.eb.full_cycles = counters_q[C_EB_FULL];
+        perf_snapshot_o.eb.push_wait_cycles = counters_q[C_EB_PUSH_WAIT];
+        perf_snapshot_o.eb.raw_wait_cycles = counters_q[C_EB_RAW_WAIT];
     end
 endmodule
