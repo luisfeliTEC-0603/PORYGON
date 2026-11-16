@@ -347,7 +347,7 @@ module performance_counters #(
     assign delta[C_L2_EVICT_CLEAN] = (l2_events_i.clean_discard.valid) ? 64'd1 : 64'd0;
     assign delta[C_L2_EVICT_DIRTY] = (l2_events_i.dirty_eviction.valid) ? 64'd1 : 64'd0;
     assign delta[C_L2_INFLIGHT_SUM] = {32'd0, l2_events_i.inflight};
-    assign delta[C_L2_FULL] = (l2_events_i.inflight == l2_events_i.capacity) ? 64'd1 : 64'd0;
+    assign delta[C_L2_FULL] = (l2_events_i.capacity != 0 && l2_events_i.inflight == l2_events_i.capacity) ? 64'd1 : 64'd0;
     assign delta[C_L2_GET_WAIT] = (l2_events_i.get_wait) ? 64'd1 : 64'd0;
 
     // Write buffer: send_wait del estado describe la espera de instalacion.
@@ -356,7 +356,7 @@ module performance_counters #(
     assign delta[C_WBUF_SENT] = (wb_events_i.install_accept.valid) ? 64'd1 : 64'd0;
     assign delta[C_WBUF_INSTALLED] = (wb_events_i.install_done.valid) ? 64'd1 : 64'd0;
     assign delta[C_WBUF_OCC_SUM] = {32'd0, wb_events_i.state.occupancy};
-    assign delta[C_WBUF_FULL] = (wb_events_i.state.occupancy == wb_events_i.state.capacity) ? 64'd1 : 64'd0;
+    assign delta[C_WBUF_FULL] = (wb_events_i.state.capacity != 0 && wb_events_i.state.occupancy == wb_events_i.state.capacity) ? 64'd1 : 64'd0;
     assign delta[C_WBUF_PUSH_WAIT] = (wb_events_i.state.push_wait) ? 64'd1 : 64'd0;
     assign delta[C_WBUF_INSTALL_WAIT] = (wb_events_i.state.send_wait) ? 64'd1 : 64'd0;
     assign delta[C_WBUF_RAW_WAIT] = (wb_events_i.state.raw_wait) ? 64'd1 : 64'd0;
@@ -366,7 +366,7 @@ module performance_counters #(
     assign delta[C_EB_SENT] = (eb_events_i.write_accept.valid) ? 64'd1 : 64'd0;
     assign delta[C_EB_WRITTEN] = (eb_events_i.write_done.valid && !eb_events_i.write_error) ? 64'd1 : 64'd0;
     assign delta[C_EB_OCC_SUM] = {32'd0, eb_events_i.state.occupancy};
-    assign delta[C_EB_FULL] = (eb_events_i.state.occupancy == eb_events_i.state.capacity) ? 64'd1 : 64'd0;
+    assign delta[C_EB_FULL] = (eb_events_i.state.capacity != 0 && eb_events_i.state.occupancy == eb_events_i.state.capacity) ? 64'd1 : 64'd0;
     assign delta[C_EB_PUSH_WAIT] = (eb_events_i.state.push_wait) ? 64'd1 : 64'd0;
     assign delta[C_EB_RAW_WAIT] = (eb_events_i.state.raw_wait) ? 64'd1 : 64'd0;
 

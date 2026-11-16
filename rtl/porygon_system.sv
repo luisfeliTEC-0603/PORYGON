@@ -15,6 +15,7 @@ module porygon_system #(
     parameter integer INSTRUCTION_INIT_BUNDLES = 0,
     parameter DATA_INIT_FILE = "",
     parameter integer DATA_INIT_BYTES = 0,
+    parameter bit REFERENCE_WITHOUT_CACHE = 1'b0,
     parameter integer WRITE_BUFFER_DEPTH = pkg_memory::WRITE_BUFFER_DEPTH_DEFAULT,
     parameter integer EVICTION_BUFFER_DEPTH = pkg_memory::EVICTION_BUFFER_DEPTH_DEFAULT,
     parameter integer L2_MAX_INFLIGHT = pkg_memory::L2_MAX_INFLIGHT_DEFAULT,
@@ -100,6 +101,7 @@ module porygon_system #(
     );
 
     data_memory_hierarchy #(
+        .REFERENCE_WITHOUT_CACHE(REFERENCE_WITHOUT_CACHE),
         .WRITE_BUFFER_DEPTH(WRITE_BUFFER_DEPTH),
         .EVICTION_BUFFER_DEPTH(EVICTION_BUFFER_DEPTH),
         .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT),

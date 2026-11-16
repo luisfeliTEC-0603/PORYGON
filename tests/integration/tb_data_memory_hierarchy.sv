@@ -94,7 +94,7 @@ module tb_data_memory_hierarchy;
             raw_waits += int'(dut.eb_events.state.raw_wait);
             eb_waits += int'(dut.eb_events.state.push_wait);
             wb_full += int'(dut.wb_events.state.occupancy == WB_DEPTH);
-            if (dut.u_l1.input_valid_q) input_used = 1;
+            if (dut.gen_cached.u_l1.input_valid_q) input_used = 1;
             if (dut.return_error.valid || dut.l1_events.error.valid &&
                 dut.l1_events.error.kind == pkg_metrics::ERROR_PROTOCOL ||
                 dut.l2_events.error.valid || dut.wb_events.error.valid || dut.eb_events.error.valid)
@@ -105,19 +105,19 @@ module tb_data_memory_hierarchy;
 
     /** @brief Tras cada flanco, ninguna linea valida se conserva en ambos niveles. */
     always @(negedge clk) if (rst_n) begin
-        for (integer set_index = 0; set_index < dut.u_l1.SET_COUNT; set_index++) begin
+        for (integer set_index = 0; set_index < dut.gen_cached.u_l1.SET_COUNT; set_index++) begin
             for (integer way = 0; way < pkg_memory::L1_WAYS; way++) begin
-                if (dut.u_l1.block_valid_q[set_index][way]) begin
+                if (dut.gen_cached.u_l1.block_valid_q[set_index][way]) begin
                     pkg_memory::address_t line_base;
                     integer l2_set;
-                    line_base = (32'(dut.u_l1.block_tag_q[set_index][way]) <<
-                        (dut.u_l1.SET_INDEX_W + dut.u_l1.BLOCK_OFFSET_W)) |
-                        (set_index << dut.u_l1.BLOCK_OFFSET_W);
-                    l2_set = (line_base / pkg_memory::LINE_BYTES) % dut.u_l2.SETS;
+                    line_base = (32'(dut.gen_cached.u_l1.block_tag_q[set_index][way]) <<
+                        (dut.gen_cached.u_l1.SET_INDEX_W + dut.gen_cached.u_l1.BLOCK_OFFSET_W)) |
+                        (set_index << dut.gen_cached.u_l1.BLOCK_OFFSET_W);
+                    l2_set = (line_base / pkg_memory::LINE_BYTES) % dut.gen_cached.u_l2.SETS;
                     for (integer l2_way = 0; l2_way < pkg_memory::L2_WAYS; l2_way++)
-                        if (dut.u_l2.u_tags.valid_q[l2_set*pkg_memory::L2_WAYS+l2_way] &&
-                            dut.u_l2.u_tags.tag_q[l2_set*pkg_memory::L2_WAYS+l2_way] ==
-                            (line_base >> (dut.u_l2.OFFSET_W+dut.u_l2.SET_W)))
+                        if (dut.gen_cached.u_l2.u_tags.valid_q[l2_set*pkg_memory::L2_WAYS+l2_way] &&
+                            dut.gen_cached.u_l2.u_tags.tag_q[l2_set*pkg_memory::L2_WAYS+l2_way] ==
+                            (line_base >> (dut.gen_cached.u_l2.OFFSET_W+dut.gen_cached.u_l2.SET_W)))
                             $fatal(1, "Linea valida duplicada en L1 y L2: %h", line_base);
                 end
             end
@@ -263,14 +263,14 @@ module tb_data_memory_hierarchy;
         force dut.wb_push_data = inject_data;
         force dut.wb_push_dirty = 1'b1;
         /** La victima inyectada no pertenece a L1 y no debe invalidar su via. */
-        force dut.u_l1.wb_push_handshake = 1'b0;
+        force dut.gen_cached.u_l1.wb_push_handshake = 1'b0;
         for (integer index = 0; index < WB_DEPTH; index++)
             inject_line(BASE+32*index, 0);
         release dut.wb_push_valid;
         release dut.wb_push_base;
         release dut.wb_push_data;
         release dut.wb_push_dirty;
-        release dut.u_l1.wb_push_handshake;
+        release dut.gen_cached.u_l1.wb_push_handshake;
         access_word(BASE, 0, 0, 0, 0, pkg_metrics::ORIGIN_WB);
         if (forwards != 1 || !input_used || wb_full == 0 || gets != 2)
             $fatal(1, "Forwarding con WB lleno: fwd=%0d input=%b full=%0d gets=%0d", forwards, input_used, wb_full, gets);

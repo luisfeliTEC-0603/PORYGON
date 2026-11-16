@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 
 module tb_top;
+    parameter bit REFERENCE_WITHOUT_CACHE = 1'b0;
     import pkg_vliw::*;
 
     logic clk = 1'b0;
@@ -29,6 +30,7 @@ module tb_top;
     always #5 clk = ~clk;
 
     porygon_system #(
+        .REFERENCE_WITHOUT_CACHE(REFERENCE_WITHOUT_CACHE),
         .INSTRUCTION_INIT_FILE("tests/programs/top/top_integration.mem"),
         .INSTRUCTION_INIT_BUNDLES(28),
         .DATA_INIT_FILE("tests/programs/top/top_data.mem"),

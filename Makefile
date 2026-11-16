@@ -36,9 +36,9 @@ HIERARCHY_RTL_SOURCES := $(MEMORY_DIR)/memory_sp_ram.sv \
 	$(MEMORY_DIR)/eviction_buffer.sv $(MEMORY_DIR)/write_buffer.sv \
 	$(MEMORY_DIR)/cache_l1.sv $(wildcard $(MEMORY_DIR)/cache_l2/*.sv) \
 	$(MEMORY_DIR)/line_return.sv $(RTL_DIR)/metrics/performance_counters.sv \
-	$(MEMORY_DIR)/data_memory_hierarchy.sv
+	$(MEMORY_DIR)/uncached_adapter.sv $(MEMORY_DIR)/data_memory_hierarchy.sv
 
-# Sistema conectado: ROM y jerarquia real, con observador pendiente de P2-10.
+# Sistema conectado: ROM, memoria seleccionable y observador P2-10.
 SYSTEM_RTL_SOURCES := $(RTL_SOURCES) \
 	$(MEMORY_DIR)/instruction_memory.sv $(HIERARCHY_RTL_SOURCES) \
 	$(RTL_DIR)/porygon_system.sv

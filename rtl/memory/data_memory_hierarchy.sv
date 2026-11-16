@@ -12,10 +12,12 @@
  * @details Todos
  * los canales de linea y metricas estan en clk_i; el controlador genera el
  * reloj y reset de main_memory. El retorno de memoria entrega datos solo a L1;
- * L2 observa exactamente ese consumo. P2-10 completa el observador conectado.
+ * L2 observa exactamente ese consumo. La referencia usa el mismo controlador,
+ * almacenamiento y observador, con un adaptador palabra/linea sin caches.
  * @see docs/ii-proyecto/skeletons.md
  */
 module data_memory_hierarchy #(
+    parameter bit REFERENCE_WITHOUT_CACHE = 1'b0,
     parameter integer WRITE_BUFFER_DEPTH = pkg_memory::WRITE_BUFFER_DEPTH_DEFAULT,
     parameter integer EVICTION_BUFFER_DEPTH = pkg_memory::EVICTION_BUFFER_DEPTH_DEFAULT,
     parameter integer L2_MAX_INFLIGHT = pkg_memory::L2_MAX_INFLIGHT_DEFAULT,
@@ -136,165 +138,233 @@ module data_memory_hierarchy #(
     pkg_metrics::error_event_t return_error;
     pkg_metrics::configuration_t configuration;
 
-    // Metadatos constantes de esta configuracion con ambas caches.
+    // Configuracion real de la rama elaborada; ausencias se exportan como cero.
     assign configuration.cpu_hz = pkg_memory::CPU_HZ;
     assign configuration.memory_bytes = pkg_memory::MEMORY_BYTES;
-    assign configuration.l1_bytes = pkg_memory::L1_BYTES;
-    assign configuration.l1_ways = pkg_memory::L1_WAYS;
-    assign configuration.l2_bytes = pkg_memory::L2_BYTES;
-    assign configuration.l2_ways = pkg_memory::L2_WAYS;
+    assign configuration.l1_bytes = REFERENCE_WITHOUT_CACHE ? 0 : pkg_memory::L1_BYTES;
+    assign configuration.l1_ways = REFERENCE_WITHOUT_CACHE ? 0 : pkg_memory::L1_WAYS;
+    assign configuration.l2_bytes = REFERENCE_WITHOUT_CACHE ? 0 : pkg_memory::L2_BYTES;
+    assign configuration.l2_ways = REFERENCE_WITHOUT_CACHE ? 0 : pkg_memory::L2_WAYS;
     assign configuration.line_bytes = pkg_memory::LINE_BYTES;
-    assign configuration.write_buffer_depth = WRITE_BUFFER_DEPTH;
-    assign configuration.eviction_buffer_depth = EVICTION_BUFFER_DEPTH;
-    assign configuration.l2_max_inflight = L2_MAX_INFLIGHT;
+    assign configuration.write_buffer_depth = REFERENCE_WITHOUT_CACHE ? 0 : WRITE_BUFFER_DEPTH;
+    assign configuration.eviction_buffer_depth = REFERENCE_WITHOUT_CACHE ? 0 : EVICTION_BUFFER_DEPTH;
+    assign configuration.l2_max_inflight = REFERENCE_WITHOUT_CACHE ? 0 : L2_MAX_INFLIGHT;
     assign configuration.mem_clock_div = MEM_CLOCK_DIV;
     assign configuration.mem_read_first_word_cycles = MEM_READ_FIRST_WORD_CYCLES;
     assign configuration.mem_write_first_word_cycles = MEM_WRITE_FIRST_WORD_CYCLES;
     assign configuration.mem_timeout_cycles = MEM_TIMEOUT_CYCLES;
-    assign configuration.reference_without_cache = 1'b0;
+    assign configuration.reference_without_cache = REFERENCE_WITHOUT_CACHE;
 
-    cache_l1 #(
-        .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT)
-    ) u_l1 (
-        .clk_i(clk_i),
-        .rst_ni(rst_ni),
-        .dmem_req_valid_i(dmem_req_valid_i),
-        .dmem_req_ready_o(dmem_req_ready_o),
-        .dmem_req_addr_i(dmem_req_addr_i),
-        .dmem_req_write_i(dmem_req_write_i),
-        .dmem_req_wdata_i(dmem_req_wdata_i),
-        .dmem_req_wstrb_i(dmem_req_wstrb_i),
-        .dmem_rsp_valid_o(dmem_rsp_valid_o),
-        .dmem_rsp_ready_i(dmem_rsp_ready_i),
-        .dmem_rsp_rdata_o(dmem_rsp_rdata_o),
-        .dmem_rsp_error_o(dmem_rsp_error_o),
-        .dmem_rsp_origin_o(dmem_rsp_origin_o),
-        .wb_push_valid_o(wb_push_valid),
-        .wb_push_ready_i(wb_push_ready),
-        .wb_push_base_o(wb_push_base),
-        .wb_push_data_o(wb_push_data),
-        .wb_push_dirty_o(wb_push_dirty),
-        .wb_probe_valid_o(wb_probe_valid),
-        .wb_probe_base_o(wb_probe_base),
-        .wb_probe_hit_i(wb_probe_hit),
-        .wb_probe_busy_i(wb_probe_busy),
-        .l2_get_valid_o(l2_get_valid),
-        .l2_get_ready_i(l2_get_ready),
-        .l2_get_base_o(l2_get_base),
-        .l2_get_accept_id_i(l2_get_accept_id),
-        .fill_valid_i(fill_valid),
-        .fill_ready_o(fill_ready),
-        .fill_base_i(fill_base),
-        .fill_data_i(fill_data),
-        .fill_dirty_i(fill_dirty),
-        .fill_error_i(fill_error),
-        .fill_source_i(fill_source),
-        .fill_id_i(fill_id),
-        .perf_events_o(l1_events)
-    );
+    /** @brief Seleccion de elaboracion; controlador, RAM y observador compartidos. */
+    generate if (!REFERENCE_WITHOUT_CACHE) begin : gen_cached
+        cache_l1 #(
+            .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT)
+        ) u_l1 (
+            .clk_i(clk_i),
+            .rst_ni(rst_ni),
+            .dmem_req_valid_i(dmem_req_valid_i),
+            .dmem_req_ready_o(dmem_req_ready_o),
+            .dmem_req_addr_i(dmem_req_addr_i),
+            .dmem_req_write_i(dmem_req_write_i),
+            .dmem_req_wdata_i(dmem_req_wdata_i),
+            .dmem_req_wstrb_i(dmem_req_wstrb_i),
+            .dmem_rsp_valid_o(dmem_rsp_valid_o),
+            .dmem_rsp_ready_i(dmem_rsp_ready_i),
+            .dmem_rsp_rdata_o(dmem_rsp_rdata_o),
+            .dmem_rsp_error_o(dmem_rsp_error_o),
+            .dmem_rsp_origin_o(dmem_rsp_origin_o),
+            .wb_push_valid_o(wb_push_valid),
+            .wb_push_ready_i(wb_push_ready),
+            .wb_push_base_o(wb_push_base),
+            .wb_push_data_o(wb_push_data),
+            .wb_push_dirty_o(wb_push_dirty),
+            .wb_probe_valid_o(wb_probe_valid),
+            .wb_probe_base_o(wb_probe_base),
+            .wb_probe_hit_i(wb_probe_hit),
+            .wb_probe_busy_i(wb_probe_busy),
+            .l2_get_valid_o(l2_get_valid),
+            .l2_get_ready_i(l2_get_ready),
+            .l2_get_base_o(l2_get_base),
+            .l2_get_accept_id_i(l2_get_accept_id),
+            .fill_valid_i(fill_valid),
+            .fill_ready_o(fill_ready),
+            .fill_base_i(fill_base),
+            .fill_data_i(fill_data),
+            .fill_dirty_i(fill_dirty),
+            .fill_error_i(fill_error),
+            .fill_source_i(fill_source),
+            .fill_id_i(fill_id),
+            .perf_events_o(l1_events)
+        );
 
-    write_buffer #(
-        .WRITE_BUFFER_DEPTH(WRITE_BUFFER_DEPTH),
-        .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT)
-    ) u_write_buffer (
-        .clk_i(clk_i),
-        .rst_ni(rst_ni),
-        .wb_push_valid_i(wb_push_valid),
-        .wb_push_ready_o(wb_push_ready),
-        .wb_push_base_i(wb_push_base),
-        .wb_push_data_i(wb_push_data),
-        .wb_push_dirty_i(wb_push_dirty),
-        .wb_probe_valid_i(wb_probe_valid),
-        .wb_probe_base_i(wb_probe_base),
-        .wb_probe_hit_o(wb_probe_hit),
-        .wb_probe_busy_o(wb_probe_busy),
-        .wb_fwd_valid_o(wb_fwd_valid),
-        .wb_fwd_ready_i(wb_fwd_ready),
-        .wb_fwd_base_o(wb_fwd_base),
-        .wb_fwd_data_o(wb_fwd_data),
-        .wb_fwd_dirty_o(wb_fwd_dirty),
-        .wb_install_valid_o(wb_install_valid),
-        .wb_install_ready_i(wb_install_ready),
-        .wb_install_base_o(wb_install_base),
-        .wb_install_data_o(wb_install_data),
-        .wb_install_dirty_o(wb_install_dirty),
-        .wb_install_accept_id_i(wb_install_accept_id),
-        .wb_done_valid_i(wb_done_valid),
-        .wb_done_ready_o(wb_done_ready),
-        .wb_done_id_i(wb_done_id),
-        .perf_events_o(wb_events)
-    );
+        write_buffer #(
+            .WRITE_BUFFER_DEPTH(WRITE_BUFFER_DEPTH),
+            .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT)
+        ) u_write_buffer (
+            .clk_i(clk_i),
+            .rst_ni(rst_ni),
+            .wb_push_valid_i(wb_push_valid),
+            .wb_push_ready_o(wb_push_ready),
+            .wb_push_base_i(wb_push_base),
+            .wb_push_data_i(wb_push_data),
+            .wb_push_dirty_i(wb_push_dirty),
+            .wb_probe_valid_i(wb_probe_valid),
+            .wb_probe_base_i(wb_probe_base),
+            .wb_probe_hit_o(wb_probe_hit),
+            .wb_probe_busy_o(wb_probe_busy),
+            .wb_fwd_valid_o(wb_fwd_valid),
+            .wb_fwd_ready_i(wb_fwd_ready),
+            .wb_fwd_base_o(wb_fwd_base),
+            .wb_fwd_data_o(wb_fwd_data),
+            .wb_fwd_dirty_o(wb_fwd_dirty),
+            .wb_install_valid_o(wb_install_valid),
+            .wb_install_ready_i(wb_install_ready),
+            .wb_install_base_o(wb_install_base),
+            .wb_install_data_o(wb_install_data),
+            .wb_install_dirty_o(wb_install_dirty),
+            .wb_install_accept_id_i(wb_install_accept_id),
+            .wb_done_valid_i(wb_done_valid),
+            .wb_done_ready_o(wb_done_ready),
+            .wb_done_id_i(wb_done_id),
+            .perf_events_o(wb_events)
+        );
 
-    cache_l2 #(
-        .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT)
-    ) u_l2 (
-        .clk_i(clk_i),
-        .rst_ni(rst_ni),
-        .l2_get_valid_i(l2_get_valid),
-        .l2_get_ready_o(l2_get_ready),
-        .l2_get_base_i(l2_get_base),
-        .l2_get_accept_id_o(l2_get_accept_id),
-        .l2_fill_valid_o(l2_fill_valid),
-        .l2_fill_ready_i(l2_fill_ready),
-        .l2_fill_id_o(l2_fill_id),
-        .l2_fill_base_o(l2_fill_base),
-        .l2_fill_data_o(l2_fill_data),
-        .l2_fill_dirty_o(l2_fill_dirty),
-        .l2_fill_error_o(l2_fill_error),
-        .wb_install_valid_i(wb_install_valid),
-        .wb_install_ready_o(wb_install_ready),
-        .wb_install_base_i(wb_install_base),
-        .wb_install_data_i(wb_install_data),
-        .wb_install_dirty_i(wb_install_dirty),
-        .wb_install_accept_id_o(wb_install_accept_id),
-        .wb_done_valid_o(wb_done_valid),
-        .wb_done_ready_i(wb_done_ready),
-        .wb_done_id_o(wb_done_id),
-        .eb_push_valid_o(eb_push_valid),
-        .eb_push_ready_i(eb_push_ready),
-        .eb_push_base_o(eb_push_base),
-        .eb_push_data_o(eb_push_data),
-        .eb_push_dirty_o(eb_push_dirty),
-        .eb_probe_valid_o(eb_probe_valid),
-        .eb_probe_base_o(eb_probe_base),
-        .eb_probe_hit_i(eb_probe_hit),
-        .mem_rd_req_valid_o(mem_rd_req_valid),
-        .mem_rd_req_ready_i(mem_rd_req_ready),
-        .mem_rd_req_id_o(mem_rd_req_id),
-        .mem_rd_req_base_o(mem_rd_req_base),
-        .mem_rd_rsp_valid_i(mem_rd_rsp_valid),
-        .mem_rd_rsp_ready_i(mem_rd_rsp_ready),
-        .mem_rd_rsp_id_i(mem_rd_rsp_id),
-        .mem_rd_rsp_base_i(mem_rd_rsp_base),
-        .mem_rd_rsp_error_i(mem_rd_rsp_error),
-        .perf_events_o(l2_events)
-    );
+        cache_l2 #(
+            .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT)
+        ) u_l2 (
+            .clk_i(clk_i),
+            .rst_ni(rst_ni),
+            .l2_get_valid_i(l2_get_valid),
+            .l2_get_ready_o(l2_get_ready),
+            .l2_get_base_i(l2_get_base),
+            .l2_get_accept_id_o(l2_get_accept_id),
+            .l2_fill_valid_o(l2_fill_valid),
+            .l2_fill_ready_i(l2_fill_ready),
+            .l2_fill_id_o(l2_fill_id),
+            .l2_fill_base_o(l2_fill_base),
+            .l2_fill_data_o(l2_fill_data),
+            .l2_fill_dirty_o(l2_fill_dirty),
+            .l2_fill_error_o(l2_fill_error),
+            .wb_install_valid_i(wb_install_valid),
+            .wb_install_ready_o(wb_install_ready),
+            .wb_install_base_i(wb_install_base),
+            .wb_install_data_i(wb_install_data),
+            .wb_install_dirty_i(wb_install_dirty),
+            .wb_install_accept_id_o(wb_install_accept_id),
+            .wb_done_valid_o(wb_done_valid),
+            .wb_done_ready_i(wb_done_ready),
+            .wb_done_id_o(wb_done_id),
+            .eb_push_valid_o(eb_push_valid),
+            .eb_push_ready_i(eb_push_ready),
+            .eb_push_base_o(eb_push_base),
+            .eb_push_data_o(eb_push_data),
+            .eb_push_dirty_o(eb_push_dirty),
+            .eb_probe_valid_o(eb_probe_valid),
+            .eb_probe_base_o(eb_probe_base),
+            .eb_probe_hit_i(eb_probe_hit),
+            .mem_rd_req_valid_o(mem_rd_req_valid),
+            .mem_rd_req_ready_i(mem_rd_req_ready),
+            .mem_rd_req_id_o(mem_rd_req_id),
+            .mem_rd_req_base_o(mem_rd_req_base),
+            .mem_rd_rsp_valid_i(mem_rd_rsp_valid),
+            .mem_rd_rsp_ready_i(mem_rd_rsp_ready),
+            .mem_rd_rsp_id_i(mem_rd_rsp_id),
+            .mem_rd_rsp_base_i(mem_rd_rsp_base),
+            .mem_rd_rsp_error_i(mem_rd_rsp_error),
+            .perf_events_o(l2_events)
+        );
 
-    eviction_buffer #(
-        .EVICTION_BUFFER_DEPTH(EVICTION_BUFFER_DEPTH)
-    ) u_eviction_buffer (
-        .clk_i(clk_i),
-        .rst_ni(rst_ni),
-        .eb_push_valid_i(eb_push_valid),
-        .eb_push_ready_o(eb_push_ready),
-        .eb_push_base_i(eb_push_base),
-        .eb_push_data_i(eb_push_data),
-        .eb_push_dirty_i(eb_push_dirty),
-        .eb_probe_valid_i(eb_probe_valid),
-        .eb_probe_base_i(eb_probe_base),
-        .eb_probe_hit_o(eb_probe_hit),
-        .mem_wr_req_valid_o(mem_wr_req_valid),
-        .mem_wr_req_ready_i(mem_wr_req_ready),
-        .mem_wr_req_id_o(mem_wr_req_id),
-        .mem_wr_req_base_o(mem_wr_req_base),
-        .mem_wr_req_data_o(mem_wr_req_data),
-        .mem_wr_rsp_valid_i(mem_wr_rsp_valid),
-        .mem_wr_rsp_ready_o(mem_wr_rsp_ready),
-        .mem_wr_rsp_id_i(mem_wr_rsp_id),
-        .mem_wr_rsp_base_i(mem_wr_rsp_base),
-        .mem_wr_rsp_error_i(mem_wr_rsp_error),
-        .perf_events_o(eb_events)
-    );
+        eviction_buffer #(
+            .EVICTION_BUFFER_DEPTH(EVICTION_BUFFER_DEPTH)
+        ) u_eviction_buffer (
+            .clk_i(clk_i),
+            .rst_ni(rst_ni),
+            .eb_push_valid_i(eb_push_valid),
+            .eb_push_ready_o(eb_push_ready),
+            .eb_push_base_i(eb_push_base),
+            .eb_push_data_i(eb_push_data),
+            .eb_push_dirty_i(eb_push_dirty),
+            .eb_probe_valid_i(eb_probe_valid),
+            .eb_probe_base_i(eb_probe_base),
+            .eb_probe_hit_o(eb_probe_hit),
+            .mem_wr_req_valid_o(mem_wr_req_valid),
+            .mem_wr_req_ready_i(mem_wr_req_ready),
+            .mem_wr_req_id_o(mem_wr_req_id),
+            .mem_wr_req_base_o(mem_wr_req_base),
+            .mem_wr_req_data_o(mem_wr_req_data),
+            .mem_wr_rsp_valid_i(mem_wr_rsp_valid),
+            .mem_wr_rsp_ready_o(mem_wr_rsp_ready),
+            .mem_wr_rsp_id_i(mem_wr_rsp_id),
+            .mem_wr_rsp_base_i(mem_wr_rsp_base),
+            .mem_wr_rsp_error_i(mem_wr_rsp_error),
+            .perf_events_o(eb_events)
+        );
+
+        line_return #(
+            .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT)
+        ) u_line_return (
+            .clk_i(clk_i),
+            .rst_ni(rst_ni),
+            .wb_fwd_valid_i(wb_fwd_valid),
+            .wb_fwd_ready_o(wb_fwd_ready),
+            .wb_fwd_base_i(wb_fwd_base),
+            .wb_fwd_data_i(wb_fwd_data),
+            .wb_fwd_dirty_i(wb_fwd_dirty),
+            .l2_fill_valid_i(l2_fill_valid),
+            .l2_fill_ready_o(l2_fill_ready),
+            .l2_fill_id_i(l2_fill_id),
+            .l2_fill_base_i(l2_fill_base),
+            .l2_fill_data_i(l2_fill_data),
+            .l2_fill_dirty_i(l2_fill_dirty),
+            .l2_fill_error_i(l2_fill_error),
+            .mem_rd_rsp_valid_i(mem_rd_rsp_valid),
+            .mem_rd_rsp_ready_o(mem_rd_rsp_ready),
+            .mem_rd_rsp_id_i(mem_rd_rsp_id),
+            .mem_rd_rsp_base_i(mem_rd_rsp_base),
+            .mem_rd_rsp_data_i(mem_rd_rsp_data),
+            .mem_rd_rsp_error_i(mem_rd_rsp_error),
+            .fill_valid_o(fill_valid),
+            .fill_ready_i(fill_ready),
+            .fill_base_o(fill_base),
+            .fill_data_o(fill_data),
+            .fill_dirty_o(fill_dirty),
+            .fill_error_o(fill_error),
+            .fill_source_o(fill_source),
+            .fill_id_o(fill_id),
+            .perf_error_o(return_error)
+        );
+
+    end else begin : gen_uncached
+        assign l1_events = '0;
+        assign l2_events = '0;
+        assign wb_events = '0;
+        assign eb_events = '0;
+        assign eb_probe_hit = 1'b0;
+        uncached_adapter #(
+            .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT),
+            .EVICTION_BUFFER_DEPTH(EVICTION_BUFFER_DEPTH)
+        ) u_adapter (
+            .clk_i(clk_i), .rst_ni(rst_ni),
+            .dmem_req_valid_i(dmem_req_valid_i), .dmem_req_ready_o(dmem_req_ready_o),
+            .dmem_req_addr_i(dmem_req_addr_i), .dmem_req_write_i(dmem_req_write_i),
+            .dmem_req_wdata_i(dmem_req_wdata_i), .dmem_req_wstrb_i(dmem_req_wstrb_i),
+            .dmem_rsp_valid_o(dmem_rsp_valid_o), .dmem_rsp_ready_i(dmem_rsp_ready_i),
+            .dmem_rsp_rdata_o(dmem_rsp_rdata_o), .dmem_rsp_error_o(dmem_rsp_error_o),
+            .dmem_rsp_origin_o(dmem_rsp_origin_o),
+            .mem_rd_req_valid_o(mem_rd_req_valid), .mem_rd_req_ready_i(mem_rd_req_ready),
+            .mem_rd_req_id_o(mem_rd_req_id), .mem_rd_req_base_o(mem_rd_req_base),
+            .mem_rd_rsp_valid_i(mem_rd_rsp_valid), .mem_rd_rsp_ready_o(mem_rd_rsp_ready),
+            .mem_rd_rsp_id_i(mem_rd_rsp_id), .mem_rd_rsp_base_i(mem_rd_rsp_base),
+            .mem_rd_rsp_data_i(mem_rd_rsp_data), .mem_rd_rsp_error_i(mem_rd_rsp_error),
+            .mem_wr_req_valid_o(mem_wr_req_valid), .mem_wr_req_ready_i(mem_wr_req_ready),
+            .mem_wr_req_id_o(mem_wr_req_id), .mem_wr_req_base_o(mem_wr_req_base),
+            .mem_wr_req_data_o(mem_wr_req_data),
+            .mem_wr_rsp_valid_i(mem_wr_rsp_valid), .mem_wr_rsp_ready_o(mem_wr_rsp_ready),
+            .mem_wr_rsp_id_i(mem_wr_rsp_id), .mem_wr_rsp_base_i(mem_wr_rsp_base),
+            .mem_wr_rsp_error_i(mem_wr_rsp_error), .perf_error_o(return_error)
+        );
+    end
+    endgenerate
 
     memory_controller #(
         .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT),
@@ -354,40 +424,6 @@ module data_memory_hierarchy #(
         .read_data_o(ram_read_data),
         .read_valid_o(ram_read_valid),
         .out_of_range_o(ram_out_of_range)
-    );
-
-    line_return #(
-        .L2_MAX_INFLIGHT(L2_MAX_INFLIGHT)
-    ) u_line_return (
-        .clk_i(clk_i),
-        .rst_ni(rst_ni),
-        .wb_fwd_valid_i(wb_fwd_valid),
-        .wb_fwd_ready_o(wb_fwd_ready),
-        .wb_fwd_base_i(wb_fwd_base),
-        .wb_fwd_data_i(wb_fwd_data),
-        .wb_fwd_dirty_i(wb_fwd_dirty),
-        .l2_fill_valid_i(l2_fill_valid),
-        .l2_fill_ready_o(l2_fill_ready),
-        .l2_fill_id_i(l2_fill_id),
-        .l2_fill_base_i(l2_fill_base),
-        .l2_fill_data_i(l2_fill_data),
-        .l2_fill_dirty_i(l2_fill_dirty),
-        .l2_fill_error_i(l2_fill_error),
-        .mem_rd_rsp_valid_i(mem_rd_rsp_valid),
-        .mem_rd_rsp_ready_o(mem_rd_rsp_ready),
-        .mem_rd_rsp_id_i(mem_rd_rsp_id),
-        .mem_rd_rsp_base_i(mem_rd_rsp_base),
-        .mem_rd_rsp_data_i(mem_rd_rsp_data),
-        .mem_rd_rsp_error_i(mem_rd_rsp_error),
-        .fill_valid_o(fill_valid),
-        .fill_ready_i(fill_ready),
-        .fill_base_o(fill_base),
-        .fill_data_o(fill_data),
-        .fill_dirty_o(fill_dirty),
-        .fill_error_o(fill_error),
-        .fill_source_o(fill_source),
-        .fill_id_o(fill_id),
-        .perf_error_o(return_error)
     );
 
     performance_counters #(

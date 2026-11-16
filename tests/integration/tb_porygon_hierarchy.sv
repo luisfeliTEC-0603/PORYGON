@@ -7,6 +7,7 @@
  * No usa ni sustituye las salidas aun pendientes del observador P2-10.
  */
 module tb_porygon_hierarchy;
+    parameter bit REFERENCE_WITHOUT_CACHE = 1'b0;
     import pkg_vliw::*;
     localparam integer REFERENCE_BYTES = 8192;
     logic clk = 0, rst_n, start = 0, ref_rst_n;
@@ -26,6 +27,7 @@ module tb_porygon_hierarchy;
     always #5 clk = ~clk;
 
     porygon_system #(
+        .REFERENCE_WITHOUT_CACHE(REFERENCE_WITHOUT_CACHE),
         .INSTRUCTION_INIT_FILE("tests/programs/top/top_integration.mem"),
         .INSTRUCTION_INIT_BUNDLES(28)
     ) dut (

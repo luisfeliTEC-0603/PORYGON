@@ -272,7 +272,58 @@ en `E48`.
 Los accesos se cuentan al aceptarse, una vez; las esperas se cuentan por ciclo.
 Mantener un bundle o una solicitud durante un stall no genera accesos nuevos.
 
-## 6. Organización acordada de la LSU
+## 6. Referencia sin caché de P2-12
+
+`REFERENCE_WITHOUT_CACHE=1` selecciona en `porygon_system` y
+`data_memory_hierarchy` el camino CPU → `uncached_adapter` →
+`memory_controller` → `main_memory`. Se conservan la interfaz CPU de este
+documento, la ISA, las imágenes, el controlador, el reloj de memoria y sus
+parámetros. La configuración por defecto sigue usando las cachés.
+
+El adaptador conserva una sola demanda: dirección, tipo, dato y máscara. Usa
+un registro temporal de línea únicamente para completar el store actual;
+ningún acceso posterior reutiliza esa línea. Las lecturas y escrituras usan
+el id cero de sus espacios independientes y verifican id/base de respuesta.
+
+| Acceso CPU válido | Secuencia de memoria y finalización |
+| --- | --- |
+| Load de cualquier tamaño | Leer una línea completa; devolver la palabra correspondiente. La LSU selecciona y extiende byte/media palabra. |
+| Store, incluida palabra completa | Leer la línea, sustituir solo los bytes habilitados de la palabra y escribir la línea completa. Responder después de consumir la confirmación, nunca al aceptar la escritura. |
+
+Un load genera ocho palabras leídas. Un store genera ocho palabras leídas y
+ocho escritas, incluso si su máscara es cero; conserva los otros bytes de la
+línea. Por tanto, este tráfico de adaptación forma parte de la referencia y
+debe reportarse al comparar rendimiento. No hay escrituras de fondo.
+
+La oferta inicial de lectura puede aceptarse junto con la demanda CPU. Si el
+controlador espera su fase de reloj, el adaptador acepta la demanda y conserva
+la oferta. Al consumir la lectura, un load puede responder en ese mismo flanco;
+si CPU bloquea, se guarda palabra/error hasta su consumo. Un store conserva la
+línea fusionada y ofrece escritura desde el ciclo siguiente a la lectura.
+
+Los tiempos se expresan desde la primera oferta CPU, contando E1 como un ciclo.
+Sean `R=MEM_READ_FIRST_WORD_CYCLES+7*MEM_CLOCK_DIV`,
+`W=MEM_WRITE_FIRST_WORD_CYCLES+7*MEM_CLOCK_DIV`, `A` la espera inicial hasta
+aceptar la lectura y `G` los flancos entre consumirla y aceptar la escritura.
+Sin retención de respuesta CPU: load termina en `E(1+A+R)` y store en
+`E(1+A+R+G+W+1)`. `G>=1` incluye la fase de aceptación del controlador; el
+último `+1` es la observación CPU de la confirmación tras la última escritura
+RAM. Con divisor 2 y latencias 25, `R=W=39`, `G=2`: E40 para load y E82 para
+store si `A=0`. Las esperas adicionales de consumo se suman por separado.
+
+Dirección inválida devuelve error y cero sin tráfico de memoria; la LSU sigue
+rechazando desalineaciones. Un error de lectura impide emitir la escritura.
+Una respuesta con id/base ajenos se diagnostica una vez y no se consume. Reset
+cancela demanda y ofertas en ambos dominios; conserva los bytes ya escritos
+por RAM y no revierte una escritura parcial anterior al reset.
+
+Las finalizaciones correctas usan `ORIGIN_REFERENCE`; las fallidas,
+`ORIGIN_ERROR`. Se observan los mismos eventos CPU/memoria y controles
+start/stop. La configuración exporta `reference_without_cache=1` y capacidades
+de cachés/buffers cero; sus contadores permanecen cero y sus indicadores son
+`N/A`. Se mantienen las reglas de cierre y snapshot de Métricas.
+
+## 7. Organización acordada de la LSU
 
 El control usa dos estados: `OFFER`, disponible para presentar la operación
 válida de EX, y `WAIT_RESPONSE`, solicitud aceptada cuya respuesta no se ha
@@ -353,9 +404,9 @@ La interfaz externa del núcleo ya usa `dmem_req_*`/`dmem_rsp_*`, con tipo de ac
 explícito. Los nombres `memory_*` permanecen solo en la preparación interna de
 LSU/execution_stage. `make sim-core-memory-wait` verifica además los campos de
 lectura y de un store byte con dirección alineada y máscara desplazada.
-Las conexiones del wrapper de RAM todavía no usan el protocolo nuevo; su
-integración con la jerarquía real corresponde a P2-11. Los eventos del núcleo
-ya están disponibles en `perf_events_o`.
+El wrapper integrado usa este protocolo con la jerarquía de P2-11 o la
+referencia de P2-12. Los eventos del núcleo están disponibles en `perf_events_o`
+y se conectan al observador P2-10 en ambas configuraciones.
 
 El modelo de pruebas `tests/support/cpu_memory_reference.sv` implementa datos y
 protocolo CPU–L1 de una demanda, sin etiquetas ni reemplazo de caché. Su arreglo
@@ -445,7 +496,7 @@ El nuevo programa termina desde reset sin accesos: después de esperar más que
 la latencia anterior no deben reaparecer respuestas, credenciales, llaves ni
 resultados antiguos. Estos casos pasan para los tres perfiles de la referencia.
 
-## 7. Observación del núcleo y verificación P2-09
+## 8. Observación del núcleo y verificación P2-09
 
 `core_metrics.sv` genera `cpu_events_t` sin retroalimentar el control funcional.
 `bundle_completions.sv` conserva metadatos de finalización, no dependencias de
@@ -501,7 +552,7 @@ stall/reset/parada. La integración añade una desalineación real sin solicitud
 y un salto a texto inválido cuyo diagnóstico queda retenido por un segundo
 load pendiente; exige dirección/PC correcto y emisión única.
 
-El wrapper de RAM anterior necesita adaptar su protocolo antes de ejecutarse;
-esta etapa no constituye una integración funcional con la jerarquía real.
+Las pruebas P2-09 de esta sección usan dobles; las pruebas de P2-11/P2-12
+verifican por separado el wrapper con sus caminos reales de memoria.
 `tb_lost.sv` ya usa un doble de hit E1 y conserva sus 102 comprobaciones de
 formato, máscaras y alineación. `make test` vuelve a ejecutarlas con el API actual.

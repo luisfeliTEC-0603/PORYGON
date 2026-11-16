@@ -7,6 +7,7 @@
  * La ejecucion normal termina al vaciar el programa tras su salto final.
  */
 module tb_system;
+    parameter bit REFERENCE_WITHOUT_CACHE = 1'b0;
     import pkg_vliw::*;
 
     logic clk = 1'b0;
@@ -49,7 +50,7 @@ module tb_system;
 
     always #5 clk = ~clk;
 
-    porygon_system dut (
+    porygon_system #(.REFERENCE_WITHOUT_CACHE(REFERENCE_WITHOUT_CACHE)) dut (
         .clk_i(clk),
         .rst_ni(rst_n),
         .perf_start_i(perf_start), .perf_stop_i(perf_stop),
