@@ -108,3 +108,42 @@ respuesta concretan los handshakes de retorno del controlador. Permiten
 determinar el trabajo pendiente después de incorporar los eventos de cierre.
 La propagación de un error de respuesta no genera otro error de detección:
 cada bloque emite `error_event_t` para los fallos que detecta localmente.
+
+### Captura de resultados de P2-10
+
+`performance_counters` captura la configuración al aceptar `perf_start`. Conserva
+los contadores y captura los pendientes resultantes de los eventos del flanco de
+cierre, incluidos los cierres fallidos. Reset o nuevo inicio borran también el
+seguimiento de memoria; el stall del núcleo no lo detiene.
+
+Las muestras de ocupación describen el intervalo anterior al flanco. Para obtener
+los pendientes posteriores se aplican estos movimientos, sin cambiar los
+acumulados ni máximos de ocupación:
+
+| Recurso | Cambio aplicado a la muestra del intervalo |
+| --- | --- |
+| WB | `+ enqueued - forwarded - install_done`. Aceptar la instalación no libera su entrada. |
+| EB | `+ enqueued - write_done_correcto`. Un error conserva la entrada. |
+| L2 | `+ get_accept + install_accept - promotion - read_rsp_consumed - install_done`. |
+
+Los retiros de L2 proceden de los handshakes efectivos: promoción por hit,
+consumo del retorno de un miss y confirmación de instalación. No se vuelve a
+restar `get_done`, que puede serializar finalizaciones coincidentes. El retorno
+de memoria termina la demanda de L2 en el mismo flanco en que L1 lo consume,
+según Interfaces §6. En la referencia sin caché ese consumo no retira una
+posición de L2 y el pendiente de L2 es cero.
+
+Memoria conserva cuatro totales separados: lecturas/escrituras aceptadas sin
+resultado disponible y respuestas de lectura/escritura disponibles sin consumir.
+Cada aceptación aumenta el primer grupo; cada `complete`, correcto o fallido,
+lo reduce y aumenta las respuestas del mismo tipo; cada consumo reduce su canal
+de respuesta. Así se incorporan eventos simultáneos sin confundir la marca busy
+del controlador, que incluye respuestas retenidas, con una transferencia activa.
+No se necesitan tablas por id para estos totales agregados: los productores ya
+asocian cada hecho con su operación y el tipo separa los espacios de ids. Se
+mantiene la precondición de iniciar sin operaciones pendientes.
+
+`make sim-metrics` ejecuta secuencias independientes de las cachés que cubren
+aceptación, disponibilidad y consumo coincidentes con el cierre en ambos canales,
+ids iguales de lectura/escritura, finalizaciones simultáneas de L2, errores,
+congelamiento completo de la instantánea y reset con trabajo pendiente.
