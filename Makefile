@@ -87,6 +87,7 @@ $(BUILD_DIR)/instruction_memory.vvp: $(PKG) $(MEMORY_DIR)/instruction_memory.sv 
 
 test-tools:
 	sh tests/tools/test_loader.sh
+	sh tests/tools/test_indicators.sh
 
 .PHONY: sim-core-memory-wait
 .PHONY: sim-reference-storage
