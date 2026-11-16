@@ -8,6 +8,7 @@ Uso: ./tools/sim.sh <programa.mem> [opciones]
 
 Opciones:
   --data <datos.mem>       Inicializa la memoria de datos.
+  --no-cache               Usa la referencia sin cache con el controlador real.
   --max-cycles <ciclos>    Cambia el watchdog (por defecto: 100000).
   --out <directorio>       Guarda resultados en este directorio.
   --expect <clave=valor>   Verifica PC, errores o un registro r0-r7. Repetible.
@@ -42,9 +43,14 @@ shift
 data_file=""
 output_dir=""
 max_cycles=100000
+without_cache=0
 expectations=()
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --no-cache)
+            without_cache=1
+            shift
+            ;;
         --data)
             [[ $# -ge 2 ]] || fail "--data requiere una ruta"
             data_file=$(absolute_file "$2")
@@ -78,6 +84,7 @@ done
 if [[ -z "$output_dir" ]]; then
     program_name=$(basename "$instruction_file")
     program_name=${program_name%.*}
+    if (( without_cache )); then program_name="${program_name}_no_cache"; fi
     output_dir="$root_dir/build/sim/$program_name"
 elif [[ $output_dir != /* ]]; then
     output_dir="$(pwd -P)/$output_dir"
@@ -90,15 +97,21 @@ vcd_file="$output_dir/waves.vcd"
 result_file="$output_dir/results.txt"
 log_file="$output_dir/simulation.log"
 build_log="$output_dir/build.log"
+metrics_file="$output_dir/metrics.txt"
+indicators_file="$output_dir/indicators.json"
+simulator="build/system.vvp"
+if (( without_cache )); then simulator="build/system_reference.vvp"; fi
 
 print_artifact_paths() {
     printf '  volcado: %s\n' "$dump_file"
     printf '  ondas  : %s\n' "$vcd_file"
     printf '  resultado: %s\n' "$result_file"
     printf '  log     : %s\n' "$log_file"
+    printf '  metricas: %s\n' "$metrics_file"
+    printf '  indicadores: %s\n' "$indicators_file"
 }
 
-if ! make -s -C "$root_dir" build/system.vvp >"$build_log" 2>&1; then
+if ! make -s -C "$root_dir" "$simulator" >"$build_log" 2>&1; then
     printf 'La compilación del simulador falló. Últimas líneas del log:\n' >&2
     tail -20 "$build_log" >&2
     exit 1
@@ -110,17 +123,20 @@ vvp_args=(
     "+DUMP=$dump_file"
     "+VCD=$vcd_file"
     "+RESULT=$result_file"
+    "+METRICS=$metrics_file"
 )
 if [[ -n "$data_file" ]]; then
     vvp_args+=("+DATA=$data_file")
 fi
 
-if ! "${VVP:-vvp}" "$root_dir/build/system.vvp" "${vvp_args[@]}" >"$log_file" 2>&1; then
+if ! "${VVP:-vvp}" "$root_dir/$simulator" "${vvp_args[@]}" >"$log_file" 2>&1; then
     printf 'La simulación falló. Últimas líneas del log:\n' >&2
     tail -20 "$log_file" >&2
     exit 1
 fi
 [[ -s "$result_file" ]] || fail "la simulación no produjo '$result_file'"
+python3 "$root_dir/tools/metrics/indicators.py" --input "$metrics_file" \
+    --output "$indicators_file" --format json --allow-invalid
 
 result_value() {
     local key=$1

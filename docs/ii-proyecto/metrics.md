@@ -264,6 +264,11 @@ fallida y conserva evidencia parcial. Los resultados de rendimiento comparables
 corresponden a programas completados correctamente, con el resultado esperado y
 sin overflow. Las métricas de la referencia sin caché mantienen las mismas
 reglas de CPU y memoria; los indicadores de caché se informan como `N/A`.
+En P2-12 se exportan capacidades cero y eventos de cachés/buffers nulos. Una
+capacidad cero no cuenta como recurso lleno. El adaptador genera ocho palabras
+leídas por load y ocho leídas más ocho escritas por store; ese tráfico se incluye
+en los contadores de memoria y en la latencia CPU observada. `metrics.txt`
+conserva la instantánea cruda y `indicators.json` sus indicadores derivados.
 
 ## 9. Casos de referencia
 

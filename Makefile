@@ -132,7 +132,7 @@ ifeq ($(strip $(PROG)),)
 sim: sim-top
 else
 sim:
-	@./tools/sim.sh "$(PROG)" $(if $(strip $(DATA)),--data "$(DATA)") $(if $(strip $(MAX_CYCLES)),--max-cycles "$(MAX_CYCLES)")
+	@./tools/sim.sh "$(PROG)" $(if $(strip $(DATA)),--data "$(DATA)") $(if $(strip $(MAX_CYCLES)),--max-cycles "$(MAX_CYCLES)") $(if $(filter 1,$(NO_CACHE)),--no-cache)
 endif
 
 test: sim-alu sim-super-alu sim-regfile sim-lost sim-bruh sim-crypto \
@@ -234,9 +234,14 @@ sim-top: $(BUILD_DIR)/top.vvp | $(WAVE_DIR)
 sim-system: $(BUILD_DIR)/system.vvp | $(WAVE_DIR)
 	$(VVP) $< $(ARGS)
 
-$(BUILD_DIR)/system.vvp: $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_system.sv $(SUPPORT_TB_DIR)/hierarchy_snapshot.svh
+$(BUILD_DIR)/system.vvp: $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_system.sv $(SUPPORT_TB_DIR)/hierarchy_snapshot.svh $(SUPPORT_TB_DIR)/metrics_export.svh
 	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_system -o $@ $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_system.sv
+
+$(BUILD_DIR)/system_reference.vvp: $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_system.sv \
+	$(SUPPORT_TB_DIR)/hierarchy_snapshot.svh $(SUPPORT_TB_DIR)/metrics_export.svh
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_system -Ptb_system.REFERENCE_WITHOUT_CACHE=1 -o $@ $(filter %.sv,$^)
 
 
 $(BUILD_DIR)/top.vvp: $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_top.sv \

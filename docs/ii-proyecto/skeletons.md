@@ -4,9 +4,9 @@
 
 Los skeletons concretan [Interfaces](interfaces.md) y [Métricas](metrics.md)
 mediante parámetros, puertos y comentarios `/** ... */` estilo JavaDoc/Doxygen.
-Los cuerpos de los componentes quedan pendientes de sus issues; sus salidas
-todavía no tienen comportamiento funcional. El wrapper contiene conexiones y
-metadatos constantes de configuración.
+Los componentes conservan estas interfaces durante su implementación. El wrapper
+integra la jerarquía de P2-11 y la referencia sin caché de P2-12, con controlador,
+almacenamiento y observador P2-10 compartidos entre ambas configuraciones.
 
 | Archivo | Contrato | Issue |
 | --- | --- | --- |
@@ -21,12 +21,13 @@ metadatos constantes de configuración.
 | [line_return.sv](../../rtl/memory/line_return.sv) | Selección WB/L2/memoria y propagación de `ready` hacia el origen. | P2-11 |
 | [performance_counters.sv](../../rtl/metrics/performance_counters.sv) | Observación de eventos y conservación de contadores. | P2-10 |
 | [data_memory_hierarchy.sv](../../rtl/memory/data_memory_hierarchy.sv) | Conexión estructural de los componentes anteriores. | P2-11 |
+| [uncached_adapter.sv](../../rtl/memory/uncached_adapter.sv) | Una demanda CPU, lectura de línea y stores mediante lectura–modificación–escritura. | P2-12 |
 
 La ROM existente usa salida síncrona de un ciclo como frontera de datos IF/ID;
-fetch registra sus metadatos en paralelo. `porygon_system` conserva la conexión
-a la RAM de datos anterior y requiere adaptar ese protocolo en P2-11. El núcleo
-ya expone CPU–L1 con tipos de `pkg_memory` y controla las esperas y la retención;
-la verificación actual usa dobles externos, sin conectar la jerarquía real.
+fetch registra sus metadatos en paralelo. `porygon_system` conecta el núcleo al
+protocolo CPU–memoria de `data_memory_hierarchy`, que selecciona su camino con
+`REFERENCE_WITHOUT_CACHE`. El núcleo controla las esperas y la retención; las
+pruebas de integración comparan ambos caminos reales contra un doble externo.
 También expone `stop_done_o` en el último flanco del programa y `halted_o` como
 estado registrado de parada completa. El entorno debe usar el pulso para cerrar
 la medición incluyendo los eventos de ese flanco, según el contrato CPU–memoria.
@@ -34,8 +35,8 @@ la medición incluyendo los eventos de ese flanco, según el contrato CPU–memo
 procedencia `dmem_rsp_origin_i` y el diagnóstico de ROM `instruction_error_i`.
 `bundle_completions.sv` conserva metadatos de finalización durante stalls,
 incluidos bundles NOP, literales y operaciones que no escriben RF.
-La conexión de la CPU al wrapper nuevo corresponde a los issues de integración.
-Los archivos nuevos quedan fuera del flujo de construcción actual.
+El Makefile incluye los componentes reales y permite ejecutar la referencia
+mediante `make sim PROG=programa.mem NO_CACHE=1`.
 
 ## 2. Paquetes y parámetros
 
@@ -51,7 +52,13 @@ instalaciones, y con `EVICTION_BUFFER_DEPTH` para escrituras.
 El wrapper propaga las profundidades, el límite L2 y los parámetros de memoria
 a todos sus consumidores. Los tamaños, vías y políticas de las cachés siguen
 [Jerarquía](hierarchy.md). La configuración exportada describe esta jerarquía
-con ambas cachés; la referencia sin caché se prepara en P2-12.
+con ambas cachés o con `reference_without_cache=1` y capacidades de cachés/buffers
+cero. Los anchos de los canales del controlador siguen derivados de sus
+parámetros compartidos, incluso cuando el adaptador solo utiliza el id cero.
+
+La rama sin caché conserva una solicitud y una línea temporal del store. Su
+secuencia y tiempos se definen en CPU–memoria §6; las interfaces de burst son
+las mismas de Interfaces §§6–7. No se instancian cachés ni buffers en esa rama.
 
 ## 3. Conexiones y relojes
 

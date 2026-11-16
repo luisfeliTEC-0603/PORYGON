@@ -25,7 +25,10 @@ module tb_system;
     logic perf_start = 0, perf_stop;
     logic stop_done, halted;
     pkg_metrics::cpu_events_t cpu_events;
+    pkg_metrics::snapshot_t perf_snapshot;
+    logic snapshot_valid;
     `include "hierarchy_snapshot.svh"
+    `include "metrics_export.svh"
 
     localparam integer DEFAULT_MAX_CYCLES = 100000;
 
@@ -45,6 +48,8 @@ module tb_system;
     reg [1023:0] vcd_file = "build/waves/system.vcd";
     reg [1023:0] dump_file = "build/memory_dump.mem";
     reg [1023:0] result_file = "";
+    reg [1023:0] metrics_file = "build/metrics.txt";
+    integer metrics_fd;
     integer result_fd;
     integer total_errors;
 
@@ -56,6 +61,7 @@ module tb_system;
         .perf_start_i(perf_start), .perf_stop_i(perf_stop),
         .perf_stop_error_i(perf_stop), .stop_done_o(stop_done), .halted_o(halted),
         .cpu_events_o(cpu_events),
+        .perf_snapshot_o(perf_snapshot), .perf_snapshot_valid_o(snapshot_valid),
         .authenticated_o(authenticated),
         .auth_failed_o(auth_failed),
         .access_error_o(access_error),
@@ -115,6 +121,7 @@ module tb_system;
         void'($value$plusargs("VCD=%s", vcd_file));
         void'($value$plusargs("DUMP=%s", dump_file));
         void'($value$plusargs("RESULT=%s", result_file));
+        void'($value$plusargs("METRICS=%s", metrics_file));
 
         $dumpfile(vcd_file);
         $dumpvars(0, tb_system);
@@ -141,6 +148,11 @@ module tb_system;
 
         wait (halt_detected || watchdog_expired);
         #1;
+        if (!snapshot_valid) $fatal(1, "La medicion no cerro con el programa/watchdog");
+        metrics_fd = $fopen(metrics_file, "w");
+        if (!metrics_fd) $fatal(1, "No se pudo exportar la medicion: %0s", metrics_file);
+        export_metrics(metrics_fd);
+        $fclose(metrics_fd);
 
         $display("\n=======================================================");
         $display("  RESUMEN DE EJECUCION (tb_system) - %0d ciclos", cycle_count);

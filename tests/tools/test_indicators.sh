@@ -64,6 +64,21 @@ valor()
 [ "$(valor amat_referencia)" = "3.1" ] || fail "AMAT de referencia incorrecto: $(valor amat_referencia)"
 [ "$(valor ocupacion_media_wb)" = "0.5" ] || fail "ocupación media del WB incorrecta"
 
+# La configuracion sin cache informa N/A aunque reciba contadores no nulos.
+cat "$TEST_TMP/completa.txt" >"$TEST_TMP/referencia.txt"
+printf 'reference_without_cache=1\n' >>"$TEST_TMP/referencia.txt"
+python3 "$INDICATORS" --input "$TEST_TMP/referencia.txt" --format json \
+    --output "$TEST_TMP/referencia.json" || fail "la referencia debe ser comparable"
+python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))['indicadores']
+for key in ('l1_read_hit_rate', 'l1_read_miss_rate', 'l1_write_hit_rate',
+            'l1_write_miss_rate', 'l2_hit_rate', 'l2_miss_rate',
+            'ocupacion_media_wb', 'ocupacion_media_eb', 'ocupacion_media_l2', 'amat_referencia'):
+    assert d[key] == 'N/A', (key, d[key])
+assert d['ipc'] == 0.6 and d['amat_observado'] == 7.0
+" "$TEST_TMP/referencia.json" || fail "indicadores de cache aplicados a referencia"
+
 # Un denominador cero se informa como N/A y no aborta el cálculo del resto.
 sed 's/^dmem_completed=250$/dmem_completed=0/' "$TEST_TMP/completa.txt" \
     >"$TEST_TMP/sin_demandas.txt"

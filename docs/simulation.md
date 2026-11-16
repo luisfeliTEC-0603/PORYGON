@@ -7,13 +7,11 @@ archivos. La codificación de instrucciones está en [isa.md](isa.md).
 
 ## 1. Qué constituye el sistema simulado
 
-**Núcleo P2-09 verificado con referencia:** expone CPU–L1 con handshakes; el
-wrapper `porygon_system` de RAM anterior aún requiere integrar ese protocolo
-en P2-11. La descripción y comandos de sistema siguientes corresponden a la
-base anterior y no certifican el núcleo adaptado. Para la interfaz actual,
-`make sim-core-memory-wait` comprueba espera, campos load/store y reanudación
-con un doble de protocolo, sin una caché funcional. `make elaborate-core`
-comprueba la elaboración del núcleo con los paquetes compartidos.
+El núcleo P2-09 expone CPU–memoria con handshakes. `porygon_system` integra la
+jerarquía con cachés de P2-11 o la referencia sin caché de P2-12 y el observador
+P2-10. `make test-p2-11` y `make test-p2-12` verifican esos caminos reales.
+Las pruebas aisladas siguientes siguen disponibles: `sim-core-memory-wait`
+comprueba el núcleo con un doble y `elaborate-core` elabora sus puertos externos.
 
 `make sim-reference-storage` prueba exclusivamente el almacenamiento del
 doble de referencia, ubicado en `tests/support/cpu_memory_reference.sv`. Incluye
@@ -85,7 +83,7 @@ resultados, temporizador y reset. El núcleo conecta esta previsión al pulso de
 el avance hasta reset. El entorno puede muestrear el pulso para `perf_stop`.
 
 `rtl/porygon_system.sv` conecta tres módulos: `vliw_processor`,
-`instruction_memory` y `memory_sp_ram`. El procesador conserva puertos de
+`instruction_memory` y `data_memory_hierarchy`. El procesador conserva puertos de
 instrucciones y datos independientes; el *wrapper* les conecta las memorias
 concretas de simulación. `tests/integration/tb_system.sv` genera reloj y reset, carga
 las imágenes `.mem`, observa la terminación y escribe el volcado de RAM y un
@@ -100,7 +98,7 @@ flowchart LR
     F[Archivo arbitrario] --> L[load_file.py]
     L --> D[Imagen de bytes .mem]
     I --> IM[Memoria de instrucciones]
-    D --> DM[RAM de datos]
+    D --> DM[Subsistema de datos con o sin cache]
     IM --> CPU[Procesador VLIW]
     CPU <--> DM
     DM --> T[tb_system: volcado .mem]
@@ -186,7 +184,7 @@ invalida los bundles posteriores ya capturados. Ejecución y WB siguen avanzando
 para completar el bundle marcador y las operaciones anteriores, según el
 [contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#parada-del-programa-y-vaciado-del-pipeline).
 El núcleo ya detecta el vaciado e informa ese último flanco con `stop_done_o`;
-la conexión a los contadores de P2-10 sigue pendiente de integración P2-11. El drenado posterior de líneas
+el sistema conecta ese pulso al cierre de los contadores P2-10. El drenado posterior de líneas
 dirty queda fuera de esa ventana, según el [contrato de métricas](ii-proyecto/metrics.md#2-periodo-de-medición).
 
 ## 2. Banco de registros y estado criptográfico
@@ -397,3 +395,31 @@ Para interpretar una palabra `B32`, se toman cuatro bytes consecutivos desde
 su dirección, en orden little endian; `extract_data.py` puede recuperar ese
 rango. La extracción muestra qué quedó almacenado, mientras `results.txt`
 muestra el estado final de los registros.
+
+## 6. Referencia sin caché y comparación de P2-12
+
+`make sim PROG=programa.mem DATA=datos.mem NO_CACHE=1` o
+`tools/sim.sh programa.mem --data datos.mem --no-cache` seleccionan el adaptador
+sin caché con el controlador y la RAM reales. Sin esa opción se usa la jerarquía
+de P2-11. La selección ocurre al elaborar el sistema, sin cambiar la ISA ni las
+imágenes. Los parámetros RTL `MEM_*` se propagan al mismo controlador en ambas
+configuraciones; al comparar deben mantenerse iguales.
+
+Por defecto la referencia guarda sus resultados en
+`build/sim/<programa>_no_cache/`, para conservar también la ejecución con cachés.
+Ambos modos exportan `metrics.txt` y `indicators.json`, además de registros,
+log, ondas y volcado de bytes. Los indicadores de cachés/buffers son `N/A` en
+la referencia; `reference_without_cache=1` y capacidades cero la identifican.
+Los errores y el watchdog conservan la instantánea parcial como fallida.
+
+Cada load obtiene una línea completa y cada store lee, modifica por máscara y
+escribe una línea completa. Los tiempos y el tráfico de esta adaptación están
+definidos en [CPU–memoria §6](ii-proyecto/cpu-memory-contract.md#6-referencia-sin-caché-de-p2-12).
+La inicialización y el cierre usan las mismas reglas en ambos modos: inicio
+antes de fetch y cierre al completar el programa, incluidos sus últimos efectos.
+El volcado recupera también los datos residentes en cachés/buffers en la
+configuración con cachés, sin alterar la medición congelada.
+
+`make test-p2-12` comprueba máscaras, datos y tiempos, configuración y métricas,
+esperas, errores, reset y timeout, comparación CPU contra referencia y el flujo
+de cifrado/descifrado de archivos en ambas configuraciones.

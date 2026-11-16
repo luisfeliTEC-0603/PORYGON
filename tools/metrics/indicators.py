@@ -92,6 +92,11 @@ def compute(counters):
     result["utilizacion_ancho_banda"] = ratio(words * get("mem_clock_div"), cycles)
     result["fraccion_tiempo_transferencia"] = ratio(
         get("mem_read_cycles") + get("mem_write_cycles"), cycles)
+    if get("reference_without_cache"):
+        for name in ("l1_read_hit_rate", "l1_read_miss_rate", "l1_write_hit_rate",
+                     "l1_write_miss_rate", "l2_hit_rate", "l2_miss_rate",
+                     "ocupacion_media_wb", "ocupacion_media_eb", "ocupacion_media_l2"):
+            result[name] = NA
     return result
 
 
