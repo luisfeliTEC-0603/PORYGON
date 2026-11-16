@@ -1,7 +1,7 @@
 /**
  * @brief Observador independiente de eventos y contadores.
- * @param L2_MAX_INFLIGHT Tamano del seguimiento de lecturas identificadas.
- * @param EVICTION_BUFFER_DEPTH Tamano del seguimiento de escrituras.
+ * @param L2_MAX_INFLIGHT Capacidad compartida; se conserva por compatibilidad.
+ * @param EVICTION_BUFFER_DEPTH Capacidad compartida; se conserva por compatibilidad.
  * @input clk_i, rst_ni Reloj CPU continuo y reset activo bajo.
  * @details Reset borra seguimiento y resultados. start con medicion inactiva
  * y sin operaciones pendientes prepara E0; se cuentan intervalos E0..EN y
@@ -103,6 +103,8 @@ module performance_counters #(
     logic snapshot_valid_q;
     logic failed_q;
     logic overflow_q;
+    /** @brief Configuracion de la ejecucion, capturada al aceptar start. */
+    pkg_metrics::configuration_t configuration_q;
     pkg_metrics::counter_t counters_q [NUM_COUNTERS];
 
     /** @brief Incremento de cada contador en el flanco actual. */
@@ -145,6 +147,23 @@ module performance_counters #(
 
     /** @brief Trabajo pendiente capturado en el flanco de cierre. */
     pkg_metrics::pending_t pending_q;
+    pkg_metrics::pending_t pending_after;
+
+    /**
+     * @brief Seguimiento agregado de memoria en espacios de lectura/escritura.
+     * @details accept inicia una transferencia; complete, incluso con error,
+     * la convierte en respuesta pendiente. Solo su consumo retira la respuesta.
+     * No se requieren tablas de ids para estos totales: cada pulso ya identifica
+     * el tipo de operacion. El entorno inicia la ventana sin trabajo previo.
+     */
+    typedef struct packed {
+        pkg_metrics::occupancy_t reads;
+        pkg_metrics::occupancy_t writes;
+        pkg_metrics::occupancy_t read_responses;
+        pkg_metrics::occupancy_t write_responses;
+    } memory_pending_t;
+    memory_pending_t memory_pending_q;
+    memory_pending_t memory_pending_after;
 
     /** @brief Maximos de ocupacion; se actualizan por comparacion, no por suma. */
     pkg_metrics::counter_t l2_inflight_max_q;
@@ -178,6 +197,67 @@ module performance_counters #(
 
     assign start_accepted = perf_start_i && !running_q;
     assign stop_accepted = running_q && (perf_stop_i || perf_stop_error_i);
+
+    /**
+     * @brief Estado de memoria despues de los eventos del flanco actual.
+     * @details Las muestras reads_pending/writes_pending del controlador
+     * conservan tambien operaciones cuya respuesta ya esta disponible. Por eso
+     * estos dos grupos se reconstruyen con aceptacion, disponibilidad y consumo,
+     * sin confundir tiempo activo con espera de respuesta ni sumar dos veces
+     * una finalizacion que coincide con su consumo.
+     */
+    assign memory_pending_after.reads = memory_pending_q.reads
+        + pkg_metrics::occupancy_t'(mem_events_i.accept.valid && !mem_events_i.accept.write)
+        - pkg_metrics::occupancy_t'(mem_events_i.complete.valid && !mem_events_i.complete.write);
+    assign memory_pending_after.writes = memory_pending_q.writes
+        + pkg_metrics::occupancy_t'(mem_events_i.accept.valid && mem_events_i.accept.write)
+        - pkg_metrics::occupancy_t'(mem_events_i.complete.valid && mem_events_i.complete.write);
+    assign memory_pending_after.read_responses = memory_pending_q.read_responses
+        + pkg_metrics::occupancy_t'(mem_events_i.complete.valid && !mem_events_i.complete.write)
+        - pkg_metrics::occupancy_t'(mem_events_i.read_rsp_consumed);
+    assign memory_pending_after.write_responses = memory_pending_q.write_responses
+        + pkg_metrics::occupancy_t'(mem_events_i.complete.valid && mem_events_i.complete.write)
+        - pkg_metrics::occupancy_t'(mem_events_i.write_rsp_consumed);
+
+    /**
+     * @brief Convierte las muestras del intervalo en pendientes posteriores.
+     * @details Aceptar una instalacion/escritura no libera el buffer. WB se
+     * retira por forwarding o confirmacion; EB solo por escritura correcta.
+     * En L2 se usan los handshakes fisicos de hit, retorno de memoria e
+     * instalacion: get_done puede serializar varias finalizaciones y llegar
+     * despues de que las posiciones se liberaron. En la referencia sin cache
+     * consumir una lectura de memoria no corresponde a ninguna posicion L2.
+     * Las sumas/maximos de ocupacion siguen usando la muestra del intervalo.
+     */
+    assign pending_after.wb_entries = wb_events_i.state.occupancy
+        + pkg_metrics::occupancy_t'(wb_events_i.enqueued.valid)
+        - pkg_metrics::occupancy_t'(wb_events_i.forwarded.valid)
+        - pkg_metrics::occupancy_t'(wb_events_i.install_done.valid);
+    assign pending_after.eb_entries = eb_events_i.state.occupancy
+        + pkg_metrics::occupancy_t'(eb_events_i.enqueued.valid)
+        - pkg_metrics::occupancy_t'(eb_events_i.write_done.valid && !eb_events_i.write_error);
+    assign pending_after.l2_inflight = configuration_q.reference_without_cache ? '0
+        : l2_events_i.inflight
+        + pkg_metrics::occupancy_t'(l2_events_i.get_accept.valid)
+        + pkg_metrics::occupancy_t'(wb_events_i.install_accept.valid)
+        - pkg_metrics::occupancy_t'(l2_events_i.promotion.valid)
+        - pkg_metrics::occupancy_t'(mem_events_i.read_rsp_consumed)
+        - pkg_metrics::occupancy_t'(wb_events_i.install_done.valid);
+    assign pending_after.mem_reads = memory_pending_after.reads;
+    assign pending_after.mem_writes = memory_pending_after.writes;
+    assign pending_after.mem_read_responses = memory_pending_after.read_responses;
+    assign pending_after.mem_write_responses = memory_pending_after.write_responses;
+
+    /** @brief El seguimiento avanza durante stalls e incorpora el propio stop. */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            memory_pending_q <= '0;
+        end else if (start_accepted) begin
+            memory_pending_q <= '0;
+        end else if (running_q) begin
+            memory_pending_q <= memory_pending_after;
+        end
+    end
 
     /**
      * @brief Incremento de cada contador en el flanco actual.
@@ -341,6 +421,7 @@ module performance_counters #(
             snapshot_valid_q <= 1'b0;
             failed_q <= 1'b0;
             overflow_q <= 1'b0;
+            configuration_q <= '0;
             for (int i = 0; i < NUM_COUNTERS; i++) begin
                 counters_q[i] <= '0;
             end
@@ -353,6 +434,7 @@ module performance_counters #(
             snapshot_valid_q <= 1'b0;
             failed_q <= 1'b0;
             overflow_q <= 1'b0;
+            configuration_q <= configuration_i;
             for (int i = 0; i < NUM_COUNTERS; i++) begin
                 counters_q[i] <= '0;
             end
@@ -386,16 +468,8 @@ module performance_counters #(
                 if (perf_stop_error_i) begin
                     failed_q <= 1'b1;
                 end
-                // El trabajo pendiente es estado, no cuenta: las ocupaciones
-                // siguen cambiando despues del cierre, asi que se capturan
-                // en este flanco, ya con sus eventos incorporados.
-                pending_q.wb_entries <= wb_events_i.state.occupancy;
-                pending_q.eb_entries <= eb_events_i.state.occupancy;
-                pending_q.l2_inflight <= l2_events_i.inflight;
-                pending_q.mem_reads <= mem_events_i.reads_pending;
-                pending_q.mem_writes <= mem_events_i.writes_pending;
-                pending_q.mem_read_responses <= mem_events_i.read_responses_pending;
-                pending_q.mem_write_responses <= mem_events_i.write_responses_pending;
+                // El drenado posterior no altera el estado resultante de EN.
+                pending_q <= pending_after;
             end
         end
     end
@@ -432,10 +506,10 @@ module performance_counters #(
     assign perf_overflow_o = overflow_q;
     assign perf_failed_o = failed_q;
 
-    /** @details Los grupos sin contadores todavia se publican en cero. */
+    /** @brief Vista de los registros de la medicion, estable despues de stop. */
     always_comb begin
         perf_snapshot_o = '0;
-        perf_snapshot_o.configuration = configuration_i;
+        perf_snapshot_o.configuration = configuration_q;
         perf_snapshot_o.overflow = overflow_q;
         perf_snapshot_o.failed = failed_q;
 

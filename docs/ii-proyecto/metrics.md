@@ -237,6 +237,13 @@ ocupaciones WB/EB, posiciones L2 ocupadas, transferencias aceptadas aún sin
 finalización disponible y respuestas disponibles sin consumir. Las unidades y
 nombres se conservan en la exportación.
 
+La configuración se captura al aceptar `perf_start` y pertenece a esa medición,
+aunque el entorno prepare otros parámetros antes del siguiente inicio. El cierre
+conserva el trabajo pendiente **después** de aplicar los eventos de `perf_stop`;
+las sumas y máximos de ocupación conservan la muestra del intervalo que termina
+en ese flanco. Configuración, contadores y pendientes permanecen congelados
+durante el drenado posterior, hasta reset o nuevo inicio.
+
 Un error de dirección, alineación, protocolo o timeout marca la ejecución como
 fallida y conserva evidencia parcial. Los resultados de rendimiento comparables
 corresponden a programas completados correctamente, con el resultado esperado y
