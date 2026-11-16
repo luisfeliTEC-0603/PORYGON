@@ -44,6 +44,38 @@ SYSTEM_RTL_SOURCES := $(RTL_SOURCES) \
 	$(RTL_DIR)/porygon_system.sv
 
 .PHONY: elaborate elaborate-core
+.PHONY: test-p2-12 sim-uncached sim-porygon-reference test-uncached-tools
+test-p2-12: sim-uncached sim-porygon-reference sim-metrics test-uncached-tools
+
+sim-uncached: $(BUILD_DIR)/uncached_2.vvp $(BUILD_DIR)/uncached_5.vvp
+	$(VVP) $(BUILD_DIR)/uncached_2.vvp
+	$(VVP) $(BUILD_DIR)/uncached_5.vvp
+
+$(BUILD_DIR)/uncached_2.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_uncached_memory.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_uncached_memory -o $@ $^
+
+$(BUILD_DIR)/uncached_5.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_uncached_memory.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_uncached_memory -Ptb_uncached_memory.DIV=5 \
+		-Ptb_uncached_memory.READ_FIRST=31 -Ptb_uncached_memory.WRITE_FIRST=29 -o $@ $^
+
+sim-porygon-reference: $(BUILD_DIR)/porygon_uncached.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/porygon_uncached.vvp: $(SYSTEM_RTL_SOURCES) $(SUPPORT_TB_DIR)/cpu_memory_reference.sv \
+	$(INTEGRATION_TB_DIR)/tb_porygon_hierarchy.sv $(SUPPORT_TB_DIR)/hierarchy_snapshot.svh \
+	$(PROGRAM_DIR)/top/top_integration.mem $(PROGRAM_DIR)/top/top_data.mem
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_porygon_hierarchy -Ptb_porygon_hierarchy.REFERENCE_WITHOUT_CACHE=1 -o $@ $(filter %.sv,$^)
+
+$(BUILD_DIR)/uncached_timeout_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_uncached_memory.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_uncached_memory -Ptb_uncached_memory.TIMEOUT_MODE=$* -o $@ $^
+
+test-uncached-tools: $(BUILD_DIR)/uncached_timeout_1.vvp $(BUILD_DIR)/uncached_timeout_2.vvp $(BUILD_DIR)/system.vvp $(BUILD_DIR)/system_reference.vvp
+	python3 tests/tools/test_uncached_tools.py
+
 .PHONY: test-p2-11 sim-line-return sim-data-hierarchy sim-porygon-hierarchy sim-controller-integration sim-write-buffer
 test-p2-11: sim-line-return sim-data-hierarchy sim-porygon-hierarchy sim-controller-integration sim-write-buffer sim-top
 
