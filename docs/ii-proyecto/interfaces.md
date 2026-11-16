@@ -131,6 +131,12 @@ forwarding y no se presenta su instalación. Una entrada en servicio no genera
 `wb_fwd_valid`. Con el buffer lleno, L1 conserva víctima y vía hasta aceptarse
 `wb_push`; el forwarding puede liberar espacio sin esperar su drenado.
 
+Si un retorno con error termina la demanda antes de que WB acepte su víctima,
+L1 conserva esa oferta y los metadatos del desalojo. Aunque la CPU ya haya
+consumido el error, no acepta otra demanda ni solicita otra línea hasta el ciclo
+posterior al handshake de esa víctima con WB. Esto evita reutilizar sus
+metadatos o cancelar el desalojo de una demanda nueva en ese mismo flanco.
+
 ## 3. L1 ↔ L2
 
 | Señales | Dirección | Significado |

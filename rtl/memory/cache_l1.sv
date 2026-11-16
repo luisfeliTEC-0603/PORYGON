@@ -323,7 +323,12 @@ module cache_l1 #(
         end
 
         case (state_q)
-            L1_IDLE: begin
+            /**
+             * Un retorno fallido puede terminar la demanda antes de entregar
+             * su victima a WB. Conserva sus metadatos y deja drenar wb_push;
+             * admite otro acceso solo en el ciclo posterior a esa entrega.
+             */
+            L1_IDLE: if (!evict_pending_q) begin
                 if (load_hit_now) begin
                     req_ready_internal = 1'b1;
                     rsp_valid_internal = 1'b1;

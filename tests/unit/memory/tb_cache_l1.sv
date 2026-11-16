@@ -739,6 +739,95 @@ module tb_cache_l1;
             dut.block_valid_q[2][1] !== 1'b1)
             $fatal(1, "Fallo tras consumo unico de CPU en 13b");
 
+        /**
+         * 14. Un fill fallido no permite mezclar la victima anterior con
+         * otra demanda; ambas victimas sucias deben entregarse a WB.
+         */
+        #1 rst_n = 1'b0;
+        #1 rst_n = 1'b1;
+        @(negedge clk);
+        for (integer s = 0; s < 2; s++) begin
+            dut.lru_victim_q[s] = 1'b0;
+            for (integer w = 0; w < 2; w++) begin
+                dut.block_valid_q[s][w] = 1'b1;
+                dut.block_dirty_q[s][w] = 1'b1;
+                dut.block_tag_q[s][w] = 21'h20 + w;
+                dut.block_data_q[s][w] = {8{32'hABCD_0000 + (s * 2) + w}};
+            end
+        end
+        req_valid = 1'b1;
+        req_write = 1'b0;
+        req_wstrb = 4'b0;
+        req_addr = 32'h0001_1000;
+        wb_push_ready = 1'b0;
+        wb_probe_hit = 1'b0;
+        wb_probe_busy = 1'b0;
+        fill_valid = 1'b0;
+        fill_error = 1'b0;
+        fill_dirty = 1'b0;
+        l2_ready = 1'b1;
+        l2_accept_id = 2'd1;
+        rsp_ready = 1'b1;
+        @(posedge clk); #1;
+        req_valid = 1'b0;
+        l2_ready = 1'b0;
+        @(negedge clk);
+        fill_valid = 1'b1;
+        fill_base = 32'h0001_1000;
+        fill_source = pkg_memory::FILL_MEMORY;
+        fill_id = 2'd1;
+        fill_error = 1'b1;
+        #1;
+        if (dut.dmem_rsp_valid_o !== 1'b1 || dut.dmem_rsp_error_o !== 1'b1 ||
+            dut.fill_ready_o !== 1'b1)
+            $fatal(1, "No se completo el retorno fallido con WB bloqueado");
+        @(posedge clk); #1;
+        fill_valid = 1'b0;
+        fill_error = 1'b0;
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_addr = 32'h0001_1020;
+        l2_ready = 1'b1;
+        l2_accept_id = 2'd2;
+        wb_push_ready = 1'b1;
+        #1;
+        if (dut.dmem_req_ready_o !== 1'b0 || dut.dmem_rsp_valid_o !== 1'b0 ||
+            dut.l2_get_valid_o !== 1'b0 || dut.wb_probe_valid_o !== 1'b0 ||
+            dut.wb_push_valid_o !== 1'b1 || dut.wb_push_base_o !== 32'h0001_0000 ||
+            dut.wb_push_data_o !== {8{32'hABCD_0000}} || dut.wb_push_dirty_o !== 1'b1)
+            $fatal(1, "Otro acceso interfirio con la victima del retorno fallido");
+        @(posedge clk); #1;
+        if (dut.dmem_req_ready_o !== 1'b1 || dut.l2_get_valid_o !== 1'b1 ||
+            dut.pending_addr_q !== 32'h0001_1000 || dut.evict_pending_q !== 1'b0 ||
+            dut.block_valid_q[0][0] !== 1'b0)
+            $fatal(1, "No se libero la admision despues de entregar la victima anterior");
+        @(posedge clk); #1;
+        req_valid = 1'b0;
+        l2_ready = 1'b0;
+        if (dut.evict_pending_q !== 1'b1)
+            $fatal(1, "La entrega anterior borro el desalojo de la nueva demanda");
+        @(negedge clk);
+        fill_valid = 1'b1;
+        fill_base = 32'h0001_1020;
+        fill_source = pkg_memory::FILL_L2;
+        fill_id = 2'd2;
+        fill_data = {8{32'hFACE_B00C}};
+        #1;
+        if (dut.wb_push_valid_o !== 1'b1 || dut.wb_push_base_o !== 32'h0001_0020 ||
+            dut.wb_push_data_o !== {8{32'hABCD_0002}} || dut.wb_push_dirty_o !== 1'b1 ||
+            dut.perf_events_o.eviction.valid !== 1'b1 || dut.dmem_rsp_valid_o !== 1'b1 ||
+            dut.dmem_rsp_error_o !== 1'b0 || dut.dmem_rsp_rdata_o !== 32'hFACE_B00C)
+            $fatal(1, "La nueva victima sucia no se preservo antes de instalar el retorno");
+        @(posedge clk); #1;
+        fill_valid = 1'b0;
+        wb_push_ready = 1'b0;
+        rsp_ready = 1'b0;
+        if (dut.state_q !== dut.L1_IDLE || dut.evict_pending_q !== 1'b0 ||
+            dut.block_tag_q[1][0] !== 21'h22 || dut.block_valid_q[1][0] !== 1'b1 ||
+            dut.block_data_q[1][0] !== {8{32'hFACE_B00C}})
+            $fatal(1, "La nueva demanda no termino correctamente despues del error");
+
+        $display("PASS L1: retorno fallido conserva desalojo y bloquea nueva admision hasta entregarlo");
         $display("PASS L1: reset inicial, repetido y conservacion de invalidez");
         $display("PASS L1: id valido solo tras aceptacion L2 y cancelado por reset");
         $display("PASS L1: reset bloquea canales con vecinos e intenciones activos");
