@@ -15,6 +15,9 @@ module tb_top;
     address_t instruction_access_error_pc;
     logic data_access_error;
     address_t data_access_error_pc;
+    logic perf_start = 0;
+    integer advances = 0;
+    `include "hierarchy_snapshot.svh"
 
     integer checks_passed = 0;
     integer data_access_errors = 0;
@@ -33,6 +36,7 @@ module tb_top;
     ) dut (
         .clk_i(clk),
         .rst_ni(rst_n),
+        .perf_start_i(perf_start), .perf_stop_i(1'b0), .perf_stop_error_i(1'b0),
         .authenticated_o(authenticated),
         .auth_failed_o(auth_failed),
         .access_error_o(access_error),
@@ -46,6 +50,8 @@ module tb_top;
     );
 
     always @(posedge clk) begin
+        if (!rst_n) advances = 0;
+        else if (dut.u_processor.pipeline_advance) advances++;
         if (rst_n) begin
             if (data_access_error) begin
                 data_access_errors = data_access_errors + 1;
@@ -111,6 +117,9 @@ module tb_top;
         // debe cancelar ID/EX, multiplicacion, loads y eventos pendientes.
         @(negedge clk);
         rst_n = 1'b1;
+        perf_start = 1'b1;
+        @(negedge clk);
+        perf_start = 1'b0;
         wait (dut.instruction_address == 32'h0000_00C0);
         @(negedge clk);
         rst_n = 1'b0;
@@ -127,8 +136,12 @@ module tb_top;
         // Segunda pasada completa desde PC=0.
         @(negedge clk);
         rst_n = 1'b1;
-        repeat (45) @(posedge clk);
+        perf_start = 1'b1;
+        @(negedge clk);
+        perf_start = 1'b0;
+        wait (advances == 45);
         #1;
+        capture_architectural_memory();
 
         expect_word("r0 constante", dut.u_processor.u_register_file.registers_q[0],
                     32'h0000_0000);
@@ -147,10 +160,10 @@ module tb_top;
         expect_word("r7 branch no tomado", dut.u_processor.u_register_file.registers_q[7],
                     32'h0000_2223);
 
-        expect_byte("RAM +4 byte 0", dut.u_data_memory.memory[4], 8'h78);
-        expect_byte("RAM +5 byte preservado/escrito", dut.u_data_memory.memory[5], 8'h78);
-        expect_byte("RAM +6 byte preservado", dut.u_data_memory.memory[6], 8'h34);
-        expect_byte("RAM +7 byte preservado", dut.u_data_memory.memory[7], 8'h12);
+        expect_byte("Datos +4 byte 0", architectural_memory[4], 8'h78);
+        expect_byte("Datos +5 byte preservado/escrito", architectural_memory[5], 8'h78);
+        expect_byte("Datos +6 byte preservado", architectural_memory[6], 8'h34);
+        expect_byte("Datos +7 byte preservado", architectural_memory[7], 8'h12);
 
         if (data_access_errors != 1 ||
             last_data_access_error_pc !== 32'h0000_00A8) begin
@@ -167,7 +180,7 @@ module tb_top;
         end
         checks_passed = checks_passed + 1;
 
-        $writememh("build/memory_dump.mem", dut.u_data_memory.memory);
+        $writememh("build/memory_dump.mem", architectural_memory);
         $display("RAM dump: build/memory_dump.mem");
         $display("PASS tb_top: %0d comprobaciones", checks_passed);
         $finish;

@@ -1,5 +1,5 @@
 /**
- * @brief Conexion estructural de los skeletons de la jerarquia del Proyecto II.
+ * @brief Jerarquia exclusiva L1/WB/L2/EB/controlador/memoria del Proyecto II.
  * @param WRITE_BUFFER_DEPTH Entradas de WB; cuatro por defecto.
  * @param EVICTION_BUFFER_DEPTH Entradas de EB; ocho por defecto.
  * @param L2_MAX_INFLIGHT Operaciones L2 aceptadas; rango 1..4.
@@ -9,10 +9,10 @@
  * @param MEM_TIMEOUT_CYCLES Tiempo hasta resultado disponible en ciclos CPU.
  * @param DATA_INIT_FILE Imagen opcional de bytes de memoria principal.
  * @param DATA_INIT_BYTES Cantidad de bytes inicializados; cero usa toda imagen.
- * @details La conexion conserva porygon_system y el nucleo existentes. Todos
+ * @details Todos
  * los canales de linea y metricas estan en clk_i; el controlador genera el
- * reloj y reset de main_memory. Los modulos instanciados son skeletons sin
- * logica funcional. La integracion con CPU corresponde a P2-09/P2-11.
+ * reloj y reset de main_memory. El retorno de memoria entrega datos solo a L1;
+ * L2 observa exactamente ese consumo. P2-10 completa el observador conectado.
  * @see docs/ii-proyecto/skeletons.md
  */
 module data_memory_hierarchy #(

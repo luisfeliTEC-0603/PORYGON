@@ -1,5 +1,5 @@
 /**
- * @brief Skeleton de seleccion de retorno WB/L2/memoria a L1.
+ * @brief Seleccion sin latencia adicional del retorno WB/L2/memoria a L1.
  * @param L2_MAX_INFLIGHT Limite 1..4; determina el ancho de ids de retorno.
  * @details Solo hay un origen autorizado por demanda. Se propaga ready solo
  * al seleccionado y el handshake es simultaneo al de fill en L1. La seleccion
@@ -50,5 +50,104 @@ module line_return #(
     /** @brief Pulso de error local de seleccion, por ejemplo ofertas ilegales. */
     output pkg_metrics::error_event_t perf_error_o
 );
-    // TODO P2-11: seleccion, propagacion de ready y diagnostico de protocolo.
+    localparam integer ID_W = pkg_memory::id_width(L2_MAX_INFLIGHT);
+    typedef struct packed {
+        pkg_memory::address_t base;
+        pkg_memory::line_t data;
+        logic dirty;
+        logic error;
+        pkg_memory::fill_source_t source;
+        logic [ID_W-1:0] id;
+    } return_t;
+
+    return_t offered, held_q, selected;
+    logic held_valid_q, conflict_reported_q;
+    logic [2:0] offers;
+    logic single_offer, conflict;
+
+    assign offers = {mem_rd_rsp_valid_i, l2_fill_valid_i, wb_fwd_valid_i};
+    assign single_offer = (offers == 3'b001) || (offers == 3'b010) ||
+                          (offers == 3'b100);
+    assign conflict = (|offers) && !single_offer;
+
+    /**
+     * @brief Los productores autorizan un unico origen por demanda.
+     * @details Ofertas simultaneas son un error, no una prioridad de arbitraje.
+     * Una oferta ya retenida conserva su identidad hasta el consumo de L1.
+     */
+    always_comb begin
+        offered = '0;
+        offered.source = pkg_memory::FILL_RESERVED;
+        case (offers)
+            3'b001: begin
+                offered.base = wb_fwd_base_i;
+                offered.data = wb_fwd_data_i;
+                offered.dirty = wb_fwd_dirty_i;
+                offered.source = pkg_memory::FILL_WB;
+            end
+            3'b010: begin
+                offered.base = l2_fill_base_i;
+                offered.data = l2_fill_data_i;
+                offered.dirty = l2_fill_dirty_i;
+                offered.error = l2_fill_error_i;
+                offered.source = pkg_memory::FILL_L2;
+                offered.id = l2_fill_id_i;
+            end
+            3'b100: begin
+                offered.base = mem_rd_rsp_base_i;
+                offered.data = mem_rd_rsp_data_i;
+                offered.error = mem_rd_rsp_error_i;
+                offered.source = pkg_memory::FILL_MEMORY;
+                offered.id = mem_rd_rsp_id_i;
+            end
+            default: begin end
+        endcase
+    end
+
+    assign selected = held_valid_q ? held_q : offered;
+    assign fill_valid_o = rst_ni && (held_valid_q || single_offer);
+    assign fill_base_o = selected.base;
+    assign fill_data_o = selected.data;
+    assign fill_dirty_o = selected.dirty;
+    assign fill_error_o = selected.error;
+    assign fill_source_o = selected.source;
+    assign fill_id_o = selected.id;
+
+    /** @brief Ready no participa en elegir datos: el handshake es el de L1. */
+    assign wb_fwd_ready_o = fill_valid_o && fill_ready_i &&
+                           (selected.source == pkg_memory::FILL_WB);
+    assign l2_fill_ready_o = fill_valid_o && fill_ready_i &&
+                            (selected.source == pkg_memory::FILL_L2);
+    assign mem_rd_rsp_ready_o = fill_valid_o && fill_ready_i &&
+                               (selected.source == pkg_memory::FILL_MEMORY);
+
+    /**
+     * @brief Captura solamente ante bloqueo; el camino libre es combinacional.
+     * @details No consume el origen antes de L1 ni crea otra confirmacion.
+     * Reset cancela tambien la oferta retenida y el diagnostico pendiente.
+     */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            held_valid_q <= 1'b0;
+            held_q <= '0;
+            conflict_reported_q <= 1'b0;
+        end else begin
+            if (fill_valid_o && fill_ready_i) begin
+                held_valid_q <= 1'b0;
+            end else if (fill_valid_o && !held_valid_q) begin
+                held_valid_q <= 1'b1;
+                held_q <= offered;
+            end
+            conflict_reported_q <= conflict;
+        end
+    end
+
+    always_comb begin
+        perf_error_o = '0;
+        if (rst_ni && conflict && !conflict_reported_q) begin
+            perf_error_o.valid = 1'b1;
+            perf_error_o.kind = pkg_metrics::ERROR_PROTOCOL;
+            perf_error_o.address = fill_base_o;
+        end
+    end
 endmodule

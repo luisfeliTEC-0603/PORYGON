@@ -4,7 +4,7 @@
  * @brief Testbench configurable para ejecutar cualquier programa y datos en porygon_system.
  * 
  * Permite pasar rutas de archivos y un watchdog por linea de comandos.
- * La ejecucion normal termina al observar un salto tomado hacia su propio PC.
+ * La ejecucion normal termina al vaciar el programa tras su salto final.
  */
 module tb_system;
     import pkg_vliw::*;
@@ -21,6 +21,10 @@ module tb_system;
     address_t instruction_access_error_pc;
     logic data_access_error;
     address_t data_access_error_pc;
+    logic perf_start = 0, perf_stop;
+    logic stop_done, halted;
+    pkg_metrics::cpu_events_t cpu_events;
+    `include "hierarchy_snapshot.svh"
 
     localparam integer DEFAULT_MAX_CYCLES = 100000;
 
@@ -48,6 +52,9 @@ module tb_system;
     porygon_system dut (
         .clk_i(clk),
         .rst_ni(rst_n),
+        .perf_start_i(perf_start), .perf_stop_i(perf_stop),
+        .perf_stop_error_i(perf_stop), .stop_done_o(stop_done), .halted_o(halted),
+        .cpu_events_o(cpu_events),
         .authenticated_o(authenticated),
         .auth_failed_o(auth_failed),
         .access_error_o(access_error),
@@ -71,29 +78,34 @@ module tb_system;
             halt_detected <= 1'b0;
             watchdog_expired <= 1'b0;
             halt_pc <= '0;
-        end else if (!halt_detected && !watchdog_expired) begin
+        end else if (dut.core_started_q && !halt_detected && !watchdog_expired) begin
             cycle_count <= cycle_count + 1;
             if (data_access_error) begin
                 data_access_errors <= data_access_errors + 1;
                 $display("[ERROR] data_access_error at cycle %0d, pc=0x%08h, addr=0x%08h",
                          cycle_count, data_access_error_pc, dut.data_address);
             end
-            if (instruction_access_error) instruction_access_errors <= instruction_access_errors + 1;
+            if (cpu_events.instruction_error.valid) instruction_access_errors <= instruction_access_errors + 1;
             if (invalid_address) alignment_errors <= alignment_errors + 1;
             if (auth_failed) auth_failed_errors <= auth_failed_errors + 1;
             if (access_error) access_errors <= access_errors + 1;
 
             // El codegen representa halt como un salto tomado al PC del propio JUMP.
-            if (dut.u_processor.branch_taken &&
+            if (dut.u_processor.stop_fire &&
                 (dut.u_processor.branch_target ==
                  dut.u_processor.u_execution.bruh_i.pc)) begin
-                halt_detected <= 1'b1;
                 halt_pc <= dut.u_processor.u_execution.bruh_i.pc;
+            end
+            if (stop_done) begin
+                halt_detected <= 1'b1;
             end else if ((cycle_count + 1) >= max_cycles) begin
                 watchdog_expired <= 1'b1;
             end
         end
     end
+
+    assign perf_stop = rst_n && dut.core_started_q && !halt_detected && !stop_done &&
+                       ((cycle_count + 1) >= max_cycles);
 
     initial begin
         void'($value$plusargs("INSTR=%s", instr_file));
@@ -106,12 +118,14 @@ module tb_system;
         $dumpfile(vcd_file);
         $dumpvars(0, tb_system);
 
+        #1;
+
         if (instr_file != "") begin
             $readmemh(instr_file, dut.u_instruction_memory.memory);
             $display("[tb_system] Instrucciones cargadas desde: %0s", instr_file);
         end
         if (data_file != "") begin
-            $readmemh(data_file, dut.u_data_memory.memory);
+            $readmemh(data_file, dut.u_data_memory.u_main_memory.u_storage.memory);
             $display("[tb_system] Datos cargados desde: %0s", data_file);
         end
 
@@ -120,6 +134,9 @@ module tb_system;
         #1;
         @(negedge clk);
         rst_n = 1'b1;
+        perf_start = 1'b1;
+        @(negedge clk);
+        perf_start = 1'b0;
 
         wait (halt_detected || watchdog_expired);
         #1;
@@ -142,7 +159,8 @@ module tb_system;
         end
         $display("=======================================================");
 
-        $writememh(dump_file, dut.u_data_memory.memory);
+        capture_architectural_memory();
+        $writememh(dump_file, architectural_memory);
         $display("Volcado de memoria generado en: %0s", dump_file);
 
         if (result_file != "") begin

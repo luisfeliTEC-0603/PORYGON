@@ -13,7 +13,7 @@ SUPPORT_TB_DIR := tests/support
 INTEGRATION_TB_DIR := tests/integration
 PROGRAM_DIR := tests/programs
 
-COMMON_FLAGS := -g2012 -Wall -I$(RTL_DIR)
+COMMON_FLAGS := -g2012 -Wall -I$(RTL_DIR) -I$(SUPPORT_TB_DIR)
 PKG := $(RTL_DIR)/pkg_vliw.sv
 MEMORY_PKG := $(MEMORY_DIR)/pkg_memory.sv
 METRICS_PKG := $(RTL_DIR)/metrics/pkg_metrics.sv
@@ -30,9 +30,17 @@ RTL_SOURCES := $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
 RTL_SOURCES += $(CORE_DIR)/bundle_completions.sv
 RTL_SOURCES += $(CORE_DIR)/core_metrics.sv
 
-# Sistema conectado: memorias reales de simulacion y wrapper del nucleo.
+# Jerarquia completa; el orden de paquetes precede a todos los consumidores.
+HIERARCHY_RTL_SOURCES := $(MEMORY_DIR)/memory_sp_ram.sv \
+	$(MEMORY_DIR)/main_memory.sv $(MEMORY_DIR)/memory_controller.sv \
+	$(MEMORY_DIR)/eviction_buffer.sv $(MEMORY_DIR)/write_buffer.sv \
+	$(MEMORY_DIR)/cache_l1.sv $(wildcard $(MEMORY_DIR)/cache_l2/*.sv) \
+	$(MEMORY_DIR)/line_return.sv $(RTL_DIR)/metrics/performance_counters.sv \
+	$(MEMORY_DIR)/data_memory_hierarchy.sv
+
+# Sistema conectado: ROM y jerarquia real, con observador pendiente de P2-10.
 SYSTEM_RTL_SOURCES := $(RTL_SOURCES) \
-	$(MEMORY_DIR)/instruction_memory.sv $(MEMORY_DIR)/memory_sp_ram.sv \
+	$(MEMORY_DIR)/instruction_memory.sv $(HIERARCHY_RTL_SOURCES) \
 	$(RTL_DIR)/porygon_system.sv
 
 .PHONY: elaborate elaborate-core
@@ -160,12 +168,13 @@ sim-top: $(BUILD_DIR)/top.vvp | $(WAVE_DIR)
 sim-system: $(BUILD_DIR)/system.vvp | $(WAVE_DIR)
 	$(VVP) $< $(ARGS)
 
-$(BUILD_DIR)/system.vvp: $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_system.sv
+$(BUILD_DIR)/system.vvp: $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_system.sv $(SUPPORT_TB_DIR)/hierarchy_snapshot.svh
 	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_system -o $@ $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_system.sv
 
 
 $(BUILD_DIR)/top.vvp: $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_top.sv \
+	$(SUPPORT_TB_DIR)/hierarchy_snapshot.svh \
 	$(PROGRAM_DIR)/top/top_integration.mem $(PROGRAM_DIR)/top/top_data.mem
 	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_top -o $@ $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_top.sv
