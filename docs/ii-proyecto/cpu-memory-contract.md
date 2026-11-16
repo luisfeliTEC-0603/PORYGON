@@ -16,7 +16,8 @@ de IF/ID y fetch registra el PC y la validez en paralelo. No hay otro registro
 del bundle en fetch ni una etapa adicional. Los saltos ordinarios conservan
 sus dos bundles de retardo. La lectura habilitada registra NOP y un diagnóstico
 con su PC ante dirección inválida; sin lectura conserva el bundle. El control
-global de retención y parada se incorpora con la adaptación del núcleo.
+global de retención, el cierre de admisión y la detección de vaciado por parada
+ya están implementados en el núcleo.
 
 ## 2. Responsabilidades
 
@@ -55,6 +56,12 @@ solicitud o respuesta disponible; `ready`, que el receptor puede aceptarla.
 | `dmem_rsp_ready_o` | 1 | CPU → L1 | Puede consumir la respuesta. |
 | `dmem_rsp_rdata_i` | 32 | L1 → CPU | Palabra leída; cero en store o error. |
 | `dmem_rsp_error_i` | 1 | L1 → CPU | El acceso terminó con error. |
+
+`vliw_processor` usa estos nombres y los tipos de palabra, dirección y máscara
+de `pkg_memory`. El tipo de acceso se expone en `dmem_req_write_o`; la preparación
+de lectura se conserva como señal interna, sin un segundo habilitador externo.
+En un store válido, `req_write=1` y la máscara selecciona sus bytes; una lectura
+presenta `req_write=0`, máscara cero y dato de escritura cero.
 
 ## 4. Funcionamiento
 
@@ -153,8 +160,8 @@ estaba en L2, se obtiene de memoria principal.
 - **Pipeline detenido:** se conservan PC, registros, resultados y metadatos;
   se inhiben escrituras al RF, saltos y aceptación de instrucciones criptográficas.
   La lógica de solicitud pendiente, las cachés y los buffers siguen funcionando.
-  El temporizador de autenticación y su expiración siguen activos, según la
-  regla siguiente.
+  El temporizador de autenticación conserva su cuenta durante el congelamiento,
+  según la regla siguiente; su reloj y los componentes de memoria siguen activos.
 - **Acceso inválido:** la LSU rechaza desalineación; L1 responde con error a
   direcciones fuera de rango. Se emite un diagnóstico único y se suprime el WB
   del load. Los otros slots continúan al avanzar.
@@ -194,32 +201,46 @@ sus dos bundles de retardo y su comportamiento actual.
 | Una multiplicación anterior todavía tiene un resultado pendiente | Continúa hasta escribirlo; la medición sigue activa hasta incluir esa finalización. |
 | El bundle del marcador tiene otra operación aún pendiente | Se completa también esa operación antes de declarar el pipeline vacío. |
 
+El núcleo expone `stop_done_o`, pulso combinacional que el entorno muestrea en
+el último flanco de ejecución para generar `perf_stop` e incluir sus eventos.
+`halted_o` registra la parada completa después de ese mismo flanco y permanece
+activo hasta reset; desde entonces se inhibe el avance del núcleo. Los controles
+de medición siguen perteneciendo al entorno: estas salidas no son contadores.
+
 ### Temporizador de autenticación
 
-El temporizador cuenta **ciclos reales del reloj de CPU**, incluidos todos los
-ciclos de congelamiento por memoria. No se pausa con el pipeline ni con los
-contadores de rendimiento. Mientras la sesión está autenticada, cada flanco
-sin actividad que la recargue reduce en uno el tiempo restante; al pasar de uno
-a cero se revoca la autenticación y se limpia la credencial temporal, aunque el
-núcleo esté detenido.
+El temporizador cuenta **ciclos de avance del núcleo**, incluidos los bundles
+NOP. Durante todas las esperas de memoria —aceptación, atención y consumo—
+conserva su cuenta y no expira por el paso de esos ciclos reales. Mientras la
+sesión está autenticada, cada flanco de avance sin actividad que la recargue
+reduce en uno el tiempo restante; al pasar de uno a cero se revoca la
+autenticación y se limpia la credencial temporal.
+
+La bóveda conserva su reloj. `timer_tick_i`, conectado al permiso de avance,
+habilita únicamente descuento y expiración; no condiciona reset ni los efectos
+de instrucciones aceptadas. Esta cuenta es independiente de la ventana de
+medición: los contadores de rendimiento y el timeout de memoria siguen contando
+ciclos reales. Las esperas de la jerarquía no consumen la ventana de sesión.
 
 Se conservan las reglas de la bóveda: `auth` exitoso carga 32 ciclos por defecto;
 `write`, `feistel` y `lopw` aceptados durante una sesión autenticada recargan ese
 valor. `rvk`, `pwd` exitoso y reset cierran la sesión. Una recarga aceptada tiene
-prioridad sobre el decremento del mismo flanco. Sin recargas, una sesión cargada
-en `E0` expira en `E32`.
+prioridad sobre el decremento del mismo flanco. Sin recargas, una sesión expira
+tras 32 avances posteriores a su carga; sin stalls, cargar en `E0` expira en `E32`.
 
 Una instrucción criptográfica se acepta una sola vez, al avanzar efectivamente
 desde EX. Mantenerla durante un stall no ejecuta su operación ni recarga el
-temporizador. La autorización se evalúa al aceptarla: si expiró durante la
-espera, una operación que la requiere se rechaza con el diagnóstico existente
-y sin modificar llaves ni producir un resultado autorizado. Los resultados de
+temporizador. La autorización se evalúa al aceptarla: una sesión ya cerrada
+rechaza la operación protegida con el diagnóstico existente, sin modificar
+llaves ni producir un resultado autorizado. Una sesión vigente no caduca por
+una espera de memoria. Los resultados de
 operaciones ya aceptadas se conservan durante el congelamiento.
 
 | Caso | Comportamiento esperado |
 | --- | --- |
-| Quedan 32 ciclos de sesión y comienza una espera de memoria de 47 ciclos, sin recargas | La sesión expira durante la espera, tras 32 ciclos reales. |
-| Una instrucción protegida permanece en EX durante esa espera | No actúa ni recarga la sesión; al reanudar se valida con la autorización vigente. |
+| Quedan 32 ciclos de sesión y comienza una espera de memoria de 47 ciclos, sin recargas | La sesión conserva los 32 ciclos restantes durante toda la espera. |
+| Una instrucción protegida permanece en EX durante esa espera | No actúa ni recarga; al reanudar se valida con la sesión conservada. |
+| La sesión está cargada y el núcleo avanza 32 ciclos sin recargas, incluidos NOPs | Sigue activa tras 31 avances y expira en el 32. |
 | Queda un ciclo y se acepta una operación que recarga la sesión | Se acepta con la autorización previa al flanco y se recarga; no expira en ese flanco. |
 
 ## 5. Tiempos de referencia
@@ -267,16 +288,139 @@ para load como para store; una respuesta retenida todavía no emite el evento.
 `advance_i` habilita esa frontera: durante su desactivación se conserva el canal
 completo. El control debe permitir avance en el mismo flanco de consumo de una
 respuesta. Reset cancela el resultado pendiente; el consumidor debe inhibir la
-escritura RF durante un stall. Los demás canales aún no usan ese habilitador.
+escritura RF durante un stall. ALU0 también conserva su canal completo con
+`advance_i`; su resultado anterior no se sustituye por la operación de EX mientras
+esta espera memoria. SuperALU usa ese mismo permiso para sus dos etapas MUL,
+los tags paralelos y su canal WB compartido, tanto para productos como resultados
+rápidos. Datos, destino, selección de mitad y procedencia se conservan juntos.
+Las latencias estáticas se mantienen en ciclos de avance, con reset prioritario.
+CRYPTO acepta el slot solo con avance efectivo. `crypto_wb` y su tag conservan
+resultados y eventos durante la espera; execution_stage califica los diagnósticos
+con el avance para no repetirlos. La bóveda conserva su reloj y recibe
+`timer_tick_i` desde ese permiso para pausar solo la cuenta de sesión durante
+las esperas. La autorización se valida al aceptar la instrucción.
+
+Fetch usa `advance_i` para habilitar tanto PC y metadatos IF/ID como la lectura
+de ROM: con el permiso desactivado también se conserva el bundle registrado.
+Writeback califica los cinco habilitadores RF con el mismo permiso, manteniendo
+datos y destinos. La retención de resultados pertenece a los productores; estos
+habilitadores ya reciben el permiso común desde `vliw_processor`.
+
+El núcleo genera `pipeline_advance` combinacionalmente: con reset inactivo,
+avanza si no hay acceso alineado preparado en EX o si se consume su respuesta.
+La operación activa se reconoce por lectura o máscara de escritura preparada,
+no por `req_valid`, que baja después de aceptar. El permiso habilita fetch,
+las cinco operaciones ID/EX, las etapas/tags MUL, los registros WB de
+ALU0/SuperALU/load/CRYPTO y los cinco puertos RF. CRYPTO también conserva su tag.
+Una desalineación permite avanzar sin solicitud; una respuesta con error también
+reanuda. `completion_ready_i` está activo fuera de reset: el canal WB anterior
+puede escribir en el mismo flanco en que se captura el nuevo, sin una cola ni
+un consumidor independiente que bloquee la salida. Aceptar una solicitud sigue
+siendo independiente del avance. El retorno no añade una burbuja obligatoria.
 
 **Estado de implementación:** la FSM y el formato/error de respuesta se verifican
 aisladamente con `tests/unit/tb_lost_handshake.sv`. `tests/unit/tb_load_wb.sv`
-comprueba la captura y retención del canal completo en execution_stage, sin RF.
-Los campos aún usan los nombres
-de preparación anteriores (`memory_*`), calificados para CPU–L1 por
-`dmem_req_valid_o`. Las conexiones del núcleo a RAM todavía no usan el protocolo
-nuevo. Quedan pendientes el control de avance desde el núcleo, el consumo de
-diagnósticos y la integración del congelamiento global, incluida la inhibición
-de escrituras RF; esta etapa no constituye una integración funcional del
-núcleo con la jerarquía. Las pruebas anteriores de LSU con respuesta síncrona
+comprueba captura y retención de ALU0 y load en execution_stage, sin RF: una suma
+anterior conserva valor, destino y procedencia durante la espera del load. Al
+reanudar se captura el nuevo canal; reset cancela también ALU0 con avance detenido.
+La misma prueba pausa MUL/MULH consecutivos en EX1, EX2 y WB, comprobando valor,
+destino, PC e instrucción, la salida posterior sin duplicados, una operación
+rápida retenida y cancelación por reset. `tb_super_alu.sv` mantiene la verificación
+aritmética sin stalls con el permiso habilitado continuamente.
+La prueba EX/WB autentica, acepta Feistel y conserva sus dos resultados durante
+47 ciclos con WRITE retenido: la cuenta sigue en 32 y la llave no se modifica.
+Al reanudar acepta el WRITE y lo aplica. Después de 31 avances sin recargas la
+sesión sigue activa y expira en el 32; un WRITE posterior se rechaza, conserva
+el PC de su error durante otro stall y emite el diagnóstico una vez. Verifica reset con
+un diagnóstico pendiente y sin avance. Las pruebas crypto_unit/crypto_wb previas
+se ejecutan con avance continuo.
+`tests/unit/tb_pipeline_hold.sv` verifica ROM/fetch y cuenta efectos de los cinco
+puertos WB durante una espera y su reanudación, sin integrar un banco RF.
+`tests/unit/tb_core_memory_wait.sv` comprueba en el núcleo retención de PC e ID/EX,
+aceptación única y reanudación por respuesta fallida, con dobles de protocolo.
+La interfaz externa del núcleo ya usa `dmem_req_*`/`dmem_rsp_*`, con tipo de acceso
+explícito. Los nombres `memory_*` permanecen solo en la preparación interna de
+LSU/execution_stage. `make sim-core-memory-wait` verifica además los campos de
+lectura y de un store byte con dirección alineada y máscara desplazada.
+Las conexiones del wrapper de RAM todavía no usan el protocolo nuevo. Quedan
+pendientes la integración de diagnósticos de memoria y las métricas.
+
+El modelo de pruebas `tests/support/cpu_memory_reference.sv` implementa datos y
+protocolo CPU–L1 de una demanda, sin etiquetas ni reemplazo de caché. Su arreglo
+de bytes se inicializa en cero o desde imagen existente; lee palabras little
+endian y aplica stores por máscara. Los helpers rechazan rango inválido o
+desalineación sin indexar el arreglo; el protocolo devuelve error y dato cero.
+`accept_enable_i` permite forzar espera de aceptación. `RESPONSE_CYCLES` fija el
+flanco de respuesta contando la aceptación como E1: los perfiles 1/9/48 responden
+en E1/E9/E48 sin depender del avance del núcleo. La demanda aceptada conserva
+dirección, tipo, dato y máscara; la respuesta se retiene hasta su consumo.
+El store se aplica una vez al terminar servicio, incluso si se demora el consumo.
+Reset cancela demanda/respuesta pendientes, conserva datos y no revierte stores
+ya completados. `make sim-reference-storage` verifica datos y helpers;
+`make sim-reference-timing` verifica esos tres perfiles, esperas de aceptación y
+consumo, campos retenidos, store único, error de rango y reset. Aún no constituye
+una prueba integrada de jerarquía real.
+
+`make sim-core-reference` conecta el modelo, la ROM síncrona y el núcleo con la
+imagen existente `top_integration.mem`. Ejecuta perfiles E1/E9/E48 con aceptación
+inmediata o dos flancos iniciales de bloqueo. Comprueba seis demandas completas,
+un diagnóstico de rango, avance en el mismo flanco de respuesta, inhibición de
+los cinco puertos RF durante stalls y valores finales de loads, MUL, ALU y
+stores por máscara. Verifica que el load fallido conserva su destino anterior
+y que el slot ALU concurrente termina. La imagen también contiene saltos y RVK.
+Las pasadas de esa imagen terminan desde el testbench después de 45 avances.
+Quedan pruebas integradas de autenticación/Feistel, procedencia retenida,
+reset durante demandas y los eventos de métricas/cierre.
+
+El primer incremento de parada implementa `stop_fire` en `vliw_processor`:
+requiere un salto válido tomado al propio PC y avance efectivo. En ese mismo
+flanco `stop_admission` inhibe la lectura ROM, invalida IF/ID y sustituye lo que
+entraría desde ID a EX por burbujas inválidas. `stop_requested_q` conserva el
+cierre hasta reset. Fetch recibe `stop_i` con prioridad reset, parada, avance;
+conserva PC/metadatos e invalida el bundle. Ejecución y WB siguen avanzando bajo
+el permiso habitual de memoria, por lo que completan operaciones del marcador
+y anteriores. El cierre completo se conecta mediante la previsión descrita abajo.
+
+La prueba integrada verifica marcador solo, load/MUL, ALU, error CRYPTO, store
+y load fallido, en los tres perfiles. Bloquea aceptación de memoria dos flancos
+y verifica que no se registre la parada durante esa espera; comprueba ID/EX
+vacío, PC retenido y ausencia de efectos de una suma y un store posteriores al
+marcador. Reinicia entre casos para verificar reapertura.
+
+El primer incremento del observador de vaciado añade
+`execution_stage.work_after_advance_o`: previsión combinacional del trabajo que
+permanecería después de un flanco con `advance_i=1`. Incluye nuevas salidas de
+ALU/load hacia WB y las dos etapas MUL; el WB actual se consume en ese flanco
+y no añade otro ciclo de espera. No filtra destinos `r0`. Saltos, stores y
+errores LSU terminan en EX; una espera de memoria sigue impidiendo el avance.
+La previsión no indica vacío durante un stall: solo puede interpretarse al
+avanzar, y reset la lleva a cero.
+
+CRYPTO entrega su propia previsión: Feistel conserva una finalización en WB,
+incluso con ambos destinos `r0`, y los errores de autenticación/acceso esperan
+la emisión de su diagnóstico registrado. Las operaciones correctas de bóveda
+terminan al aplicar su efecto en EX, sin prolongar el vaciado por su tag.
+`make sim-load-wb` verifica la previsión antes del flanco para ALU0, load,
+MUL/MULH, operaciones rápidas, bóveda correcta, errores y Feistel con destinos
+`r0`, manteniendo las comprobaciones anteriores de resultados y retención.
+El núcleo conecta esa previsión al cierre:
+`stop_done_o = stop_admission && pipeline_advance && !work_after_advance`.
+`stop_admission` incluye el propio reconocimiento del marcador, por lo que un
+marcador sin trabajo futuro puede cerrar en su flanco de EX. El WB que termina
+en ese flanco no prolonga el vaciado. `halted_q` se registra al muestrear el pulso
+e inhibe avances posteriores; reset limpia tanto esa marca como la solicitud
+de parada. La LSU no puede cerrar anticipadamente: una demanda que aún espera
+su respuesta mantiene el avance inhibido.
+
+La prueba usa `halted_o` en lugar de un margen fijo para observar resultados.
+Verifica un único pulso en el ciclo exacto: marcador solo, store y load fallido
+cierran al avanzar el marcador; ALU y diagnóstico CRYPTO un avance después;
+load/MUL tres avances después, coincidiendo con el RF del producto. Confirma
+resultados y diagnósticos del último flanco, persistencia de parada y reapertura
+por reset. Los eventos de métricas y su integración con `perf_stop` siguen
+pendientes, así como ampliar autenticación/Feistel y reset durante demandas.
+
+El wrapper de RAM anterior necesita adaptar su protocolo antes de ejecutarse;
+esta etapa no constituye una integración funcional con la jerarquía real.
+Las pruebas anteriores de LSU con respuesta síncrona
 registrada necesitan adaptarse al nuevo contrato de consumo antes de reutilizarse.

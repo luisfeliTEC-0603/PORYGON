@@ -7,11 +7,12 @@
  * salen de la bóveda durante una operación Feistel autorizada.
  *
  * @param INITIAL_PASSWORD     Contraseña de 128 bits restaurada por reset.
- * @param AUTH_TIMEOUT_CYCLES  Ciclos inactivos antes de revocar la sesión.
+ * @param AUTH_TIMEOUT_CYCLES  Ciclos de avance inactivos antes de revocar la sesión.
  *
  * @input  clk_i                         Reloj de la bóveda.
  * @input  rst_ni                        Reset síncrono activo bajo.
- * @input  ex_valid_i                    Solicitud CRYPTO válida en EX.
+ * @input  timer_tick_i                  Habilita descuento y expiración; cero conserva la cuenta.
+ * @input  ex_valid_i                    Operación CRYPTO aceptada desde EX.
  * @input  funct_i                       Operación CRYPTO decodificada.
  * @input  key_index_i                   Índice de llave entre 0 y 3.
  * @input  subkey_index_i                Índice de subllave entre 0 y 3.
@@ -32,6 +33,7 @@ module key_vault #(
 ) (
     input  logic clk_i,
     input  logic rst_ni,
+    input  logic timer_tick_i,
     input  logic ex_valid_i,
     input  logic [2:0] funct_i,
     input  logic [1:0] key_index_i,
@@ -171,12 +173,19 @@ module key_vault #(
                     endcase
                 end
 
+                /**
+                 * @brief La recarga aceptada prevalece sobre el descuento.
+                 * @details Sin actividad, timer_tick_i=0 conserva cuenta y
+                 * autenticacion, incluida la cuenta de un ciclo restante.
+                 * Solo el descuento y la expiracion se pausan; reset, rvk,
+                 * auth y pwd mantienen sus prioridades de sesion anteriores.
+                 */
                 if (authenticated_o) begin
                     if (authenticated_activity) begin
                         auth_timer_q <= AUTH_TIMEOUT_VALUE;
-                    end else if (auth_timer_q > AUTH_TIMER_ONE) begin
+                    end else if (timer_tick_i && auth_timer_q > AUTH_TIMER_ONE) begin
                         auth_timer_q <= auth_timer_q - 1'b1;
-                    end else begin
+                    end else if (timer_tick_i) begin
                         rsa_q <= '0;
                         rsa_valid_q <= '0;
                         state_q <= LOCKED;

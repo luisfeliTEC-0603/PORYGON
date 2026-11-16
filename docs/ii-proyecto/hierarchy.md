@@ -65,7 +65,8 @@ La selección entre forwarding y drenado se define en
 
 L2 puede atender operaciones independientes mientras un miss espera memoria.
 El pipeline del núcleo permanece congelado hasta consumir la respuesta de su
-acceso. El temporizador de autenticación sigue contando ciclos reales de CPU,
+acceso. El temporizador de autenticación conserva su cuenta durante esa espera
+y cuenta ciclos de avance del núcleo,
 según el [contrato CPU–memoria](cpu-memory-contract.md#temporizador-de-autenticación).
 
 | Parámetro | Valor por defecto | Rango |

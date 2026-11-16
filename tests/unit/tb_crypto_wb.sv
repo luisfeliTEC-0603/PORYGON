@@ -23,6 +23,7 @@ module tb_crypto_wb;
     crypto_wb u_dut (
         .clk_i          (clk_i),
         .rst_ni         (rst_ni),
+        .advance_i      (1'b1),
         .write_enable_i (write_enable_i),
         .auth_failed_i  (auth_failed_i),
         .access_error_i (access_error_i),

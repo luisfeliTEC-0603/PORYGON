@@ -8,9 +8,13 @@
  * de destinos r0. crypto_wb registra resultados, destinos, enables y eventos
  * para el ciclo WB siguiente. authenticated_o se conecta directamente al nivel
  * persistente de la bóveda y no atraviesa el registro de eventos.
+ * advance_i acepta la instrucción una sola vez y habilita crypto_wb. Durante
+ * una espera se conservan los resultados anteriores y la bóveda sigue
+ * recibiendo reloj, con el descuento del temporizador pausado hasta avanzar.
  *
  * @input  clk_i             Reloj de la unidad y del registro EX/WB.
  * @input  rst_ni            Reset síncrono activo bajo.
+ * @input  advance_i         Aceptación EX, avance WB y tick del temporizador de sesión.
  * @input  ex_valid_i        Solicitud vigente en la etapa EX.
  * @input  nop_flag_i        Indica que dispatch entregó una burbuja.
  * @input  slot_i            Slot CRYPTO de 16 bits.
@@ -24,6 +28,7 @@
  * @output authenticated_o   Nivel persistente de autenticación de key_vault.
  * @output auth_failed_o     Evento registrado de autenticación fallida.
  * @output access_error_o    Evento registrado de acceso rechazado.
+ * @output work_after_advance_o La aceptacion EX deja finalizacion pendiente en WB.
  *
  * @note La política para dos canales dirigidos al mismo GPR pertenece a la
  *       integración con writeback_stage y no se resuelve en este módulo.
@@ -31,6 +36,7 @@
 module crypto_unit (
     input  logic clk_i,
     input  logic rst_ni,
+    input  logic advance_i,
     // Reset síncrono activo bajo; ex_valid excluye burbujas y solicitudes canceladas.
     input  logic ex_valid_i,
     input  logic nop_flag_i,
@@ -44,10 +50,11 @@ module crypto_unit (
     output logic [0:1] write_enable_o,
     output logic [0:1][$clog2(pkg_vliw::NUM_REGS)-1:0] write_addr_o,
     output logic [0:1][pkg_vliw::DATA_WIDTH-1:0] write_data_o,
-    // Estado vigente y eventos registrados para el futuro registro de estado.
+    /** Estado vigente y eventos retenidos; execution_stage los califica al avanzar. */
     output logic authenticated_o,
     output logic auth_failed_o,
-    output logic access_error_o
+    output logic access_error_o,
+    output logic work_after_advance_o
 );
 
     logic decoded_valid;
@@ -70,6 +77,14 @@ module crypto_unit (
 
     assign authenticated_o = vault_authenticated;
 
+    /**
+     * @brief Feistel y errores aceptados terminan en WB; la boveda correcta en EX.
+     * @details Se conserva la finalizacion Feistel aunque ambos destinos sean r0.
+     * Es una prevision combinacional, valida al avanzar; no agrega registros.
+     */
+    assign work_after_advance_o = decoded_valid &&
+        ((funct == pkg_vliw::CRYPTO_FEISTEL) || auth_failed_ex || access_error_ex);
+
     assign write_enable_ex[0] = feistel_commit && (op_a_addr_i != '0);
     assign write_enable_ex[1] = feistel_commit && (op_b_addr_i != '0);
     assign write_addr_ex[0] = op_a_addr_i;
@@ -78,7 +93,7 @@ module crypto_unit (
     assign write_data_ex[1] = round_right;
 
     crypto_decode u_crypto_decode (
-        .ex_valid_i                  (ex_valid_i),
+        .ex_valid_i                  (rst_ni && advance_i && ex_valid_i),
         .nop_flag_i                  (nop_flag_i),
         .slot_i                      (slot_i),
         .ex_valid_o                  (decoded_valid),
@@ -91,6 +106,7 @@ module crypto_unit (
     key_vault u_key_vault (
         .clk_i                       (clk_i),
         .rst_ni                      (rst_ni),
+        .timer_tick_i                (advance_i),
         .ex_valid_i                  (decoded_valid),
         .funct_i                     (funct),
         .key_index_i                 (key_index),
@@ -115,6 +131,7 @@ module crypto_unit (
     crypto_wb u_crypto_wb (
         .clk_i          (clk_i),
         .rst_ni         (rst_ni),
+        .advance_i      (advance_i),
         .write_enable_i (write_enable_ex),
         .auth_failed_i  (auth_failed_ex),
         .access_error_i (access_error_ex),

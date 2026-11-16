@@ -35,6 +35,7 @@ module tb_crypto_unit;
     crypto_unit u_dut (
         .clk_i          (clk_i),
         .rst_ni         (rst_ni),
+        .advance_i      (1'b1),
         .ex_valid_i     (ex_valid_i),
         .nop_flag_i     (nop_flag_i),
         .slot_i         (slot_i),

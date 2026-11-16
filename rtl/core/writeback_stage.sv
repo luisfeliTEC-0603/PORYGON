@@ -5,12 +5,16 @@
  * Las fronteras temporales pertenecen a execution_stage y a las unidades.
  * No agrega registros despues de crypto_wb ni resuelve colisiones de destino.
  * @input rst_ni Deshabilita todos los canales durante reset.
+ * @input advance_i Permite escrituras solo al avanzar el pipeline completo.
+ * @details Durante un stall los productores conservan canales y metadatos;
+ * este bloque inhibe sus efectos RF sin borrar esos resultados pendientes.
  * @input alu0_i, alu1_i, load_i, crypto_left_i, crypto_right_i Resultados WB.
  * @output write_enable_o, write_addr_o, write_data_o Puertos del RF.
  * @note El scheduler garantiza destinos compatibles; r0 se descarta por canal.
  */
 module writeback_stage (
     input logic rst_ni,
+    input logic advance_i,
     input pkg_vliw::wb_channel_t alu0_i,
     input pkg_vliw::wb_channel_t alu1_i,
     input pkg_vliw::wb_channel_t load_i,
@@ -22,11 +26,11 @@ module writeback_stage (
 );
     import pkg_vliw::*;
 
-    assign write_enable_o[WB_ALU0] = rst_ni && alu0_i.valid && (alu0_i.destination != '0);
-    assign write_enable_o[WB_ALU1] = rst_ni && alu1_i.valid && (alu1_i.destination != '0);
-    assign write_enable_o[WB_LSU] = rst_ni && load_i.valid && (load_i.destination != '0);
-    assign write_enable_o[WB_CRYPTO_L] = rst_ni && crypto_left_i.valid && (crypto_left_i.destination != '0);
-    assign write_enable_o[WB_CRYPTO_R] = rst_ni && crypto_right_i.valid && (crypto_right_i.destination != '0);
+    assign write_enable_o[WB_ALU0] = rst_ni && advance_i && alu0_i.valid && (alu0_i.destination != '0);
+    assign write_enable_o[WB_ALU1] = rst_ni && advance_i && alu1_i.valid && (alu1_i.destination != '0);
+    assign write_enable_o[WB_LSU] = rst_ni && advance_i && load_i.valid && (load_i.destination != '0);
+    assign write_enable_o[WB_CRYPTO_L] = rst_ni && advance_i && crypto_left_i.valid && (crypto_left_i.destination != '0);
+    assign write_enable_o[WB_CRYPTO_R] = rst_ni && advance_i && crypto_right_i.valid && (crypto_right_i.destination != '0);
     assign write_addr_o[WB_ALU0] = alu0_i.destination;
     assign write_addr_o[WB_ALU1] = alu1_i.destination;
     assign write_addr_o[WB_LSU] = load_i.destination;

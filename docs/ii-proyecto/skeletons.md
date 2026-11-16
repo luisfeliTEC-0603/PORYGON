@@ -24,7 +24,12 @@ metadatos constantes de configuración.
 
 La ROM existente usa salida síncrona de un ciclo como frontera de datos IF/ID;
 fetch registra sus metadatos en paralelo. `porygon_system` conserva la conexión
-a la RAM de datos anterior; el núcleo aún no incorpora los stalls CPU–L1.
+a la RAM de datos anterior y requiere adaptar ese protocolo en P2-11. El núcleo
+ya expone CPU–L1 con tipos de `pkg_memory` y controla las esperas y la retención;
+la verificación actual usa dobles externos, sin conectar la jerarquía real.
+También expone `stop_done_o` en el último flanco del programa y `halted_o` como
+estado registrado de parada completa. El entorno debe usar el pulso para cerrar
+la medición incluyendo los eventos de ese flanco, según el contrato CPU–memoria.
 La conexión de la CPU al wrapper nuevo corresponde a los issues de integración.
 Los archivos nuevos quedan fuera del flujo de construcción actual.
 

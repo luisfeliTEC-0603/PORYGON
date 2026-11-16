@@ -8,6 +8,9 @@
  * Los errores de rango de memoria se exponen como diagnosticos;
  * no se acumulan ni alteran el PC. La RAM invalida la respuesta de un load
  * fuera de rango y el nucleo suprime su escritura al RF.
+ * @warning Wrapper anterior pendiente de P2-11: sus conexiones RAM no implementan
+ * CPU-L1. Las pruebas P2-09 instancian directamente el nucleo y dobles externos;
+ * este wrapper no es evidencia funcional del protocolo nuevo.
  */
 module porygon_system #(
     parameter logic [pkg_vliw::ADDR_WIDTH-1:0] INITIAL_PC = pkg_vliw::RESET_PC,
@@ -89,14 +92,13 @@ module porygon_system #(
         .clk_i(clk_i),
         .rst_ni(rst_ni),
         .instruction_bundle_i(instruction_bundle),
-        .data_read_data_i(data_read_data),
-        .data_read_valid_i(data_read_valid),
+        .dmem_rsp_rdata_i(data_read_data),
         .instruction_address_o(instruction_address),
         .instruction_read_enable_o(instruction_read_enable),
-        .data_address_o(data_address),
-        .data_read_enable_o(data_read_enable),
-        .data_write_enable_o(data_write_enable),
-        .data_write_data_o(data_write_data),
+        .dmem_req_addr_o(data_address),
+        .dmem_req_write_o(),
+        .dmem_req_wstrb_o(data_write_enable),
+        .dmem_req_wdata_o(data_write_data),
         .authenticated_o(authenticated_o),
         .auth_failed_o(auth_failed_o),
         .access_error_o(access_error_o),

@@ -36,6 +36,7 @@ module tb_key_vault;
     ) u_dut (
         .clk_i                       (clk_i),
         .rst_ni                      (rst_ni),
+        .timer_tick_i                (1'b1),
         .ex_valid_i                  (ex_valid_i),
         .funct_i                     (funct_i),
         .key_index_i                 (key_index_i),

@@ -5,12 +5,14 @@
  * Captura dos canales independientes de escritura, cada uno con enable,
  * dirección y dato, junto con los eventos auth_failed y access_error. El
  * bloque infiere únicamente registros disparados por flanco positivo; no
- * contiene arbitraje, permisos, forwarding ni acceso al banco de registros.
- * En cada flanco, crypto_unit suministrará los valores de EX y, durante el
- * ciclo siguiente, writeback_stage consumirá las salidas registradas.
+ * autoriza instrucciones ni arbitra escrituras al banco de registros.
+ * Cada flanco con advance_i captura EX. Durante una espera conserva ambos
+ * resultados y sus eventos, sin depender de la autorización actual de bóveda.
+ * El consumidor debe calificar los efectos con avance para emitirlos una vez.
  *
  * @input  clk_i            Reloj del registro EX/WB.
  * @input  rst_ni           Reset síncrono activo bajo.
+ * @input  advance_i        Captura conjunta; cero conserva el canal completo.
  * @input  write_enable_i   Enables de los dos canales producidos en EX.
  * @input  auth_failed_i    Evento de autenticación fallida del ciclo EX.
  * @input  access_error_i   Evento de acceso rechazado del ciclo EX.
@@ -23,11 +25,12 @@
  * @output write_data_o     Datos conservados durante el ciclo WB.
  *
  * @note Cuando rst_ni está bajo en un flanco positivo, todos los registros
- *       se limpian. Entre flancos, las salidas conservan su valor registrado.
+ *       se limpian, incluso con avance detenido. Entre flancos se conservan.
  */
 module crypto_wb (
     input  logic clk_i,
     input  logic rst_ni,
+    input  logic advance_i,
     // Enables ya calificados por permiso de ronda y destino distinto de r0.
     input  logic [0:1] write_enable_i,
     input  logic auth_failed_i,
@@ -54,7 +57,7 @@ module crypto_wb (
                 write_addr_o[channel] <= '0;
                 write_data_o[channel] <= '0;
             end
-        end else begin
+        end else if (advance_i) begin
             auth_failed_o <= auth_failed_i;
             access_error_o <= access_error_i;
 

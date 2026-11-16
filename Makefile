@@ -8,14 +8,16 @@ RTL_DIR := rtl
 CORE_DIR := $(RTL_DIR)/core
 MEMORY_DIR := $(RTL_DIR)/memory
 UNIT_TB_DIR := tests/unit
+SUPPORT_TB_DIR := tests/support
 INTEGRATION_TB_DIR := tests/integration
 PROGRAM_DIR := tests/programs
 
 COMMON_FLAGS := -g2012 -Wall -I$(RTL_DIR)
 PKG := $(RTL_DIR)/pkg_vliw.sv
+MEMORY_PKG := $(MEMORY_DIR)/pkg_memory.sv
 
 # Nucleo reusable con puertos externos de memoria.
-RTL_SOURCES := $(PKG) \
+RTL_SOURCES := $(PKG) $(MEMORY_PKG) \
 	$(wildcard $(CORE_DIR)/decode/*.sv) \
 	$(wildcard $(CORE_DIR)/crypto/*.sv) \
 	$(CORE_DIR)/register_file.sv \
@@ -59,6 +61,53 @@ test: sim-alu sim-super-alu sim-regfile sim-lost sim-bruh sim-crypto test-tools
 
 test-tools:
 	sh tests/tools/test_loader.sh
+
+.PHONY: sim-core-memory-wait
+.PHONY: sim-reference-storage
+.PHONY: sim-reference-timing
+.PHONY: sim-core-reference
+.PHONY: sim-load-wb
+sim-load-wb: $(BUILD_DIR)/load_wb.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/load_wb.vvp: $(RTL_SOURCES) $(UNIT_TB_DIR)/tb_load_wb.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_load_wb -o $@ $^
+
+sim-core-reference: $(addprefix sim-core-reference-,1 9 48)
+sim-core-reference-%: $(BUILD_DIR)/core_reference_%.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/core_reference_%.vvp: $(RTL_SOURCES) $(MEMORY_DIR)/instruction_memory.sv \
+	$(SUPPORT_TB_DIR)/cpu_memory_reference.sv $(INTEGRATION_TB_DIR)/tb_core_reference.sv \
+	$(PROGRAM_DIR)/top/top_integration.mem
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_core_reference -Ptb_core_reference.RESPONSE_CYCLES=$* -o $@ $(filter %.sv,$^)
+
+sim-reference-timing: $(addprefix $(BUILD_DIR)/reference_timing_,1.vvp 9.vvp 48.vvp)
+	$(VVP) $(BUILD_DIR)/reference_timing_1.vvp
+	$(VVP) $(BUILD_DIR)/reference_timing_9.vvp
+	$(VVP) $(BUILD_DIR)/reference_timing_48.vvp
+
+$(BUILD_DIR)/reference_timing_%.vvp: $(PKG) $(MEMORY_PKG) \
+	$(SUPPORT_TB_DIR)/cpu_memory_reference.sv $(UNIT_TB_DIR)/tb_reference_timing.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_reference_timing -Ptb_reference_timing.RESPONSE_CYCLES=$* -o $@ $^
+
+sim-reference-storage: $(BUILD_DIR)/reference_storage.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/reference_storage.vvp: $(PKG) $(MEMORY_PKG) \
+	$(SUPPORT_TB_DIR)/cpu_memory_reference.sv $(UNIT_TB_DIR)/tb_reference_storage.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_reference_storage -o $@ $^
+
+sim-core-memory-wait: $(BUILD_DIR)/core_memory_wait.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/core_memory_wait.vvp: $(RTL_SOURCES) $(UNIT_TB_DIR)/tb_core_memory_wait.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_core_memory_wait -o $@ $^
 
 sim-top: $(BUILD_DIR)/top.vvp | $(WAVE_DIR)
 	$(VVP) $<

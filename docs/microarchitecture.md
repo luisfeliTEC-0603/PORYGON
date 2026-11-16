@@ -28,12 +28,14 @@ Cada bundle avanza una etapa por ciclo de reloj, de modo que hasta cuatro bundle
 
 Mantiene el Program Counter (`pc_q`) y registra el PC y la validez de IF/ID.
 La interfaz con la memoria de instrucciones es **síncrona de un ciclo**: la ROM registra el bundle en el flanco que termina IF. Esa salida constituye la frontera de datos IF/ID; fetch la conecta directamente a decode, sin volver a registrarla. En paralelo, fetch captura el PC de esa lectura, de modo que bundle y PC corresponden a la misma solicitud.
-En cada flanco de reloj, el PC avanza ocho bytes (`BUNDLE_BYTES`) o toma el destino calculado por la BRU si `branch_taken_i` está activo.
+En cada flanco con `advance_i=1` y sin parada, el PC avanza ocho bytes (`BUNDLE_BYTES`) o toma el destino calculado por la BRU si `branch_taken_i` está activo. Con `advance_i=0`, conserva PC y metadatos IF/ID y deshabilita la lectura ROM para conservar también el bundle. `stop_i` invalida IF/ID y conserva sus PC; la prioridad es reset, parada, avance.
 
 | Señal | Dirección | Descripción |
 |-------|-----------|-------------|
 | `instruction_address_o` | Salida | Dirección del bundle solicitado (PC actual) |
-| `instruction_read_enable_o` | Salida | Habilitador de lectura (activo si `rst_ni`) |
+| `advance_i` | Entrada | Permiso común generado por el control de memoria y parada del núcleo |
+| `stop_i` | Entrada | Cancela IF/ID e inhibe fetch al reconocer la terminación |
+| `instruction_read_enable_o` | Salida | Habilitador de lectura (`rst_ni && advance_i && !stop_i`) |
 | `instruction_bundle_i` | Entrada | Respuesta registrada de la lectura IF anterior |
 | `branch_taken_i` | Entrada | Decisión de salto de la BRU |
 | `branch_target_i` | Entrada | Dirección destino del salto |
@@ -121,6 +123,23 @@ Cada unidad recibe su `issued_op_t` desde la frontera ID/EX y produce un `wb_cha
 Conecta los cinco resultados (ALU0, SuperALU, LSU, Crypto L, Crypto R) a los cinco puertos físicos de escritura del banco de registros.
 Es cableado combinacional; no agrega registros después de `crypto_wb` ni resuelve colisiones de destino.
 El scheduler garantiza que no haya conflictos de escritura.
+
+`advance_i=0` inhibe los cinco habilitadores de escritura sin modificar dato ni
+destino. Los productores deben conservar sus canales pendientes durante esa
+espera. El habilitador se genera en `vliw_processor` y se conecta a fetch, ID/EX,
+las etapas MUL y sus tags, WB de ALU0/SuperALU/load/CRYPTO y los cinco puertos RF.
+CRYPTO acepta instrucciones y actualiza WB/tags solo al avanzar; sus diagnósticos
+se emiten una vez. La bóveda conserva su reloj; el temporizador mantiene su cuenta
+durante la espera y descuenta solo al avanzar el núcleo, incluidos NOPs.
+El sistema con RAM anterior requiere
+adaptar su interfaz de datos al protocolo CPU–L1 antes de ejecutarse.
+
+El salto tomado al propio PC cierra fetch y admisión al avanzar EX; los bundles
+posteriores se invalidan. Ejecución y WB completan lo pendiente. La previsión
+combinacional `work_after_advance_o` permite emitir `stop_done_o` en el último
+flanco, incluyendo su escritura o diagnóstico. `halted_o` registra entonces la
+parada completa y deshabilita avances hasta reset. Los saltos ordinarios
+conservan los dos bundles de retardo por software.
 
 > [!TIP]
 >

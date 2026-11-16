@@ -1,15 +1,15 @@
 /**
  * @brief Integra unidades funcionales a partir de la frontera ID/EX.
  *
- * @details ALU0 registra su resultado; LOST captura el canal completo al
- * avanzar; CRYPTO conserva crypto_wb como unica frontera local.
+ * @details ALU0 conserva su resultado durante stalls; LOST captura el canal completo al
+ * avanzar; CRYPTO conserva crypto_wb como unica frontera local, con sus tags.
  * Los PC e instrucciones se registran en paralelo a los datos de cada unidad.
  * BRUH permanece combinacional y fetch aplica su decision en issue+1.
  *
  * @input clk_i, rst_ni Reloj y reset comun; mantener reset por un posedge.
  * @input alu0_i, alu1_i, lsu_i, bruh_i, crypto_i Operaciones capturadas en ID/EX.
  * @input memory_read_data_i Palabra completa de respuesta CPU-L1.
- * @input advance_i Avance efectivo; habilita por ahora la frontera WB del load.
+ * @input advance_i Avance comun de resultados/tags y aceptacion CRYPTO.
  * @input completion_ready_i Capacidad de consumo, independiente del stall.
  * @input dmem_req_ready_i, dmem_rsp_valid_i, dmem_rsp_error_i Handshake CPU-L1.
  * @output dmem_* Control LSU para la futura conexion del nucleo a CPU-L1.
@@ -19,6 +19,7 @@
  * @output authenticated_o, auth_failed_o, access_error_o Estado/eventos CRYPTO.
  * @output crypto_event_pc_o PC alineado con los eventos registrados CRYPTO.
  * @output invalid_address_o, invalid_address_pc_o Error LSU en la solicitud EX.
+ * @output work_after_advance_o Trabajo posterior al flanco, valido con advance_i=1.
  */
 module execution_stage (
     input logic clk_i,
@@ -38,6 +39,7 @@ module execution_stage (
     output logic dmem_rsp_ready_o,
     output logic dmem_done_o,
     output logic dmem_error_o,
+    output logic work_after_advance_o,
     output pkg_vliw::wb_channel_t alu0_wb_o,
     output pkg_vliw::wb_channel_t alu1_wb_o,
     output pkg_vliw::wb_channel_t load_wb_o,
@@ -85,6 +87,7 @@ module execution_stage (
     wire [0:1][$clog2(NUM_REGS)-1:0] crypto_destination;
     wire [0:1][DATA_WIDTH-1:0] crypto_data;
     logic crypto_authenticated, crypto_auth_failed, crypto_access_error;
+    logic crypto_work_after_advance;
 
     assign lsu_instruction = lsu_i.instruction;
     assign alu1_is_mul = alu1_i.valid &&
@@ -105,6 +108,7 @@ module execution_stage (
     super_alu u_alu1 (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
+        .advance_i(advance_i),
         .instruction_i(alu1_i.instruction),
         .is_nop_i(!rst_ni || !alu1_i.valid),
         .imm_data_i(alu1_i.immediate),
@@ -156,6 +160,7 @@ module execution_stage (
     crypto_unit u_crypto (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
+        .advance_i(advance_i),
         .ex_valid_i(rst_ni && crypto_i.valid),
         .nop_flag_i(!crypto_i.valid),
         .slot_i(crypto_i.instruction),
@@ -166,23 +171,55 @@ module execution_stage (
         .write_enable_o(crypto_enable),
         .write_addr_o(crypto_destination),
         .write_data_o(crypto_data),
+        .work_after_advance_o(crypto_work_after_advance),
         .authenticated_o(crypto_authenticated),
         .auth_failed_o(crypto_auth_failed),
         .access_error_o(crypto_access_error)
     );
 
+    /**
+     * @brief Preve trabajo que sobrevive al flanco habilitado de ejecucion/WB.
+     * @details Las dos etapas MUL y las operaciones EX pueden producir trabajo
+     * futuro. WB actual se consume en ese flanco y no agrega una espera extra.
+     * No filtra destinos r0. Stores, saltos y errores LSU completan en EX.
+     * El consumidor debe exigir advance_i: durante un stall esto no indica vacio.
+     */
+    assign work_after_advance_o = rst_ni &&
+        (alu0_enable || alu1_is_mul || mul_tag1_q.valid || mul_tag2_q.valid ||
+         (alu1_i.valid && alu1_enable) || load_valid || crypto_work_after_advance);
+
+    /** @brief Conserva el PC e instruccion de CRYPTO con sus resultados/eventos WB. */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            crypto_tag_q <= '0;
+        end else if (advance_i) begin
+            crypto_tag_q <= {crypto_i.valid, crypto_i.pc, crypto_i.instruction};
+        end
+    end
+
+    /** @brief La procedencia MUL avanza con las dos etapas del multiplicador. */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            mul_tag1_q <= '0;
+            mul_tag2_q <= '0;
+        end else if (advance_i) begin
+            mul_tag1_q <= {alu1_is_mul, alu1_i.pc, alu1_i.instruction};
+            mul_tag2_q <= mul_tag1_q;
+        end
+    end
+
+    /**
+     * @brief Conserva el resultado anterior de ALU0 mientras EX espera memoria.
+     * @details Dato, destino, PC, instruccion y validez se retienen juntos. Al
+     * reanudar, RF consume este canal y la frontera captura la nueva operacion
+     * de EX en el mismo flanco. Reset cancela el resultado pendiente.
+     */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             alu0_wb_q <= '0;
-            crypto_tag_q <= '0;
-            mul_tag1_q <= '0;
-            mul_tag2_q <= '0;
-        end else begin
+        end else if (advance_i) begin
             alu0_wb_q <= {alu0_enable, alu0_destination, alu0_data,
                           alu0_i.pc, alu0_i.instruction};
-            crypto_tag_q <= {crypto_i.valid, crypto_i.pc, crypto_i.instruction};
-            mul_tag1_q <= {alu1_is_mul, alu1_i.pc, alu1_i.instruction};
-            mul_tag2_q <= mul_tag1_q;
         end
     end
 
@@ -191,18 +228,22 @@ module execution_stage (
      * @details La interfaz mezcla resultados rapidos combinacionales y MUL
      * registrado: se captura el canal completo, incluido el destino que ya
      * transporta la unidad. MUL llega al RF en issue+4; rapidas en issue+2.
+     * Esos tiempos suponen avance continuo: durante un stall se conservan ambas
+     * etapas MUL, sus tags y este canal WB con el mismo permiso, sin desalinearse.
      * El tag selecciona solamente procedencia, no arbitra operaciones.
      * Una rapida emitida en mul_issue+2 esta prohibida por el scheduler.
      */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             alu1_wb_q <= '0;
-        end else if (mul_tag2_q.valid) begin
-            alu1_wb_q <= {alu1_enable, alu1_destination, alu1_data,
-                          mul_tag2_q.pc, mul_tag2_q.instruction};
-        end else begin
-            alu1_wb_q <= {alu1_enable && alu1_i.valid, alu1_destination,
-                          alu1_data, alu1_i.pc, alu1_i.instruction};
+        end else if (advance_i) begin
+            if (mul_tag2_q.valid) begin
+                alu1_wb_q <= {alu1_enable, alu1_destination, alu1_data,
+                              mul_tag2_q.pc, mul_tag2_q.instruction};
+            end else begin
+                alu1_wb_q <= {alu1_enable && alu1_i.valid, alu1_destination,
+                              alu1_data, alu1_i.pc, alu1_i.instruction};
+            end
         end
     end
 
@@ -232,8 +273,9 @@ module execution_stage (
                                 crypto_destination[1], crypto_data[1],
                                 crypto_tag_q.pc, crypto_tag_q.instruction};
     assign authenticated_o = rst_ni && crypto_authenticated;
-    assign auth_failed_o = rst_ni && crypto_tag_q.valid && crypto_auth_failed;
-    assign access_error_o = rst_ni && crypto_tag_q.valid && crypto_access_error;
+    /** @brief Los diagnosticos retenidos se emiten solo en el flanco de avance. */
+    assign auth_failed_o = rst_ni && advance_i && crypto_tag_q.valid && crypto_auth_failed;
+    assign access_error_o = rst_ni && advance_i && crypto_tag_q.valid && crypto_access_error;
     assign crypto_event_pc_o = crypto_tag_q.pc;
     assign invalid_address_pc_o = lsu_i.pc;
 endmodule

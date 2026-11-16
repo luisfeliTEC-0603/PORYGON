@@ -212,13 +212,13 @@ limpia el buffer tras el intento. Las subllaves permanecen dentro de la bóveda.
 El reset las pone en cero y restaura la contraseña de simulación
 `0x146317BBDA48DB07A9A67018DFF0F76A`.
 
-La sesión expira tras **32 ciclos del reloj de CPU** de inactividad por defecto;
+La sesión expira tras **32 ciclos de avance del núcleo** de inactividad por defecto;
 la actividad autorizada de `write`, `feistel` y `lopw` recarga el temporizador.
 El programa debe autenticar de nuevo cuando la separación entre operaciones lo requiera,
 considerando también los NOPs insertados. El scheduler conserva el orden del
 estado criptográfico, pero no inserta reautenticación. En Proyecto II, las
-esperas de memoria también consumen ese tiempo: el temporizador continúa con
-el pipeline detenido. Una instrucción retenida no recarga la sesión; se valida
+esperas de memoria conservan el tiempo restante de sesión. Los NOPs que avanzan
+sí consumen ese tiempo. Una instrucción retenida no actúa ni recarga; se valida
 al aceptarse, según el [contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#temporizador-de-autenticación).
 
 La instrucción `pwd` existe en la ISA y el RTL, pero **no tiene intrínseca

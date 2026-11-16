@@ -7,6 +7,54 @@ archivos. La codificación de instrucciones está en [isa.md](isa.md).
 
 ## 1. Qué constituye el sistema simulado
 
+**Adaptación P2-09 en curso:** el núcleo ya expone CPU–L1 con handshakes; el
+wrapper `porygon_system` de RAM anterior aún requiere integrar ese protocolo
+en P2-11. La descripción y comandos de sistema siguientes corresponden a la
+base anterior y no certifican el núcleo adaptado. Para la interfaz actual,
+`make sim-core-memory-wait` comprueba espera, campos load/store y reanudación
+con un doble de protocolo, sin una caché funcional. `make elaborate-core`
+comprueba la elaboración del núcleo con los paquetes compartidos.
+
+`make sim-reference-storage` prueba exclusivamente el almacenamiento del
+doble de referencia, ubicado en `tests/support/cpu_memory_reference.sv`. Incluye
+lectura little endian, escrituras por máscara, límites e imagen de datos previa.
+`make sim-reference-timing` prueba su interfaz CPU–L1 con latencias configuradas
+1, 9 y 48: aceptación bloqueada, respuesta en E1/E9/E48, campos capturados,
+respuesta retenida durante tres ciclos, store aplicado una sola vez, error de
+rango y cancelación por reset. El contador usa relojes reales, independiente
+del avance del núcleo. Es un modelo de datos y protocolo con latencia fija,
+sin etiquetas ni reemplazo de caché.
+
+`make sim-core-reference` conecta ese modelo directamente al núcleo y a la ROM
+síncrona. Reutiliza `tests/programs/top/top_integration.mem` en los tres perfiles,
+con aceptación inmediata y dos flancos iniciales de bloqueo. Comprueba seis
+solicitudes y respuestas, un error de rango, avance en el flanco de respuesta,
+inhibición de los cinco puertos RF durante stalls, valores finales de loads,
+multiplicación y ALU, y el store por máscara. Un load fallido conserva el valor
+anterior de su destino. Cada pasada termina desde el testbench después de 45
+avances. La imagen incluye saltos y
+revocación CRYPTO; faltan ampliar la cobertura con autenticación/Feistel,
+retención completa de procedencia, reset durante demandas y métricas/cierre.
+Después ejecuta seis casos de parada: marcador solo, load/MUL, ALU, error
+CRYPTO, store y load fallido.
+Comprueba cierre de fetch/admisión en el flanco del marcador, cancelación de
+los slots jóvenes y finalización de load/MUL. Un bloqueo de aceptación impide
+registrar la parada hasta que EX avance; reset reabre la admisión entre casos.
+El test espera `halted_o` y exige un único `stop_done_o` en el ciclo esperado:
+el mismo avance del marcador si no deja trabajo pendiente, uno después para
+ALU/error CRYPTO y tres después para load/MUL. Comprueba resultados y diagnóstico
+del último flanco y persistencia de la parada. No usa una espera fija para
+declarar vacío el núcleo.
+
+`make sim-load-wb` prueba ejecución de forma aislada y su nueva previsión
+`work_after_advance_o`, observada antes de flancos habilitados. Comprueba qué
+trabajo seguirá pendiente tras avanzar y que el WB que termina en ese flanco
+no agregue una espera; cubre ALU/load, etapas MUL, bóveda y errores CRYPTO,
+además de Feistel con ambos destinos `r0`. Conserva los casos de retención de
+resultados, temporizador y reset. El núcleo conecta esta previsión al pulso de
+última finalización `stop_done_o`; `halted_o` registra la parada completa e inhibe
+el avance hasta reset. El entorno puede muestrear el pulso para `perf_stop`.
+
 `rtl/porygon_system.sv` conecta tres módulos: `vliw_processor`,
 `instruction_memory` y `memory_sp_ram`. El procesador conserva puertos de
 instrucciones y datos independientes; el *wrapper* les conecta las memorias
@@ -100,16 +148,16 @@ Ese comportamiento observable no sustituye una calendarización válida.
 
 BRUH calcula saltos relativos desde el PC del **bundle actual**, con offsets
 firmados en unidades de bundle; `jr` usa la dirección absoluta del registro.
-No hay *flush*. El programa debe colocar **dos bundles NOP después del salto**
-para cubrir los bundles jóvenes ya encaminados. El testbench reconoce como
-fin de programa un salto tomado hacia el PC de su propia instrucción.
+Los saltos ordinarios conservan **dos bundles NOP de retardo** por software.
+Un salto tomado hacia el PC de su propia instrucción es el marcador de parada.
 En la iteración 1 cierra el conteo en esa detección y observa las salidas tras
-`#1`, sin esperar explícitamente operaciones anteriores pendientes. Para la
-integración de Proyecto II, reconocer el marcador detendrá fetch y admisión e
-invalidará los bundles posteriores ya capturados. El pipeline seguirá avanzando
-hasta completar el bundle marcador y todas las operaciones anteriores, según el
+`#1`, sin esperar explícitamente operaciones anteriores pendientes. En el núcleo
+adaptado, reconocer el marcador al avanzar EX detiene fetch y admisión e
+invalida los bundles posteriores ya capturados. Ejecución y WB siguen avanzando
+para completar el bundle marcador y las operaciones anteriores, según el
 [contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#parada-del-programa-y-vaciado-del-pipeline).
-La medición cerrará en esa última finalización; el drenado posterior de líneas
+El núcleo ya detecta el vaciado e informa ese último flanco con `stop_done_o`;
+la conexión al cierre de medición sigue pendiente de integración. El drenado posterior de líneas
 dirty queda fuera de esa ventana, según el [contrato de métricas](ii-proyecto/metrics.md#2-periodo-de-medición).
 
 ## 2. Banco de registros y estado criptográfico
@@ -126,7 +174,7 @@ arreglo de GPR.
 `rtl/core/crypto/key_vault.sv` mantiene cuatro llaves de 128 bits,
 divididas en cuatro subllaves de 32 bits cada una, más la credencial temporal,
 la contraseña almacenada, el estado de autenticación y un temporizador de
-inactividad de **32 ciclos del reloj de CPU** por defecto. El reset de esta
+inactividad de **32 ciclos de avance del núcleo** por defecto. El reset de esta
 bóveda es síncrono: limpia las llaves y la credencial temporal, restaura la
 contraseña inicial y cierra la sesión. `lopw` carga palabras de la credencial; `auth` la compara;
 `write`, `feistel` y `pwd` requieren autorización; `rvk` la revoca. Una ronda
@@ -139,10 +187,11 @@ no implementa un registro de estado arquitectónico general ni una trampa que
 desvíe el PC por esos eventos. Esto distingue al modelo implementado de las
 aspiraciones descritas en la ISA y el enunciado.
 
-Para Proyecto II, el temporizador seguirá contando ciclos reales aunque el
-pipeline esté congelado por memoria y podrá revocar la sesión durante esa
-espera. Las instrucciones criptográficas retenidas no se aceptarán ni recargarán
-la sesión hasta avanzar. La regla completa se define en el
+El temporizador conserva su cuenta mientras el pipeline está congelado por
+memoria y descuenta en cada avance sin recargas, incluidos los NOPs. La bóveda
+conserva su reloj y reset sigue activo. Las instrucciones criptográficas
+retenidas no se aceptan ni recargan la sesión hasta avanzar. Las métricas y el
+timeout de memoria continúan en ciclos reales. La regla completa se define en el
 [contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#temporizador-de-autenticación).
 
 ## 3. Memorias y direcciones efectivas

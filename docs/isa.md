@@ -339,6 +339,7 @@ Con inmediato (`imm = 1`): `<instr> rd, imm` → usa el inmediato de 16 bits del
 - `LOPW` no compara palabras individuales ni modifica `AUTH`.
 - `auth` requiere `rsa_valid = 1111`, produce un único resultado para los 128 bits y limpia `rsa` y `rsa_valid` después del intento.
 - Un `auth` exitoso carga el temporizador de inactividad. Cada operación protegida aceptada lo recarga; su expiración revoca la autenticación.
+- El temporizador cuenta ciclos de avance del núcleo, incluidos NOPs. Las esperas de memoria conservan la cuenta; reset mantiene prioridad. El contrato completo está en [CPU–memoria](ii-proyecto/cpu-memory-contract.md#temporizador-de-autenticación).
 - Para cambiar la contraseña, software autenticado ejecuta cuatro `LOPW` y luego `pwd`. La contraseña se actualiza atómicamente, se limpia el buffer temporal y la sesión pasa a `LOCKED`.
 
 ---

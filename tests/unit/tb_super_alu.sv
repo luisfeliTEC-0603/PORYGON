@@ -28,6 +28,7 @@ module tb_super_alu;
     ) dut (
         .clk_i          (clk_i),
         .rst_ni         (rst_ni),
+        .advance_i      (1'b1),
         .instruction_i (instruction_i),
         .is_nop_i       (is_nop_i),
         .imm_data_i     (imm_data_i),

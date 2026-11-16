@@ -13,6 +13,8 @@ module super_alu #(
     // Señales de reloj y reset (necesarios para el pipeline de multiplicación)
     input  logic                  clk_i,
     input  logic                  rst_ni,
+    /** @brief Retiene ambas etapas y sus metadatos durante el stall global. */
+    input  logic                  advance_i,
 
     // ------------------------------------------------------------------------
     // Entradas requeridas por la interfaz del Dispatcher
@@ -148,6 +150,13 @@ module super_alu #(
                                          mul_partial_3_stage1_q}) <<< DATA_WIDTH);
     end
 
+    /**
+     * @brief Ambas etapas del multiplicador avanzan con el calendario VLIW.
+     * @details Un stall retiene parciales, producto, validez, destino y selector
+     * de mitad alta/baja. Reset conserva prioridad sobre advance_i. La salida
+     * combinacional se captura en WB solo al avanzar; su enable no es un evento
+     * de escritura RF durante el congelamiento.
+     */
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             mul_partial_0_stage1_q <= '0;
@@ -161,7 +170,7 @@ module super_alu #(
             mul_high_stage2_q   <= 1'b0;
             dest_stage1_q      <= '0;
             dest_stage2_q      <= '0;
-        end else begin
+        end else if (advance_i) begin
             // EX2: desplazar y sumar los cuatro productos parciales.
             mul_result_stage2_q <= mul_result_stage2_d;
             mul_valid_stage2_q <= mul_valid_stage1_q;
