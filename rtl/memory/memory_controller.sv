@@ -485,7 +485,7 @@ module memory_controller #(
     * @brief Reune las palabras leidas por RAM y publica una linea completa.
     * @details RAM cambia un bit por cada acceso fisico y conserva su indice.
     * CPU detecta el bit nuevo en el flanco siguiente y captura el dato.
-    * La respuesta hacia L2 aparece tras ocho accesos y al menos
+    * La respuesta hacia L1 aparece tras ocho accesos y al menos
     * READ_TOTAL_CYCLES; permanece estable hasta su handshake. Un reloj RAM
     * detenido espera al timeout en vez de fingir lecturas.
     */
@@ -534,18 +534,32 @@ module memory_controller #(
             end
 
             if (read_complete_now) begin
-                rsp_valid_q <= 1'b1;
+                rsp_valid_q <= !mem_rd_rsp_ready_i;
             end else if (rsp_valid_q && mem_rd_rsp_ready_i) begin
                 rsp_valid_q <= 1'b0;
             end
         end
     end
 
-    assign mem_rd_rsp_valid_o = rsp_valid_q;
+    /**
+     * @brief Entrega la ultima palabra junto con la linea en el propio flanco F+7D.
+     * @details El bypass evita sumar un ciclo CPU al retorno integrado E48.
+     * Si L1 bloquea, el mismo flanco guarda linea/error y retiene rsp_valid_q;
+     * disponibilidad y consumo siguen siendo eventos diferentes.
+     */
+    assign mem_rd_rsp_valid_o = rst_ni && (rsp_valid_q || read_complete_now);
     assign mem_rd_rsp_id_o = read_id_q;
     assign mem_rd_rsp_base_o = read_base_q;
-    assign mem_rd_rsp_data_o = read_line_q;
-    assign mem_rd_rsp_error_o = read_error_q;
+    always_comb begin
+        mem_rd_rsp_data_o = read_line_q;
+        mem_rd_rsp_error_o = read_error_q;
+        if (read_complete_now && read_word_new) begin
+            if (ram_read_valid_i)
+                mem_rd_rsp_data_o[read_issued_index_mem_q * READ_WORD_BITS
+                                  +: READ_WORD_BITS] = ram_read_data_i;
+            mem_rd_rsp_error_o = read_error_q || !ram_read_valid_i || read_issued_range_mem_q;
+        end
+    end
     assign read_complete_now =
         read_busy_q && !rsp_valid_q &&
         (read_age_q == READ_TOTAL_CYCLES) &&

@@ -130,7 +130,7 @@ module write_buffer #(
         end
     end
 
-    /** @brief Control combinacional de canales, prioridad fwd/install y metricas. */
+    /** @brief Ofertas independientes de ready; prioridad forwarding/install. */
     always_comb begin
         push_ready_internal = (count_q < COUNT_W'(WRITE_BUFFER_DEPTH));
         fwd_valid_internal = 1'b0;
@@ -207,8 +207,15 @@ module write_buffer #(
         end
         done_ready_internal = done_found;
         done_invalid_now = rst_ni && wb_done_valid_i && !done_found;
+    end
 
-        // Eventos y estados observables
+    /**
+     * @brief Observacion separada de los canales funcionales.
+     * @details Un cambio de ready o accept_id solo recalcula eventos. Evita
+     * realimentar la generacion de valid/base hacia el arbitro de L2 durante
+     * su evaluacion combinacional, sin agregar registros ni alterar arbitraje.
+     */
+    always_comb begin
         perf_events_o = '0;
         perf_events_o.state.occupancy = {{(32 - COUNT_W){1'b0}}, count_q};
         perf_events_o.state.capacity = WRITE_BUFFER_DEPTH;

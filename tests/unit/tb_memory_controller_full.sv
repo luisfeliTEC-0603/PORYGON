@@ -467,6 +467,8 @@ module tb_memory_controller_full;
     task automatic expect_read(input integer id, input address_t base,
                                input line_t data);
         @(posedge rd_rsp_valid);
+        /** Disponibilidad antes del flanco que permite consumir la linea completa. */
+        @(posedge cpu_clk);
         #1;
         if (cpu_edges - rd_accept_edge != READ_TOTAL ||
             rd_rsp_id !== id || rd_rsp_base !== base ||
@@ -489,6 +491,7 @@ module tb_memory_controller_full;
         inject_protocol_word = 1'b1;
         send_read(2, A);
         @(posedge rd_rsp_valid);
+        @(posedge cpu_clk);
         #1;
         if (cpu_edges - rd_accept_edge != READ_TOTAL ||
             rd_rsp_id !== 2 || rd_rsp_base !== A ||
@@ -584,6 +587,7 @@ module tb_memory_controller_full;
         if (!(expect_write_first ? wr_rsp_valid : rd_rsp_valid))
             $fatal(1, "segundo burst adelanto fin del primero");
         wait (rd_rsp_valid && wr_rsp_valid);
+        @(posedge cpu_clk);
         #1;
         if (rd_rsp_id !== 1 || rd_rsp_base !== A || rd_rsp_error ||
             wr_rsp_id !== 2 || wr_rsp_base !== B || wr_rsp_error ||
@@ -700,6 +704,7 @@ module tb_memory_controller_full;
         consume_write();
         send_read(0, END_BASE);
         @(posedge rd_rsp_valid);
+        @(posedge cpu_clk);
         #1;
         if (cpu_edges - rd_accept_edge != READ_TOTAL ||
             rd_rsp_error !== 1'b1 || rd_rsp_base !== END_BASE)
