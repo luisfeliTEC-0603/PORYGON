@@ -106,7 +106,10 @@ module performance_counters #(
     pkg_metrics::counter_t counters_q [NUM_COUNTERS];
 
     /** @brief Incremento de cada contador en el flanco actual. */
-    pkg_metrics::counter_t delta [NUM_COUNTERS];
+    wire [63:0] delta [NUM_COUNTERS];
+
+    /** @brief Demanda CPU que termino sin error en este flanco. */
+    wire demand_ok;
 
     /** @brief Suma de 65 bits; el bit alto delata el desbordamiento. */
     logic [64:0] wide_sum;
@@ -136,7 +139,7 @@ module performance_counters #(
      * de los dos marca la ejecucion como fallida y conserva la evidencia.
      * @see docs/ii-proyecto/metrics.md seccion 8
      */
-    pkg_metrics::counter_t error_pulses;
+    wire [63:0] error_pulses;
     logic memory_failure;
     logic run_failure;
 
@@ -177,186 +180,147 @@ module performance_counters #(
     assign stop_accepted = running_q && (perf_stop_i || perf_stop_error_i);
 
     /**
-     * @brief Deltas del nucleo para el flanco actual.
-     * @details Los deltas done_* son de ocho bits y admiten varias
-     * finalizaciones en un mismo flanco, por eso se extienden con ceros en
-     * lugar de tratarse como banderas. El ciclo se cuenta siempre que la
-     * ventana este activa, incluso durante un congelamiento global.
+     * @brief Incremento de cada contador en el flanco actual.
+     * @details Cada contador recibe su delta por asignacion continua. Mantener
+     * estas lecturas fuera de un proceso evita que el simulador tenga que
+     * inferir una lista de sensibilidad campo por campo sobre las estructuras
+     * de eventos.
      */
-    always_comb begin
-        for (int i = 0; i < NUM_COUNTERS; i++) begin
-            delta[i] = '0;
-        end
+    assign delta[C_CPU_CYCLES] = 64'd1;
+    assign delta[C_CPU_BUNDLES] = {56'd0, cpu_events_i.done_bundles};
+    assign delta[C_CPU_INSTRUCTIONS] = {56'd0, cpu_events_i.done_instructions};
+    assign delta[C_CPU_NOP_SLOTS] = {56'd0, cpu_events_i.done_nop_slots};
+    assign delta[C_CPU_LITERAL_SLOTS] = {56'd0, cpu_events_i.done_literal_slots};
 
-        delta[C_CPU_CYCLES] = 64'd1;
-        delta[C_CPU_BUNDLES] = {56'd0, cpu_events_i.done_bundles};
-        delta[C_CPU_INSTRUCTIONS] = {56'd0, cpu_events_i.done_instructions};
-        delta[C_CPU_NOP_SLOTS] = {56'd0, cpu_events_i.done_nop_slots};
-        delta[C_CPU_LITERAL_SLOTS] = {56'd0, cpu_events_i.done_literal_slots};
+    // La causa del stall llega resuelta y es exclusiva: un ciclo congelado
+    // incrementa el total y exactamente una de las tres causas.
+    assign delta[C_CPU_STALL] = (cpu_events_i.stall) ? 64'd1 : 64'd0;
+    assign delta[C_CPU_WAIT_ACCEPT] =
+        (cpu_events_i.stall && cpu_events_i.wait_reason == pkg_metrics::WAIT_ACCEPT) ? 64'd1 : 64'd0;
+    assign delta[C_CPU_WAIT_MISS] =
+        (cpu_events_i.stall && cpu_events_i.wait_reason == pkg_metrics::WAIT_MISS) ? 64'd1 : 64'd0;
+    assign delta[C_CPU_WAIT_RSP] =
+        (cpu_events_i.stall && cpu_events_i.wait_reason == pkg_metrics::WAIT_RESPONSE) ? 64'd1 : 64'd0;
 
-        // La causa del stall ya llega resuelta y es exclusiva: un ciclo
-        // congelado incrementa el total y exactamente una de las tres causas.
-        if (cpu_events_i.stall) begin
-            delta[C_CPU_STALL] = 64'd1;
-            case (cpu_events_i.wait_reason)
-                pkg_metrics::WAIT_ACCEPT: delta[C_CPU_WAIT_ACCEPT] = 64'd1;
-                pkg_metrics::WAIT_MISS: delta[C_CPU_WAIT_MISS] = 64'd1;
-                pkg_metrics::WAIT_RESPONSE: delta[C_CPU_WAIT_RSP] = 64'd1;
-                default: ;
-            endcase
-        end
+    // Un salto se cuenta una vez al completarse; el tomado es subconjunto.
+    assign delta[C_CPU_BRANCHES] = (cpu_events_i.branch_done) ? 64'd1 : 64'd0;
+    assign delta[C_CPU_BRANCHES_TAKEN] =
+        (cpu_events_i.branch_done && cpu_events_i.branch_taken) ? 64'd1 : 64'd0;
+    assign delta[C_CPU_BRANCH_DELAY] = (cpu_events_i.branch_delay) ? 64'd1 : 64'd0;
 
-        // Un salto se cuenta una vez al completarse; el tomado es subconjunto.
-        delta[C_CPU_BRANCHES] = cpu_events_i.branch_done ? 64'd1 : 64'd0;
-        delta[C_CPU_BRANCHES_TAKEN] =
-            (cpu_events_i.branch_done && cpu_events_i.branch_taken) ? 64'd1 : 64'd0;
-        delta[C_CPU_BRANCH_DELAY] = cpu_events_i.branch_delay ? 64'd1 : 64'd0;
-
-        // Mascaras de etapa: bit 0 IF, 1 ID, 2 EX, 3 WB.
-        delta[C_IF_OCCUPIED] = cpu_events_i.stage_occupied[0] ? 64'd1 : 64'd0;
-        delta[C_IF_TRANSFERS] = cpu_events_i.stage_transfers[0] ? 64'd1 : 64'd0;
-        delta[C_IF_STALLS] = cpu_events_i.stage_mem_stalls[0] ? 64'd1 : 64'd0;
-        delta[C_ID_OCCUPIED] = cpu_events_i.stage_occupied[1] ? 64'd1 : 64'd0;
-        delta[C_ID_TRANSFERS] = cpu_events_i.stage_transfers[1] ? 64'd1 : 64'd0;
-        delta[C_ID_STALLS] = cpu_events_i.stage_mem_stalls[1] ? 64'd1 : 64'd0;
-        delta[C_EX_OCCUPIED] = cpu_events_i.stage_occupied[2] ? 64'd1 : 64'd0;
-        delta[C_EX_TRANSFERS] = cpu_events_i.stage_transfers[2] ? 64'd1 : 64'd0;
-        delta[C_EX_STALLS] = cpu_events_i.stage_mem_stalls[2] ? 64'd1 : 64'd0;
-        delta[C_WB_OCCUPIED] = cpu_events_i.stage_occupied[3] ? 64'd1 : 64'd0;
-        delta[C_WB_TRANSFERS] = cpu_events_i.stage_transfers[3] ? 64'd1 : 64'd0;
-        delta[C_WB_STALLS] = cpu_events_i.stage_mem_stalls[3] ? 64'd1 : 64'd0;
-
-        // Demanda CPU: la latencia solo se acumula si termino correctamente,
-        // y sus ciclos de miss se cargan al origen que la resolvio.
-        if (cpu_events_i.dmem_done) begin
-            if (cpu_events_i.dmem_error) begin
-                delta[C_DM_FAILED] = 64'd1;
-            end else begin
-                delta[C_DM_COMPLETED] = 64'd1;
-                delta[C_DM_LATENCY] = demand_cycles_now;
-                if (demand_is_write) begin
-                    delta[C_DM_WRITES] = 64'd1;
-                    delta[C_DM_WRITE_LATENCY] = demand_cycles_now;
-                end else begin
-                    delta[C_DM_READS] = 64'd1;
-                    delta[C_DM_READ_LATENCY] = demand_cycles_now;
-                end
-                case (cpu_events_i.dmem_origin)
-                    pkg_metrics::ORIGIN_WB: delta[C_DM_MISS_WB] = demand_miss_now;
-                    pkg_metrics::ORIGIN_L2: delta[C_DM_MISS_L2] = demand_miss_now;
-                    pkg_metrics::ORIGIN_MEMORY: delta[C_DM_MISS_MEM] = demand_miss_now;
-                    default: ;
-                endcase
-            end
-        end
-
-        // L1: una solicitud invalida se cuenta como acceso pero no clasifica
-        // hit ni miss.
-        if (l1_events_i.access_valid) begin
-            if (l1_events_i.access_write) begin
-                delta[C_L1_WRITES] = 64'd1;
-            end else begin
-                delta[C_L1_READS] = 64'd1;
-            end
-            case (l1_events_i.access_result)
-                pkg_metrics::ACCESS_HIT:
-                    if (l1_events_i.access_write) delta[C_L1_WRITE_HITS] = 64'd1;
-                    else delta[C_L1_READ_HITS] = 64'd1;
-                pkg_metrics::ACCESS_MISS:
-                    if (l1_events_i.access_write) delta[C_L1_WRITE_MISSES] = 64'd1;
-                    else delta[C_L1_READ_MISSES] = 64'd1;
-                default:
-                    if (l1_events_i.access_write) delta[C_L1_INVALID_WRITES] = 64'd1;
-                    else delta[C_L1_INVALID_READS] = 64'd1;
-            endcase
-        end
-        if (l1_events_i.eviction.valid) begin
-            if (l1_events_i.eviction.dirty) delta[C_L1_EVICT_DIRTY] = 64'd1;
-            else delta[C_L1_EVICT_CLEAN] = 64'd1;
-        end
-
-        // L2: la demanda y su busqueda son eventos distintos; las
-        // instalaciones de WB no entran en hits ni misses de demanda.
-        delta[C_L2_DEMANDS] = l2_events_i.get_accept.valid ? 64'd1 : 64'd0;
-        if (l2_events_i.lookup.valid) begin
-            if (l2_events_i.lookup_hit) delta[C_L2_HITS] = 64'd1;
-            else delta[C_L2_MISSES] = 64'd1;
-        end
-        delta[C_L2_PROMOTIONS] = l2_events_i.promotion.valid ? 64'd1 : 64'd0;
-        delta[C_L2_EVICT_CLEAN] = l2_events_i.clean_discard.valid ? 64'd1 : 64'd0;
-        delta[C_L2_EVICT_DIRTY] = l2_events_i.dirty_eviction.valid ? 64'd1 : 64'd0;
-        delta[C_L2_INFLIGHT_SUM] = {32'd0, l2_events_i.inflight};
-        delta[C_L2_FULL] =
-            (l2_events_i.inflight == l2_events_i.capacity) ? 64'd1 : 64'd0;
-        delta[C_L2_GET_WAIT] = l2_events_i.get_wait ? 64'd1 : 64'd0;
-
-        // Write buffer: send_wait del estado describe la espera de instalacion.
-        delta[C_WBUF_ENQUEUED] = wb_events_i.enqueued.valid ? 64'd1 : 64'd0;
-        delta[C_WBUF_FORWARDED] = wb_events_i.forwarded.valid ? 64'd1 : 64'd0;
-        delta[C_WBUF_SENT] = wb_events_i.install_accept.valid ? 64'd1 : 64'd0;
-        delta[C_WBUF_INSTALLED] = wb_events_i.install_done.valid ? 64'd1 : 64'd0;
-        delta[C_WBUF_OCC_SUM] = {32'd0, wb_events_i.state.occupancy};
-        delta[C_WBUF_FULL] =
-            (wb_events_i.state.occupancy == wb_events_i.state.capacity) ? 64'd1 : 64'd0;
-        delta[C_WBUF_PUSH_WAIT] = wb_events_i.state.push_wait ? 64'd1 : 64'd0;
-        delta[C_WBUF_INSTALL_WAIT] = wb_events_i.state.send_wait ? 64'd1 : 64'd0;
-        delta[C_WBUF_RAW_WAIT] = wb_events_i.state.raw_wait ? 64'd1 : 64'd0;
-
-        // Eviction buffer: solo se cuenta como escrita la confirmacion correcta.
-        delta[C_EB_ENQUEUED] = eb_events_i.enqueued.valid ? 64'd1 : 64'd0;
-        delta[C_EB_SENT] = eb_events_i.write_accept.valid ? 64'd1 : 64'd0;
-        delta[C_EB_WRITTEN] =
-            (eb_events_i.write_done.valid && !eb_events_i.write_error) ? 64'd1 : 64'd0;
-        delta[C_EB_OCC_SUM] = {32'd0, eb_events_i.state.occupancy};
-        delta[C_EB_FULL] =
-            (eb_events_i.state.occupancy == eb_events_i.state.capacity) ? 64'd1 : 64'd0;
-        delta[C_EB_PUSH_WAIT] = eb_events_i.state.push_wait ? 64'd1 : 64'd0;
-        delta[C_EB_RAW_WAIT] = eb_events_i.state.raw_wait ? 64'd1 : 64'd0;
-
-        // Memoria principal: solo las transferencias correctas cuentan como
-        // completas; el timeout y el resto de errores van en categorias
-        // separadas y conservan los ciclos y palabras ya consumidos.
-        if (mem_events_i.accept.valid) begin
-            if (mem_events_i.accept.write) delta[C_MEM_WRITES] = 64'd1;
-            else delta[C_MEM_READS] = 64'd1;
-        end
-        if (mem_events_i.word.valid) begin
-            if (mem_events_i.word.write) delta[C_MEM_WRITE_WORDS] = 64'd1;
-            else delta[C_MEM_READ_WORDS] = 64'd1;
-        end
-        if (mem_events_i.complete.valid) begin
-            case (mem_events_i.complete_error)
-                pkg_metrics::ERROR_NONE:
-                    if (mem_events_i.complete.write) delta[C_MEM_WRITES_DONE] = 64'd1;
-                    else delta[C_MEM_READS_DONE] = 64'd1;
-                pkg_metrics::ERROR_TIMEOUT: delta[C_MEM_TIMEOUTS] = 64'd1;
-                default: delta[C_MEM_ERRORS] = 64'd1;
-            endcase
-        end
-        delta[C_MEM_READ_CYCLES] = mem_events_i.read_active ? 64'd1 : 64'd0;
-        delta[C_MEM_WRITE_CYCLES] = mem_events_i.write_active ? 64'd1 : 64'd0;
-        delta[C_MEM_READ_WAIT] = mem_events_i.read_wait ? 64'd1 : 64'd0;
-        delta[C_MEM_WRITE_WAIT] = mem_events_i.write_wait ? 64'd1 : 64'd0;
-        delta[C_MEM_READ_RSP_WAIT] = mem_events_i.read_rsp_wait ? 64'd1 : 64'd0;
-        delta[C_MEM_WRITE_RSP_WAIT] = mem_events_i.write_rsp_wait ? 64'd1 : 64'd0;
-
-        delta[C_ERROR_EVENTS] = error_pulses;
-    end
+    // Mascaras de etapa: bit 0 IF, 1 ID, 2 EX, 3 WB.
+    assign delta[C_IF_OCCUPIED] = (cpu_events_i.stage_occupied[0]) ? 64'd1 : 64'd0;
+    assign delta[C_IF_TRANSFERS] = (cpu_events_i.stage_transfers[0]) ? 64'd1 : 64'd0;
+    assign delta[C_IF_STALLS] = (cpu_events_i.stage_mem_stalls[0]) ? 64'd1 : 64'd0;
+    assign delta[C_ID_OCCUPIED] = (cpu_events_i.stage_occupied[1]) ? 64'd1 : 64'd0;
+    assign delta[C_ID_TRANSFERS] = (cpu_events_i.stage_transfers[1]) ? 64'd1 : 64'd0;
+    assign delta[C_ID_STALLS] = (cpu_events_i.stage_mem_stalls[1]) ? 64'd1 : 64'd0;
+    assign delta[C_EX_OCCUPIED] = (cpu_events_i.stage_occupied[2]) ? 64'd1 : 64'd0;
+    assign delta[C_EX_TRANSFERS] = (cpu_events_i.stage_transfers[2]) ? 64'd1 : 64'd0;
+    assign delta[C_EX_STALLS] = (cpu_events_i.stage_mem_stalls[2]) ? 64'd1 : 64'd0;
+    assign delta[C_WB_OCCUPIED] = (cpu_events_i.stage_occupied[3]) ? 64'd1 : 64'd0;
+    assign delta[C_WB_TRANSFERS] = (cpu_events_i.stage_transfers[3]) ? 64'd1 : 64'd0;
+    assign delta[C_WB_STALLS] = (cpu_events_i.stage_mem_stalls[3]) ? 64'd1 : 64'd0;
 
     /**
-     * @details Varios bloques pueden fallar en el mismo flanco, asi que los
-     * pulsos se suman en lugar de tratarse como una sola bandera.
+     * @details La latencia solo se acumula si la demanda termino
+     * correctamente, y sus ciclos de espera por miss se cargan al origen que
+     * la resolvio. Una demanda fallida conserva su conteo pero no su tiempo.
      */
-    always_comb begin
-        error_pulses = 64'd0;
-        if (cpu_events_i.instruction_error.valid) error_pulses += 64'd1;
-        if (cpu_events_i.alignment_error.valid) error_pulses += 64'd1;
-        if (l1_events_i.error.valid) error_pulses += 64'd1;
-        if (l2_events_i.error.valid) error_pulses += 64'd1;
-        if (wb_events_i.error.valid) error_pulses += 64'd1;
-        if (eb_events_i.error.valid) error_pulses += 64'd1;
-        if (return_error_i.valid) error_pulses += 64'd1;
-    end
+    assign demand_ok = cpu_events_i.dmem_done && !cpu_events_i.dmem_error;
+
+    assign delta[C_DM_COMPLETED] = (demand_ok) ? 64'd1 : 64'd0;
+    assign delta[C_DM_FAILED] = (cpu_events_i.dmem_done && cpu_events_i.dmem_error) ? 64'd1 : 64'd0;
+    assign delta[C_DM_READS] = (demand_ok && !demand_is_write) ? 64'd1 : 64'd0;
+    assign delta[C_DM_WRITES] = (demand_ok && demand_is_write) ? 64'd1 : 64'd0;
+    assign delta[C_DM_LATENCY] = demand_ok ? demand_cycles_now : 64'd0;
+    assign delta[C_DM_READ_LATENCY] =
+        (demand_ok && !demand_is_write) ? demand_cycles_now : 64'd0;
+    assign delta[C_DM_WRITE_LATENCY] =
+        (demand_ok && demand_is_write) ? demand_cycles_now : 64'd0;
+    assign delta[C_DM_MISS_WB] =
+        (demand_ok && cpu_events_i.dmem_origin == pkg_metrics::ORIGIN_WB) ? demand_miss_now : 64'd0;
+    assign delta[C_DM_MISS_L2] =
+        (demand_ok && cpu_events_i.dmem_origin == pkg_metrics::ORIGIN_L2) ? demand_miss_now : 64'd0;
+    assign delta[C_DM_MISS_MEM] =
+        (demand_ok && cpu_events_i.dmem_origin == pkg_metrics::ORIGIN_MEMORY) ? demand_miss_now : 64'd0;
+
+    // L1: una solicitud invalida se cuenta como acceso pero no clasifica
+    // hit ni miss.
+    assign delta[C_L1_READS] = (l1_events_i.access_valid && !l1_events_i.access_write) ? 64'd1 : 64'd0;
+    assign delta[C_L1_WRITES] = (l1_events_i.access_valid && l1_events_i.access_write) ? 64'd1 : 64'd0;
+    assign delta[C_L1_READ_HITS] = (l1_events_i.access_valid && !l1_events_i.access_write && l1_events_i.access_result == pkg_metrics::ACCESS_HIT) ? 64'd1 : 64'd0;
+    assign delta[C_L1_READ_MISSES] = (l1_events_i.access_valid && !l1_events_i.access_write && l1_events_i.access_result == pkg_metrics::ACCESS_MISS) ? 64'd1 : 64'd0;
+    assign delta[C_L1_WRITE_HITS] = (l1_events_i.access_valid && l1_events_i.access_write && l1_events_i.access_result == pkg_metrics::ACCESS_HIT) ? 64'd1 : 64'd0;
+    assign delta[C_L1_WRITE_MISSES] = (l1_events_i.access_valid && l1_events_i.access_write && l1_events_i.access_result == pkg_metrics::ACCESS_MISS) ? 64'd1 : 64'd0;
+    assign delta[C_L1_INVALID_READS] = (l1_events_i.access_valid && !l1_events_i.access_write && l1_events_i.access_result == pkg_metrics::ACCESS_INVALID) ? 64'd1 : 64'd0;
+    assign delta[C_L1_INVALID_WRITES] = (l1_events_i.access_valid && l1_events_i.access_write && l1_events_i.access_result == pkg_metrics::ACCESS_INVALID) ? 64'd1 : 64'd0;
+    assign delta[C_L1_EVICT_CLEAN] = (l1_events_i.eviction.valid && !l1_events_i.eviction.dirty) ? 64'd1 : 64'd0;
+    assign delta[C_L1_EVICT_DIRTY] = (l1_events_i.eviction.valid && l1_events_i.eviction.dirty) ? 64'd1 : 64'd0;
+
+    // L2: la demanda y su busqueda son eventos distintos; las instalaciones
+    // de WB no entran en hits ni misses de demanda.
+    assign delta[C_L2_DEMANDS] = (l2_events_i.get_accept.valid) ? 64'd1 : 64'd0;
+    assign delta[C_L2_HITS] = (l2_events_i.lookup.valid && l2_events_i.lookup_hit) ? 64'd1 : 64'd0;
+    assign delta[C_L2_MISSES] = (l2_events_i.lookup.valid && !l2_events_i.lookup_hit) ? 64'd1 : 64'd0;
+    assign delta[C_L2_PROMOTIONS] = (l2_events_i.promotion.valid) ? 64'd1 : 64'd0;
+    assign delta[C_L2_EVICT_CLEAN] = (l2_events_i.clean_discard.valid) ? 64'd1 : 64'd0;
+    assign delta[C_L2_EVICT_DIRTY] = (l2_events_i.dirty_eviction.valid) ? 64'd1 : 64'd0;
+    assign delta[C_L2_INFLIGHT_SUM] = {32'd0, l2_events_i.inflight};
+    assign delta[C_L2_FULL] = (l2_events_i.inflight == l2_events_i.capacity) ? 64'd1 : 64'd0;
+    assign delta[C_L2_GET_WAIT] = (l2_events_i.get_wait) ? 64'd1 : 64'd0;
+
+    // Write buffer: send_wait del estado describe la espera de instalacion.
+    assign delta[C_WBUF_ENQUEUED] = (wb_events_i.enqueued.valid) ? 64'd1 : 64'd0;
+    assign delta[C_WBUF_FORWARDED] = (wb_events_i.forwarded.valid) ? 64'd1 : 64'd0;
+    assign delta[C_WBUF_SENT] = (wb_events_i.install_accept.valid) ? 64'd1 : 64'd0;
+    assign delta[C_WBUF_INSTALLED] = (wb_events_i.install_done.valid) ? 64'd1 : 64'd0;
+    assign delta[C_WBUF_OCC_SUM] = {32'd0, wb_events_i.state.occupancy};
+    assign delta[C_WBUF_FULL] = (wb_events_i.state.occupancy == wb_events_i.state.capacity) ? 64'd1 : 64'd0;
+    assign delta[C_WBUF_PUSH_WAIT] = (wb_events_i.state.push_wait) ? 64'd1 : 64'd0;
+    assign delta[C_WBUF_INSTALL_WAIT] = (wb_events_i.state.send_wait) ? 64'd1 : 64'd0;
+    assign delta[C_WBUF_RAW_WAIT] = (wb_events_i.state.raw_wait) ? 64'd1 : 64'd0;
+
+    // Eviction buffer: solo se cuenta como escrita la confirmacion correcta.
+    assign delta[C_EB_ENQUEUED] = (eb_events_i.enqueued.valid) ? 64'd1 : 64'd0;
+    assign delta[C_EB_SENT] = (eb_events_i.write_accept.valid) ? 64'd1 : 64'd0;
+    assign delta[C_EB_WRITTEN] = (eb_events_i.write_done.valid && !eb_events_i.write_error) ? 64'd1 : 64'd0;
+    assign delta[C_EB_OCC_SUM] = {32'd0, eb_events_i.state.occupancy};
+    assign delta[C_EB_FULL] = (eb_events_i.state.occupancy == eb_events_i.state.capacity) ? 64'd1 : 64'd0;
+    assign delta[C_EB_PUSH_WAIT] = (eb_events_i.state.push_wait) ? 64'd1 : 64'd0;
+    assign delta[C_EB_RAW_WAIT] = (eb_events_i.state.raw_wait) ? 64'd1 : 64'd0;
+
+    // Memoria principal: solo las transferencias correctas cuentan como
+    // completas; el timeout y el resto de errores van en categorias separadas
+    // y conservan los ciclos y palabras ya consumidos.
+    assign delta[C_MEM_READS] = (mem_events_i.accept.valid && !mem_events_i.accept.write) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_WRITES] = (mem_events_i.accept.valid && mem_events_i.accept.write) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_READS_DONE] = (mem_events_i.complete.valid && !mem_events_i.complete.write && mem_events_i.complete_error == pkg_metrics::ERROR_NONE) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_WRITES_DONE] = (mem_events_i.complete.valid && mem_events_i.complete.write && mem_events_i.complete_error == pkg_metrics::ERROR_NONE) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_READ_WORDS] = (mem_events_i.word.valid && !mem_events_i.word.write) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_WRITE_WORDS] = (mem_events_i.word.valid && mem_events_i.word.write) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_READ_CYCLES] = (mem_events_i.read_active) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_WRITE_CYCLES] = (mem_events_i.write_active) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_READ_WAIT] = (mem_events_i.read_wait) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_WRITE_WAIT] = (mem_events_i.write_wait) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_READ_RSP_WAIT] = (mem_events_i.read_rsp_wait) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_WRITE_RSP_WAIT] = (mem_events_i.write_rsp_wait) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_TIMEOUTS] = (mem_events_i.complete.valid && mem_events_i.complete_error == pkg_metrics::ERROR_TIMEOUT) ? 64'd1 : 64'd0;
+    assign delta[C_MEM_ERRORS] = (mem_events_i.complete.valid && mem_events_i.complete_error != pkg_metrics::ERROR_NONE && mem_events_i.complete_error != pkg_metrics::ERROR_TIMEOUT) ? 64'd1 : 64'd0;
+
+    // Varios bloques pueden fallar en el mismo flanco, asi que los pulsos se
+    // suman en lugar de tratarse como una sola bandera.
+    assign error_pulses =
+        ((cpu_events_i.instruction_error.valid) ? 64'd1 : 64'd0) +
+        ((cpu_events_i.alignment_error.valid) ? 64'd1 : 64'd0) +
+        ((l1_events_i.error.valid) ? 64'd1 : 64'd0) +
+        ((l2_events_i.error.valid) ? 64'd1 : 64'd0) +
+        ((wb_events_i.error.valid) ? 64'd1 : 64'd0) +
+        ((eb_events_i.error.valid) ? 64'd1 : 64'd0) +
+        ((return_error_i.valid) ? 64'd1 : 64'd0);
+
+    assign delta[C_ERROR_EVENTS] = error_pulses;
+
 
     assign memory_failure = mem_events_i.complete.valid &&
         (mem_events_i.complete_error != pkg_metrics::ERROR_NONE);
