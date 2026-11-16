@@ -44,6 +44,72 @@ SYSTEM_RTL_SOURCES := $(RTL_SOURCES) \
 	$(RTL_DIR)/porygon_system.sv
 
 .PHONY: elaborate elaborate-core
+.PHONY: test-p2-11 sim-line-return sim-data-hierarchy sim-porygon-hierarchy sim-controller-integration sim-write-buffer
+test-p2-11: sim-line-return sim-data-hierarchy sim-porygon-hierarchy sim-controller-integration sim-write-buffer sim-top
+
+sim-write-buffer: $(BUILD_DIR)/write_buffer.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/write_buffer.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(MEMORY_DIR)/write_buffer.sv $(UNIT_TB_DIR)/memory/tb_write_buffer.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_write_buffer -o $@ $^
+
+sim-porygon-hierarchy: $(BUILD_DIR)/porygon_hierarchy.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/porygon_hierarchy.vvp: $(SYSTEM_RTL_SOURCES) $(SUPPORT_TB_DIR)/cpu_memory_reference.sv \
+	$(INTEGRATION_TB_DIR)/tb_porygon_hierarchy.sv $(SUPPORT_TB_DIR)/hierarchy_snapshot.svh \
+	$(PROGRAM_DIR)/top/top_integration.mem $(PROGRAM_DIR)/top/top_data.mem
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_porygon_hierarchy -o $@ $(filter %.sv,$^)
+
+sim-controller-integration: $(addprefix $(BUILD_DIR)/controller_integration_,2.vvp 5.vvp) $(BUILD_DIR)/controller_arbitration.vvp
+	$(VVP) $(BUILD_DIR)/controller_integration_2.vvp
+	$(VVP) $(BUILD_DIR)/controller_integration_5.vvp
+	$(VVP) $(BUILD_DIR)/controller_arbitration.vvp
+
+$(BUILD_DIR)/controller_arbitration.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(MEMORY_DIR)/memory_sp_ram.sv $(MEMORY_DIR)/main_memory.sv \
+	$(MEMORY_DIR)/memory_controller.sv $(UNIT_TB_DIR)/tb_memory_controller_full.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_memory_controller_full -Ptb_memory_controller_full.TEST_MODE=5 -o $@ $^
+
+$(BUILD_DIR)/controller_integration_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(MEMORY_DIR)/memory_sp_ram.sv $(MEMORY_DIR)/main_memory.sv \
+	$(MEMORY_DIR)/memory_controller.sv $(UNIT_TB_DIR)/tb_memory_controller_full.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_memory_controller_full -Ptb_memory_controller_full.DIV=$* -o $@ $^
+
+sim-line-return: $(addprefix $(BUILD_DIR)/line_return_,1.vvp 3.vvp 4.vvp)
+	$(VVP) $(BUILD_DIR)/line_return_1.vvp
+	$(VVP) $(BUILD_DIR)/line_return_3.vvp
+	$(VVP) $(BUILD_DIR)/line_return_4.vvp
+
+$(BUILD_DIR)/line_return_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(MEMORY_DIR)/line_return.sv $(UNIT_TB_DIR)/memory/tb_line_return.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_line_return -Ptb_line_return.N=$* -o $@ $^
+
+sim-data-hierarchy: $(addprefix $(BUILD_DIR)/data_hierarchy_,1.vvp 3.vvp 4.vvp) $(BUILD_DIR)/data_hierarchy_config.vvp
+	$(VVP) $(BUILD_DIR)/data_hierarchy_1.vvp
+	$(VVP) $(BUILD_DIR)/data_hierarchy_3.vvp
+	$(VVP) $(BUILD_DIR)/data_hierarchy_4.vvp
+	$(VVP) $(BUILD_DIR)/data_hierarchy_config.vvp
+
+$(BUILD_DIR)/data_hierarchy_config.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_data_memory_hierarchy.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_data_memory_hierarchy -Ptb_data_memory_hierarchy.N=3 \
+		-Ptb_data_memory_hierarchy.WB_DEPTH=2 -Ptb_data_memory_hierarchy.EB_DEPTH=4 \
+		-Ptb_data_memory_hierarchy.DIV=5 -Ptb_data_memory_hierarchy.READ_FIRST=31 \
+		-Ptb_data_memory_hierarchy.WRITE_FIRST=29 -o $@ $^
+
+$(BUILD_DIR)/data_hierarchy_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_data_memory_hierarchy.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_data_memory_hierarchy -Ptb_data_memory_hierarchy.N=$* -o $@ $^
+
 elaborate: $(BUILD_DIR)/porygon_system.vvp
 
 elaborate-core: $(BUILD_DIR)/vliw_processor.vvp
