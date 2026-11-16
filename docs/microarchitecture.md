@@ -141,6 +141,14 @@ flanco, incluyendo su escritura o diagnóstico. `halted_o` registra entonces la
 parada completa y deshabilita avances hasta reset. Los saltos ordinarios
 conservan los dos bundles de retardo por software.
 
+La observación `perf_events_o` usa los tipos de `pkg_metrics`. El núcleo
+conserva el bundle y su validez para distinguir NOPs de burbujas; el observador
+programa las finalizaciones según las latencias ya existentes y se pausa con
+el mismo avance. No participa en dependencias ni control de emisión. Los
+errores ROM se retienen hasta admitir ID, y los de alineación se informan con
+la dirección efectiva. Al cerrar, los eventos del último flanco coinciden con
+`stop_done_o`; después de `halted_o` no se emiten nuevos eventos.
+
 > [!TIP]
 >
 > **Banco de registros (`register_file.sv`):**

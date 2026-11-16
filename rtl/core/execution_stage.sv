@@ -12,14 +12,16 @@
  * @input advance_i Avance comun de resultados/tags y aceptacion CRYPTO.
  * @input completion_ready_i Capacidad de consumo, independiente del stall.
  * @input dmem_req_ready_i, dmem_rsp_valid_i, dmem_rsp_error_i Handshake CPU-L1.
- * @output dmem_* Control LSU para la futura conexion del nucleo a CPU-L1.
+ * @output dmem_* Control LSU conectado a la interfaz CPU-L1 del nucleo.
  * @output *_wb_o Canales de resultado para el RF, sin arbitraje dinamico.
- * @output memory_* Solicitud LSU para memoria sincronica externa.
+ * @output memory_* Campos preparados por LSU, incluida direccion efectiva para diagnostico.
  * @output branch_* Decision de salto sin flush ni stall.
  * @output authenticated_o, auth_failed_o, access_error_o Estado/eventos CRYPTO.
  * @output crypto_event_pc_o PC alineado con los eventos registrados CRYPTO.
  * @output invalid_address_o, invalid_address_pc_o Error LSU en la solicitud EX.
  * @output work_after_advance_o Trabajo posterior al flanco, valido con advance_i=1.
+ * @output wb_operations_o Operaciones EX cuya finalizacion queda para el siguiente WB.
+ * @output mul_operation_o Operacion EX que finalizara tras tres avances adicionales.
  */
 module execution_stage (
     input logic clk_i,
@@ -40,12 +42,15 @@ module execution_stage (
     output logic dmem_done_o,
     output logic dmem_error_o,
     output logic work_after_advance_o,
+    output pkg_metrics::event_delta_t wb_operations_o,
+    output logic mul_operation_o,
     output pkg_vliw::wb_channel_t alu0_wb_o,
     output pkg_vliw::wb_channel_t alu1_wb_o,
     output pkg_vliw::wb_channel_t load_wb_o,
     output pkg_vliw::wb_channel_t crypto_left_wb_o,
     output pkg_vliw::wb_channel_t crypto_right_wb_o,
     output pkg_vliw::address_t memory_address_o,
+    output pkg_vliw::address_t memory_effective_address_o,
     output logic memory_read_enable_o,
     output logic [3:0] memory_write_enable_o,
     output pkg_vliw::word_t memory_write_data_o,
@@ -136,7 +141,7 @@ module execution_stage (
         .dmem_rsp_ready_o(dmem_rsp_ready_o),
         .dmem_done_o(dmem_done_o),
         .dmem_error_o(dmem_error_o),
-        .effective_address_o(), // La direccion alineada es la interfaz RAM.
+        .effective_address_o(memory_effective_address_o),
         .memory_address_o(memory_address_o),
         .memory_read_enable_o(memory_read_enable_o),
         .memory_write_enable_o(memory_write_enable_o),
@@ -187,6 +192,19 @@ module execution_stage (
     assign work_after_advance_o = rst_ni &&
         (alu0_enable || alu1_is_mul || mul_tag1_q.valid || mul_tag2_q.valid ||
          (alu1_i.valid && alu1_enable) || load_valid || crypto_work_after_advance);
+
+    /** @brief Clasifica operaciones EX para observacion, incluso con destino r0. */
+    assign mul_operation_o = rst_ni && alu1_is_mul;
+    always_comb begin
+        wb_operations_o = '0;
+        if (rst_ni) begin
+            if (alu0_enable) wb_operations_o++;
+            if (alu1_i.valid && !alu1_is_mul && alu1_i.instruction[9:4] != MATH_NOP)
+                wb_operations_o++;
+            if (load_valid) wb_operations_o++;
+            if (crypto_work_after_advance) wb_operations_o++;
+        end
+    end
 
     /** @brief Conserva el PC e instruccion de CRYPTO con sus resultados/eventos WB. */
     always_ff @(posedge clk_i or negedge rst_ni) begin

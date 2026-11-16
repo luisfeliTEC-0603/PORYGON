@@ -30,6 +30,7 @@ module tb_core_memory_wait;
     vliw_processor dut (
         .clk_i(clk),
         .rst_ni(rst_n),
+        .instruction_error_i(1'b0), .dmem_rsp_origin_i(pkg_metrics::ORIGIN_ERROR),
         .instruction_bundle_i(bundle),
         .dmem_rsp_rdata_i(32'b0),
         .dmem_req_ready_i(req_ready),

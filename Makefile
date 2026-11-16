@@ -15,9 +15,10 @@ PROGRAM_DIR := tests/programs
 COMMON_FLAGS := -g2012 -Wall -I$(RTL_DIR)
 PKG := $(RTL_DIR)/pkg_vliw.sv
 MEMORY_PKG := $(MEMORY_DIR)/pkg_memory.sv
+METRICS_PKG := $(RTL_DIR)/metrics/pkg_metrics.sv
 
 # Nucleo reusable con puertos externos de memoria.
-RTL_SOURCES := $(PKG) $(MEMORY_PKG) \
+RTL_SOURCES := $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
 	$(wildcard $(CORE_DIR)/decode/*.sv) \
 	$(wildcard $(CORE_DIR)/crypto/*.sv) \
 	$(CORE_DIR)/register_file.sv \
@@ -25,6 +26,8 @@ RTL_SOURCES := $(PKG) $(MEMORY_PKG) \
 	$(CORE_DIR)/lost_unit.sv $(CORE_DIR)/bruh_unit.sv \
 	$(CORE_DIR)/fetch_stage.sv $(CORE_DIR)/execution_stage.sv \
 	$(CORE_DIR)/writeback_stage.sv $(CORE_DIR)/vliw_processor.sv
+RTL_SOURCES += $(CORE_DIR)/bundle_completions.sv
+RTL_SOURCES += $(CORE_DIR)/core_metrics.sv
 
 # Sistema conectado: memorias reales de simulacion y wrapper del nucleo.
 SYSTEM_RTL_SOURCES := $(RTL_SOURCES) \
@@ -59,6 +62,29 @@ endif
 
 test: sim-alu sim-super-alu sim-regfile sim-lost sim-bruh sim-crypto test-tools
 
+.PHONY: test-p2-09 sim-lost-handshake sim-pipeline-hold sim-instruction-memory
+test-p2-09: sim-instruction-memory sim-pipeline-hold sim-lost sim-lost-handshake \
+	sim-load-wb sim-core-memory-wait sim-reference-storage sim-reference-timing \
+	sim-bundle-completions sim-core-metrics sim-core-reference
+
+sim-lost-handshake: $(BUILD_DIR)/lost_handshake.vvp
+	$(VVP) $<
+$(BUILD_DIR)/lost_handshake.vvp: $(PKG) $(CORE_DIR)/lost_unit.sv $(UNIT_TB_DIR)/tb_lost_handshake.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_lost_handshake -o $@ $^
+
+sim-pipeline-hold: $(BUILD_DIR)/pipeline_hold.vvp
+	$(VVP) $<
+$(BUILD_DIR)/pipeline_hold.vvp: $(PKG) $(CORE_DIR)/fetch_stage.sv $(CORE_DIR)/writeback_stage.sv $(MEMORY_DIR)/instruction_memory.sv $(UNIT_TB_DIR)/tb_pipeline_hold.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_pipeline_hold -o $@ $^
+
+sim-instruction-memory: $(BUILD_DIR)/instruction_memory.vvp
+	$(VVP) $<
+$(BUILD_DIR)/instruction_memory.vvp: $(PKG) $(MEMORY_DIR)/instruction_memory.sv $(UNIT_TB_DIR)/tb_instruction_memory.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_instruction_memory -o $@ $^
+
 test-tools:
 	sh tests/tools/test_loader.sh
 
@@ -67,6 +93,22 @@ test-tools:
 .PHONY: sim-reference-timing
 .PHONY: sim-core-reference
 .PHONY: sim-load-wb
+.PHONY: sim-bundle-completions
+.PHONY: sim-core-metrics
+sim-core-metrics: $(BUILD_DIR)/core_metrics_test.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/core_metrics_test.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(CORE_DIR)/bundle_completions.sv $(CORE_DIR)/core_metrics.sv $(UNIT_TB_DIR)/tb_core_metrics.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_core_metrics -o $@ $^
+
+sim-bundle-completions: $(BUILD_DIR)/bundle_completions_test.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/bundle_completions_test.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(CORE_DIR)/bundle_completions.sv $(UNIT_TB_DIR)/tb_bundle_completions.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_bundle_completions -o $@ $^
+
 sim-load-wb: $(BUILD_DIR)/load_wb.vvp
 	$(VVP) $<
 
@@ -89,7 +131,7 @@ sim-reference-timing: $(addprefix $(BUILD_DIR)/reference_timing_,1.vvp 9.vvp 48.
 	$(VVP) $(BUILD_DIR)/reference_timing_9.vvp
 	$(VVP) $(BUILD_DIR)/reference_timing_48.vvp
 
-$(BUILD_DIR)/reference_timing_%.vvp: $(PKG) $(MEMORY_PKG) \
+$(BUILD_DIR)/reference_timing_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
 	$(SUPPORT_TB_DIR)/cpu_memory_reference.sv $(UNIT_TB_DIR)/tb_reference_timing.sv
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_reference_timing -Ptb_reference_timing.RESPONSE_CYCLES=$* -o $@ $^
@@ -97,7 +139,7 @@ $(BUILD_DIR)/reference_timing_%.vvp: $(PKG) $(MEMORY_PKG) \
 sim-reference-storage: $(BUILD_DIR)/reference_storage.vvp
 	$(VVP) $<
 
-$(BUILD_DIR)/reference_storage.vvp: $(PKG) $(MEMORY_PKG) \
+$(BUILD_DIR)/reference_storage.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
 	$(SUPPORT_TB_DIR)/cpu_memory_reference.sv $(UNIT_TB_DIR)/tb_reference_storage.sv
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_reference_storage -o $@ $^

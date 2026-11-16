@@ -91,6 +91,8 @@ module porygon_system #(
     ) u_processor (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
+        .instruction_error_i(instruction_access_error_o),
+        .dmem_rsp_origin_i(pkg_metrics::ORIGIN_REFERENCE),
         .instruction_bundle_i(instruction_bundle),
         .dmem_rsp_rdata_i(data_read_data),
         .instruction_address_o(instruction_address),

@@ -17,27 +17,26 @@ module tb_lost;
     logic [3:0] memory_write_enable;
     word_t memory_write_data;
     logic invalid_address;
+    logic req_valid;
     logic load_valid;
     logic [2:0] load_rd;
     word_t load_data;
     integer checks_passed = 0;
 
-    // RAM de prueba: lee y escribe en el flanco positivo. read_data conserva
-    // la ultima respuesta hasta que se capture otra lectura.
+    /** @brief Doble CPU-L1 hit E1: lectura combinacional y store por flanco. */
     logic [31:0] memory_words [0:16383];
 
     always #5 clk = ~clk;
+    assign memory_read_data = memory_read_enable ? memory_words[memory_address[15:2]] : '0;
 
     always @(posedge clk) begin
-        if (memory_read_enable)
-            memory_read_data <= memory_words[memory_address[15:2]];
-        if (memory_write_enable[0])
+        if (req_valid && memory_write_enable[0])
             memory_words[memory_address[15:2]][7:0] <= memory_write_data[7:0];
-        if (memory_write_enable[1])
+        if (req_valid && memory_write_enable[1])
             memory_words[memory_address[15:2]][15:8] <= memory_write_data[15:8];
-        if (memory_write_enable[2])
+        if (req_valid && memory_write_enable[2])
             memory_words[memory_address[15:2]][23:16] <= memory_write_data[23:16];
-        if (memory_write_enable[3])
+        if (req_valid && memory_write_enable[3])
             memory_words[memory_address[15:2]][31:24] <= memory_write_data[31:24];
     end
 
@@ -50,6 +49,8 @@ module tb_lost;
         .base_address_i(base_address),
         .store_data_i(store_data),
         .memory_read_data_i(memory_read_data),
+        .dmem_req_ready_i(1'b1), .completion_ready_i(1'b1), .dmem_rsp_error_i(1'b0),
+        .dmem_rsp_valid_i(memory_read_enable || (|memory_write_enable)), .dmem_req_valid_o(req_valid),
         .effective_address_o(effective_address),
         .memory_address_o(memory_address),
         .memory_read_enable_o(memory_read_enable),
@@ -144,7 +145,6 @@ module tb_lost;
         immediate = '0;
         base_address = '0;
         store_data = '0;
-        memory_read_data = '0;
         memory_words[8] = '0;
         memory_words[9] = 32'hAABB_CCDD;
         #2;
@@ -162,14 +162,14 @@ module tb_lost;
         issue(3'd3, LOST_LOW, 3'd0, 1'b0, 16'b0,
             32'h0001_0020, 32'b0);
         expect_request("low", 32'h0001_0020, 1'b1, 4'b0000, 32'b0, 1'b0);
-        expect_no_load("low antes del flanco");
+        expect_load("low disponible para E1", 3'd3, 32'h80FF_017F);
         capture_request();
         expect_load("low", 3'd3, 32'h80FF_017F);
 
         issue(3'd5, LOST_LOB, 3'd2, 1'b0, 16'b0,
             32'h0001_0020, 32'b0);
         expect_request("lob", 32'h0001_0022, 1'b1, 4'b0000, 32'b0, 1'b0);
-        expect_load("respuesta previa sigue estable", 3'd3, 32'h80FF_017F);
+        expect_load("lob disponible para E1", 3'd5, 32'hFFFF_FFFF);
         capture_request();
         expect_load("lob", 3'd5, 32'hFFFF_FFFF);
 
@@ -232,7 +232,7 @@ module tb_lost;
             32'h0000_AA00, 1'b0);
         capture_request();
         check_word("stb RAM", memory_words[8], 32'h80FF_AA7F);
-        check_word("read_data estable sin lectura", memory_read_data, 32'h80FF_017F);
+        check_word("store responde sin dato de lectura", memory_read_data, 32'b0);
         expect_no_load("stb");
 
         issue(3'd1, LOST_STH, 3'd2, 1'b0, 16'b0,

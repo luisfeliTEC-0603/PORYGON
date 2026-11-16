@@ -9,6 +9,13 @@
 package pkg_metrics;
     typedef logic [63:0] counter_t;
     typedef logic [7:0] event_delta_t;
+    /** @brief Finalizaciones simultaneas; metadatos del bundle se emiten al terminarlo. */
+    typedef struct packed {
+        event_delta_t bundles;
+        event_delta_t instructions;
+        event_delta_t nop_slots;
+        event_delta_t literal_slots;
+    } completion_delta_t;
     typedef logic [31:0] event_id_t;
     typedef logic [31:0] occupancy_t;
 

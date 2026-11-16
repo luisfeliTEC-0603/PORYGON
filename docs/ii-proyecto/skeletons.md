@@ -30,6 +30,10 @@ la verificación actual usa dobles externos, sin conectar la jerarquía real.
 También expone `stop_done_o` en el último flanco del programa y `halted_o` como
 estado registrado de parada completa. El entorno debe usar el pulso para cerrar
 la medición incluyendo los eventos de ese flanco, según el contrato CPU–memoria.
+`perf_events_o` entrega `cpu_events_t` desde `core_metrics.sv`; recibe la
+procedencia `dmem_rsp_origin_i` y el diagnóstico de ROM `instruction_error_i`.
+`bundle_completions.sv` conserva metadatos de finalización durante stalls,
+incluidos bundles NOP, literales y operaciones que no escriben RF.
 La conexión de la CPU al wrapper nuevo corresponde a los issues de integración.
 Los archivos nuevos quedan fuera del flujo de construcción actual.
 

@@ -7,7 +7,7 @@ archivos. La codificación de instrucciones está en [isa.md](isa.md).
 
 ## 1. Qué constituye el sistema simulado
 
-**Adaptación P2-09 en curso:** el núcleo ya expone CPU–L1 con handshakes; el
+**Núcleo P2-09 verificado con referencia:** expone CPU–L1 con handshakes; el
 wrapper `porygon_system` de RAM anterior aún requiere integrar ese protocolo
 en P2-11. La descripción y comandos de sistema siguientes corresponden a la
 base anterior y no certifican el núcleo adaptado. Para la interfaz actual,
@@ -33,18 +33,47 @@ inhibición de los cinco puertos RF durante stalls, valores finales de loads,
 multiplicación y ALU, y el store por máscara. Un load fallido conserva el valor
 anterior de su destino. Cada pasada termina desde el testbench después de 45
 avances. La imagen incluye saltos y
-revocación CRYPTO; faltan ampliar la cobertura con autenticación/Feistel,
-retención completa de procedencia, reset durante demandas y métricas/cierre.
-Después ejecuta seis casos de parada: marcador solo, load/MUL, ALU, error
-CRYPTO, store y load fallido.
+revocación CRYPTO. También compara las finalizaciones, slots NOP/literales,
+demandas, procedencias y esperas de `perf_events_o`.
+Después ejecuta ocho casos de parada: marcador solo, load/MUL, ALU, error
+CRYPTO, store, load fallido y ALU/MUL hacia `r0`.
 Comprueba cierre de fetch/admisión en el flanco del marcador, cancelación de
 los slots jóvenes y finalización de load/MUL. Un bloqueo de aceptación impide
 registrar la parada hasta que EX avance; reset reabre la admisión entre casos.
 El test espera `halted_o` y exige un único `stop_done_o` en el ciclo esperado:
 el mismo avance del marcador si no deja trabajo pendiente, uno después para
-ALU/error CRYPTO y tres después para load/MUL. Comprueba resultados y diagnóstico
+ALU/error CRYPTO y tres después para MUL, también con destino `r0`. Comprueba resultados y diagnóstico
 del último flanco y persistencia de la parada. No usa una espera fija para
 declarar vacío el núcleo.
+
+La prueba integrada también carga las cuatro palabras de credencial mediante
+LSU y LOPW, autentica y emite Feistel hacia `r0` y luego Feistel junto con MUL. El siguiente bundle mezcla
+load y WRITE: fuerza espera de aceptación y servicio, y comprueba que se
+conserven la sesión con cuenta 32, la llave anterior y los resultados/tags
+pendientes de Feistel/MUL. Al reanudar verifica RF, load, producto y llave;
+cuenta escrituras en los cinco puertos RF y commits de bóveda para detectar
+efectos repetidos. Finalmente reinicia con EX1 y WB retenidos: en E1 cancela una
+oferta bloqueada y en E9/E48 una solicitud aceptada. Tras el nuevo arranque y
+un intervalo mayor que la latencia anterior, exige ausencia de respuestas y
+efectos antiguos. La referencia usa 16 bytes en estos escenarios.
+
+`make test-p2-09` agrupa toda la verificación dirigida. Incluye
+`sim-bundle-completions` (finalizaciones EX/WB/MUL, r0, literales, simultaneidad,
+stall/reset), `sim-core-metrics` (causas de espera, origen WB/error, diagnóstico
+ROM retenido/cancelado y retardo) y las pruebas de LSU, ROM, fronteras y núcleo.
+La prueba integrada añade desalineación real sin solicitud y diagnóstico ROM
+con PC retenido mientras otro load congela EX. `make sim-lost` usa ahora un
+doble de hit E1 y mantiene las 102 comprobaciones del formato LSU; `make test`
+ejecuta las pruebas unitarias previas con ese API actualizado.
+
+El núcleo emite `perf_events_o` sin acumular contadores. El programa base de 45
+avances completa 43 bundles y 17 instrucciones; el programa autenticado con
+Feistel/MUL completa 33 bundles y 19 instrucciones. Las pruebas comparan también
+NOPs/literales y cantidades exactas de efectos RF/bóveda. El origen de la
+referencia es configurable: los perfiles de integración usan L1/L2/memoria y
+los errores se etiquetan como `ORIGIN_ERROR`, sin modelar etiquetas de caché.
+El núcleo está siempre dispuesto a consumir fuera de reset; el backpressure
+de respuesta se prueba aisladamente en LSU, referencia y observador.
 
 `make sim-load-wb` prueba ejecución de forma aislada y su nueva previsión
 `work_after_advance_o`, observada antes de flancos habilitados. Comprueba qué
@@ -157,7 +186,7 @@ invalida los bundles posteriores ya capturados. Ejecución y WB siguen avanzando
 para completar el bundle marcador y las operaciones anteriores, según el
 [contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#parada-del-programa-y-vaciado-del-pipeline).
 El núcleo ya detecta el vaciado e informa ese último flanco con `stop_done_o`;
-la conexión al cierre de medición sigue pendiente de integración. El drenado posterior de líneas
+la conexión a los contadores de P2-10 sigue pendiente de integración P2-11. El drenado posterior de líneas
 dirty queda fuera de esa ventana, según el [contrato de métricas](ii-proyecto/metrics.md#2-periodo-de-medición).
 
 ## 2. Banco de registros y estado criptográfico

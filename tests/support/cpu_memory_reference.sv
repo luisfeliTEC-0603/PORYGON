@@ -8,12 +8,14 @@
  * @param BASE_ADDRESS Direccion fisica del primer byte.
  * @param INIT_FILE Imagen de bytes compatible con las herramientas existentes.
  * @param RESPONSE_CYCLES Flanco de respuesta contando aceptacion como E1.
+ * @param RESPONSE_ORIGIN Procedencia de respuesta correcta; errores usan ORIGIN_ERROR.
  */
 module cpu_memory_reference #(
     parameter integer MEMORY_BYTES = pkg_memory::MEMORY_BYTES,
     parameter pkg_memory::address_t BASE_ADDRESS = pkg_memory::DATA_BASE_ADDRESS,
     parameter INIT_FILE = "",
-    parameter integer RESPONSE_CYCLES = 1
+    parameter integer RESPONSE_CYCLES = 1,
+    parameter integer RESPONSE_ORIGIN = pkg_metrics::ORIGIN_REFERENCE
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -27,7 +29,8 @@ module cpu_memory_reference #(
     output logic rsp_valid_o,
     input logic rsp_ready_i,
     output pkg_memory::word_t rsp_rdata_o,
-    output logic rsp_error_o
+    output logic rsp_error_o,
+    output pkg_metrics::demand_origin_t rsp_origin_o
 );
     localparam integer WORD_BYTES = $bits(pkg_memory::word_t) / 8;
     localparam pkg_memory::address_t LAST_WORD_ADDRESS =
@@ -60,6 +63,20 @@ module cpu_memory_reference #(
         rsp_rdata_o = '0;
         if (rsp_valid_o && !rsp_error_o && !active_request.write) begin
             rsp_rdata_o = read_word(active_request.address);
+        end
+    end
+
+    /** @brief Procedencia configurable de simulacion, estable durante la respuesta. */
+    always_comb begin
+        case (RESPONSE_ORIGIN)
+            pkg_metrics::ORIGIN_L1: rsp_origin_o = pkg_metrics::ORIGIN_L1;
+            pkg_metrics::ORIGIN_WB: rsp_origin_o = pkg_metrics::ORIGIN_WB;
+            pkg_metrics::ORIGIN_L2: rsp_origin_o = pkg_metrics::ORIGIN_L2;
+            pkg_metrics::ORIGIN_MEMORY: rsp_origin_o = pkg_metrics::ORIGIN_MEMORY;
+            default: rsp_origin_o = pkg_metrics::ORIGIN_REFERENCE;
+        endcase
+        if (rsp_error_o) begin
+            rsp_origin_o = pkg_metrics::ORIGIN_ERROR;
         end
     end
 

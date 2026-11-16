@@ -5,7 +5,7 @@
  * de memoria actuales describen la preparacion; dmem_req_valid_o califica la
  * oferta CPU-L1. El load se selecciona y extiende antes del flanco de consumo;
  * execution_stage lo captura junto con su destino, PC e instruccion al avanzar.
- * La conexion del protocolo y del control de avance al nucleo sigue pendiente.
+ * vliw_processor conserva ID/EX y reanuda al consumir la respuesta.
  * @see docs/ii-proyecto/cpu-memory-contract.md
  */
 module lost_unit #(

@@ -14,6 +14,20 @@ reloj de CPU y conserva los resultados; no controla solicitudes, `ready`,
 reservas ni el avance de las FSM. Las fórmulas se calculan a partir de los
 contadores exportados.
 
+**Productor del núcleo implementado en P2-09:** `vliw_processor.perf_events_o`
+entrega `cpu_events_t` mediante `core_metrics.sv` y `bundle_completions.sv`.
+Los contadores de P2-10 y la conexión con la jerarquía real siguen perteneciendo
+a sus issues. El productor emite finalizaciones al avanzar EX, WB o MUL, conserva
+sus metadatos durante stalls y permite múltiples bundles completados por flanco.
+`completion_delta_t` agrupa los cuatro deltas internos con los anchos compartidos.
+El núcleo recibe `dmem_rsp_origin_i` junto con la respuesta y sobreescribe su
+procedencia con `ORIGIN_ERROR` al consumir un fallo. Los errores de texto se
+conservan hasta admitir ID y se cancelan con su bundle joven; sus direcciones
+son PC. La dirección de `alignment_error` es la dirección efectiva de datos.
+`stop_done_o` coincide con los últimos eventos y `halted_o` inhibe eventos
+posteriores. `make test-p2-09` verifica estos comportamientos, incluidos destinos
+`r0`, Feistel de dos resultados, NOPs/literales, retardo y reset.
+
 Los tipos de eventos y la instantánea se concretan en los
 [skeletons RTL](skeletons.md).
 
@@ -62,7 +76,8 @@ en EX y observa las salidas tras `#1`, sin esperar explícitamente operaciones
 anteriores pendientes. Para Proyecto II, el núcleo debe impedir la admisión y
 ejecución de bundles posteriores al marcador; el entorno espera el vaciado
 definido arriba y entonces emite `perf_stop`. Este
-cambio está previsto para la integración; no está implementado por los skeletons.
+cambio ya está implementado en el núcleo mediante `stop_done_o`/`halted_o`;
+su conexión al entorno real sigue prevista para P2-11 y no la implementan los skeletons.
 
 ## 3. Eventos y muestras
 

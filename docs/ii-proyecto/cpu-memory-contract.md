@@ -1,6 +1,6 @@
 # Contrato CPU–memoria
 
-**Estado:** propuesta de diseño · **Fecha:** 2026-11-08
+**Estado:** núcleo implementado y verificado con referencia · **Fecha:** 2026-11-16
 
 ## 1. Propósito
 
@@ -62,6 +62,17 @@ de `pkg_memory`. El tipo de acceso se expone en `dmem_req_write_o`; la preparaci
 de lectura se conserva como señal interna, sin un segundo habilitador externo.
 En un store válido, `req_write=1` y la máscara selecciona sus bytes; una lectura
 presenta `req_write=0`, máscara cero y dato de escritura cero.
+
+La observación añade `dmem_rsp_origin_i` (`pkg_metrics::demand_origin_t`) y
+`perf_events_o` (`pkg_metrics::cpu_events_t`). La procedencia se conserva junto
+con la respuesta hasta su consumo; una respuesta fallida se etiqueta
+`ORIGIN_ERROR`. `instruction_error_i` acompaña la salida registrada de ROM.
+El núcleo conserva ese error si ID queda retenido y lo emite una vez al admitir
+el bundle, con su PC; si el bundle se cancela por parada, se descarta el error.
+`alignment_error.address` contiene la dirección efectiva de datos rechazada;
+`instruction_error.address` contiene el PC. `invalid_address_pc_o` conserva el
+PC del slot LSU y permite asociarlo también al `dmem_error_o` de su consumo.
+Estas señales no modifican los handshakes ni el avance funcional.
 
 ## 4. Funcionamiento
 
@@ -342,8 +353,9 @@ La interfaz externa del núcleo ya usa `dmem_req_*`/`dmem_rsp_*`, con tipo de ac
 explícito. Los nombres `memory_*` permanecen solo en la preparación interna de
 LSU/execution_stage. `make sim-core-memory-wait` verifica además los campos de
 lectura y de un store byte con dirección alineada y máscara desplazada.
-Las conexiones del wrapper de RAM todavía no usan el protocolo nuevo. Quedan
-pendientes la integración de diagnósticos de memoria y las métricas.
+Las conexiones del wrapper de RAM todavía no usan el protocolo nuevo; su
+integración con la jerarquía real corresponde a P2-11. Los eventos del núcleo
+ya están disponibles en `perf_events_o`.
 
 El modelo de pruebas `tests/support/cpu_memory_reference.sv` implementa datos y
 protocolo CPU–L1 de una demanda, sin etiquetas ni reemplazo de caché. Su arreglo
@@ -369,10 +381,10 @@ los cinco puertos RF durante stalls y valores finales de loads, MUL, ALU y
 stores por máscara. Verifica que el load fallido conserva su destino anterior
 y que el slot ALU concurrente termina. La imagen también contiene saltos y RVK.
 Las pasadas de esa imagen terminan desde el testbench después de 45 avances.
-Quedan pruebas integradas de autenticación/Feistel, procedencia retenida,
-reset durante demandas y los eventos de métricas/cierre.
+Los escenarios integrados adicionales de autenticación, retención y reset se
+describen al final de esta sección, junto con su observación de métricas.
 
-El primer incremento de parada implementa `stop_fire` en `vliw_processor`:
+`vliw_processor` implementa `stop_fire`:
 requiere un salto válido tomado al propio PC y avance efectivo. En ese mismo
 flanco `stop_admission` inhibe la lectura ROM, invalida IF/ID y sustituye lo que
 entraría desde ID a EX por burbujas inválidas. `stop_requested_q` conserva el
@@ -381,13 +393,13 @@ conserva PC/metadatos e invalida el bundle. Ejecución y WB siguen avanzando baj
 el permiso habitual de memoria, por lo que completan operaciones del marcador
 y anteriores. El cierre completo se conecta mediante la previsión descrita abajo.
 
-La prueba integrada verifica marcador solo, load/MUL, ALU, error CRYPTO, store
-y load fallido, en los tres perfiles. Bloquea aceptación de memoria dos flancos
+La prueba integrada verifica marcador solo, load/MUL, ALU, error CRYPTO, store,
+load fallido y operaciones ALU/MUL hacia `r0`, en los tres perfiles. Bloquea aceptación de memoria dos flancos
 y verifica que no se registre la parada durante esa espera; comprueba ID/EX
 vacío, PC retenido y ausencia de efectos de una suma y un store posteriores al
 marcador. Reinicia entre casos para verificar reapertura.
 
-El primer incremento del observador de vaciado añade
+Para reconocer el vaciado, el núcleo usa
 `execution_stage.work_after_advance_o`: previsión combinacional del trabajo que
 permanecería después de un flanco con `advance_i=1`. Incluye nuevas salidas de
 ALU/load hacia WB y las dos etapas MUL; el WB actual se consume en ese flanco
@@ -417,10 +429,79 @@ Verifica un único pulso en el ciclo exacto: marcador solo, store y load fallido
 cierran al avanzar el marcador; ALU y diagnóstico CRYPTO un avance después;
 load/MUL tres avances después, coincidiendo con el RF del producto. Confirma
 resultados y diagnósticos del último flanco, persistencia de parada y reapertura
-por reset. Los eventos de métricas y su integración con `perf_stop` siguen
-pendientes, así como ampliar autenticación/Feistel y reset durante demandas.
+por reset. `perf_events_o` incluye los eventos de ese último flanco; el entorno
+puede usar `stop_done_o` como `perf_stop`. La integración con los contadores
+de P2-10 y con la jerarquía real pertenece a P2-11.
+
+La prueba del núcleo ahora autentica mediante cuatro loads y LOPW y ejecuta un
+bundle con Feistel y MUL seguido de load y WRITE. Durante la espera conserva
+la cuenta de sesión en 32, no modifica la llave y retiene los dos canales
+Feistel completos y el tag MUL con PC/instrucción. Al reanudar verifica los
+resultados RF, la palabra cargada, el producto y el WRITE autorizado. Cuenta
+las escrituras de cada puerto RF y commits de bóveda para exigir que sucedan
+exactamente una vez. Después repite la preparación y aplica reset con EX1/WB
+retenidos y la LSU en oferta bloqueada (E1) o demanda aceptada (E9/E48).
+El nuevo programa termina desde reset sin accesos: después de esperar más que
+la latencia anterior no deben reaparecer respuestas, credenciales, llaves ni
+resultados antiguos. Estos casos pasan para los tres perfiles de la referencia.
+
+## 7. Observación del núcleo y verificación P2-09
+
+`core_metrics.sv` genera `cpu_events_t` sin retroalimentar el control funcional.
+`bundle_completions.sv` conserva metadatos de finalización, no dependencias de
+registros ni disponibilidad de unidades. Su validez distingue un bundle NOP
+del programa de una burbuja de llenado o cancelación.
+
+| Operación | Flanco de finalización, con avance continuo |
+| --- | --- |
+| Store/respuesta fallida LSU, desalineación, salto, bóveda correcta, bundle NOP | EX efectivo |
+| ALU0, ALU1 rápida, load correcto, Feistel y diagnóstico CRYPTO | Un avance después de EX |
+| MUL/MULH | Tres avances después de EX: EX2, captura WB y consumo RF |
+
+Las instrucciones se contabilizan en su propia finalización. El bundle y sus
+NOPs/literales se contabilizan al finalizar su última operación. Puede terminar
+un bundle joven antes que otro con MUL y pueden coincidir varias finalizaciones
+en un flanco. Los destinos `r0` también cuentan; Feistel cuenta una operación
+aunque escriba dos registros o ninguno. Los tags diferidos se conservan durante
+stalls y se cancelan con reset, sin duplicar eventos ni extender las latencias.
+
+El observador emite inicio de demanda en su primera presentación, incluso con
+`req_ready=0`, y fin solo al consumir la respuesta. Las esperas se clasifican
+por reloj real con prioridad consumo, aceptación y miss pendiente. El flanco
+que acepta un miss se atribuye a `WAIT_MISS`. `branch_done` incluye saltos no
+tomados; los dos siguientes bundles dinámicos identifican el retardo y solo
+un NOP completo que avance genera `branch_delay`. Las máscaras de ocupación
+describen el intervalo anterior al flanco, incluidas etapas jóvenes que se
+cancelan en ese flanco; sus transferencias sí quedan inhibidas al cancelar.
+EX incluye las etapas MUL en drenaje y WB incluye diagnósticos/resultados sin
+escritura RF. Después de `halted_o` y durante reset no se emiten eventos.
+
+`make test-p2-09` ejecuta las pruebas dirigidas de ROM, fronteras, LSU, ejecución,
+referencia, finalizaciones, observador y núcleo completo. El núcleo consume
+respuestas inmediatamente fuera de reset porque WB siempre puede drenar en
+su avance. La espera de consumo se verifica aisladamente en LSU, referencia
+y observador, sin introducir backpressure artificial en el núcleo.
+
+La integración compara todos los campos retenidos de IF/ID, las cinco
+operaciones ID/EX, los cinco canales WB y dirección/dato/máscara/tipo de la
+solicitud antes/después de cada flanco congelado. Comprueba los siguientes
+totales calculados a partir de las imágenes y su recorrido dinámico:
+
+| Escenario | Bundles | Instrucciones | Slots NOP | Literales |
+| --- | ---: | ---: | ---: | ---: |
+| Imagen base, 45 avances | 43 | 17 | 144 | 11 |
+| Autenticación, Feistel hacia r0, Feistel/MUL y load/WRITE | 33 | 19 | 104 | 9 |
+| Nuevo programa de parada tras reset | 1 | 1 | 3 | 0 |
+
+Los totales incluyen el último flanco y excluyen bundles posteriores al salto
+final. También se comprueban procedencias L1/L2/memoria/error, cantidades de
+demandas, causas de espera y retardo de saltos. Una prueba del observador cubre
+procedencia WB, diagnóstico ROM retenido/cancelado y ausencia de eventos en
+stall/reset/parada. La integración añade una desalineación real sin solicitud
+y un salto a texto inválido cuyo diagnóstico queda retenido por un segundo
+load pendiente; exige dirección/PC correcto y emisión única.
 
 El wrapper de RAM anterior necesita adaptar su protocolo antes de ejecutarse;
 esta etapa no constituye una integración funcional con la jerarquía real.
-Las pruebas anteriores de LSU con respuesta síncrona
-registrada necesitan adaptarse al nuevo contrato de consumo antes de reutilizarse.
+`tb_lost.sv` ya usa un doble de hit E1 y conserva sus 102 comprobaciones de
+formato, máscaras y alineación. `make test` vuelve a ejecutarlas con el API actual.

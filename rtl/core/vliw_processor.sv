@@ -7,6 +7,9 @@
  * requiere adaptar su conexion de datos anterior a los handshakes CPU-L1.
  *
  * @input clk_i, rst_ni Reloj y reset activo bajo, sostenido por un posedge.
+ * @input instruction_error_i Diagnostico ROM registrado junto con instruction_bundle_i.
+ * @input dmem_rsp_origin_i Procedencia de observacion, estable con la respuesta.
+ * @output perf_events_o Pulsos y estados CPU-domain; no controla el datapath.
  * @input instruction_bundle_i Lectura ROM registrada del PC solicitado en IF.
  * @input dmem_rsp_rdata_i Palabra completa de respuesta CPU-L1.
  * @input dmem_req_ready_i, dmem_rsp_valid_i, dmem_rsp_error_i Handshakes CPU-L1.
@@ -20,8 +23,8 @@
  * @output crypto_event_pc_o, invalid_address_pc_o Procedencia de eventos.
  *
  * @note Controla avance de fronteras, resultados y efectos EX por memoria.
- * El temporizador de autenticacion conserva su cuenta durante la espera. Quedan
- * pendientes las metricas. El cierre incluye el ultimo efecto del programa.
+ * El temporizador de autenticacion conserva su cuenta durante la espera.
+ * El cierre incluye el ultimo efecto del programa y sus eventos de metricas.
  * Sin traps ni arbitraje de hazards; los errores son diagnosticos para simulacion.
  */
 module vliw_processor #(
@@ -29,6 +32,8 @@ module vliw_processor #(
 ) (
     input logic clk_i,
     input logic rst_ni,
+    input logic instruction_error_i,
+    input pkg_metrics::demand_origin_t dmem_rsp_origin_i,
     input pkg_vliw::bundle_t instruction_bundle_i,
     input pkg_memory::word_t dmem_rsp_rdata_i,
     input logic dmem_req_ready_i,
@@ -39,6 +44,7 @@ module vliw_processor #(
     output logic dmem_error_o,
     output logic stop_done_o,
     output logic halted_o,
+    output pkg_metrics::cpu_events_t perf_events_o,
     output pkg_vliw::address_t instruction_address_o,
     output logic instruction_read_enable_o,
     output pkg_memory::address_t dmem_req_addr_o,
@@ -76,6 +82,36 @@ module vliw_processor #(
     logic stop_requested_q, stop_fire, stop_admission;
     issued_op_t branch_operation;
     logic halted_q, work_after_advance;
+    logic ex_bundle_valid_q, mul_operation;
+    bundle_t ex_bundle_q;
+    pkg_metrics::event_delta_t wb_operations;
+    address_t effective_address;
+
+    /** @brief Conserva validez aun para bundles enteramente NOP, solo para observar. */
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            ex_bundle_valid_q <= 1'b0;
+            ex_bundle_q <= '0;
+        end else if (pipeline_advance) begin
+            ex_bundle_valid_q <= id_valid && !stop_admission;
+            ex_bundle_q <= id_bundle;
+        end
+    end
+
+    core_metrics u_metrics (
+        .clk_i(clk_i), .rst_ni(rst_ni), .advance_i(pipeline_advance), .halted_i(halted_q),
+        .fetch_active_i(!stop_requested_q && !halted_q), .fetch_transfer_i(instruction_read_enable_o),
+        .id_valid_i(id_valid), .id_admit_i(id_valid && pipeline_advance && !stop_admission),
+        .id_pc_i(id_pc), .instruction_error_i(instruction_error_i), .stop_admission_i(stop_admission),
+        .ex_valid_i(ex_bundle_valid_q), .ex_bundle_i(ex_bundle_q),
+        .wb_operations_i(wb_operations), .mul_operation_i(mul_operation),
+        .branch_valid_i(branch_operation.valid), .branch_taken_i(branch_taken),
+        .memory_active_i(memory_operation_active), .req_valid_i(dmem_req_valid_o),
+        .req_ready_i(dmem_req_ready_i), .rsp_valid_i(dmem_rsp_valid_i), .rsp_ready_i(dmem_rsp_ready_o),
+        .dmem_done_i(dmem_done), .dmem_error_i(dmem_error_o), .dmem_write_i(dmem_req_write_o),
+        .dmem_origin_i(dmem_rsp_origin_i), .alignment_error_i(invalid_address_o),
+        .effective_address_i(effective_address), .events_o(perf_events_o)
+    );
 
     /**
      * @brief La operacion sigue activa en EX aunque req_valid baje al aceptar.
@@ -216,6 +252,8 @@ module vliw_processor #(
         .dmem_done_o(dmem_done),
         .dmem_error_o(dmem_error_o),
         .work_after_advance_o(work_after_advance),
+        .wb_operations_o(wb_operations), .mul_operation_o(mul_operation),
+        .memory_effective_address_o(effective_address),
         .alu0_i(ex_operation[UNIT_ALU0]),
         .alu1_i(ex_operation[UNIT_ALU1]),
         .lsu_i(ex_operation[UNIT_LSU]),
