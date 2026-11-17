@@ -193,6 +193,31 @@ $(BUILD_DIR)/instruction_memory.vvp: $(PKG) $(MEMORY_DIR)/instruction_memory.sv 
 	mkdir -p $(BUILD_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_instruction_memory -o $@ $^
 
+.PHONY: bench
+# Evaluacion de rendimiento P2-14: regenera las cargas, mide la jerarquia y la
+# referencia sin cache con los mismos parametros, y arma la tabla comparativa.
+BENCH_SRC := $(PROGRAM_DIR)/benchmarks
+BENCH_DIR := $(BUILD_DIR)/bench
+BENCH_PATTERNS := secuencial stride aleatorio
+BENCH_EXPECT := 301981696
+
+bench:
+	python3 $(BENCH_SRC)/gen_benchmarks.py
+	@for p in $(BENCH_PATTERNS); do \
+		./tools/sim.sh $(BENCH_SRC)/patron.mem --data $(BENCH_SRC)/$${p}_datos.mem \
+			--max-cycles 400000 --expect r1=$(BENCH_EXPECT) --expect errors=0 \
+			--out $(BENCH_DIR)/$$p || exit 1; \
+		./tools/sim.sh $(BENCH_SRC)/patron.mem --data $(BENCH_SRC)/$${p}_datos.mem \
+			--no-cache --max-cycles 600000 --expect r1=$(BENCH_EXPECT) --expect errors=0 \
+			--out $(BENCH_DIR)/$${p}_sincache || exit 1; \
+	done
+	python3 tools/metrics/compare.py \
+		secuencial=$(BENCH_DIR)/secuencial/indicators.json \
+		stride=$(BENCH_DIR)/stride/indicators.json \
+		aleatorio=$(BENCH_DIR)/aleatorio/indicators.json \
+		sin-cache=$(BENCH_DIR)/secuencial_sincache/indicators.json \
+		--baseline sin-cache
+
 test-tools:
 	sh tests/tools/test_loader.sh
 	sh tests/tools/test_indicators.sh
