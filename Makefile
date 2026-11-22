@@ -44,6 +44,34 @@ SYSTEM_RTL_SOURCES := $(RTL_SOURCES) \
 	$(RTL_DIR)/porygon_system.sv
 
 .PHONY: elaborate elaborate-core
+.PHONY: test-p2-13 sim-memory-contracts
+test-p2-13: test-p2-11 test-p2-12 sim-memory-contracts sim-lost sim-lost-handshake $(BUILD_DIR)/cached_timeout.vvp
+	python3 tests/tools/test_integrated_metrics.py
+
+sim-memory-contracts: $(addprefix $(BUILD_DIR)/l2_contract_,1.vvp 4.vvp) \
+	$(BUILD_DIR)/l1_contract.vvp $(addprefix $(BUILD_DIR)/eb_contract_,4.vvp 8.vvp)
+	$(VVP) $(BUILD_DIR)/l2_contract_1.vvp
+	$(VVP) $(BUILD_DIR)/l2_contract_4.vvp
+	$(VVP) $(BUILD_DIR)/l1_contract.vvp
+	$(VVP) $(BUILD_DIR)/eb_contract_4.vvp
+	$(VVP) $(BUILD_DIR)/eb_contract_8.vvp
+
+$(BUILD_DIR)/l2_contract_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(wildcard $(MEMORY_DIR)/cache_l2/*.sv) $(UNIT_TB_DIR)/tb_cache_l2.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_cache_l2 -Ptb_cache_l2.N=$* -o $@ $^
+
+$(BUILD_DIR)/l1_contract.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(MEMORY_DIR)/cache_l1.sv $(UNIT_TB_DIR)/memory/tb_cache_l1.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_cache_l1 -o $@ $^
+
+$(BUILD_DIR)/eb_contract_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(MEMORY_DIR)/eviction_buffer.sv $(UNIT_TB_DIR)/tb_eviction_buffer.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_eviction_buffer -Ptb_eviction_buffer.DEPTH=$* -o $@ $^
+
+$(BUILD_DIR)/cached_timeout.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_data_memory_hierarchy.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_data_memory_hierarchy -Ptb_data_memory_hierarchy.TIMEOUT_MODE=1 -o $@ $^
+
 .PHONY: test-p2-12 sim-uncached sim-porygon-reference test-uncached-tools
 test-p2-12: sim-uncached sim-porygon-reference sim-metrics test-uncached-tools
 

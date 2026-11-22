@@ -423,3 +423,23 @@ configuración con cachés, sin alterar la medición congelada.
 `make test-p2-12` comprueba máscaras, datos y tiempos, configuración y métricas,
 esperas, errores, reset y timeout, comparación CPU contra referencia y el flujo
 de cifrado/descifrado de archivos en ambas configuraciones.
+
+## 7. Verificación integrada de P2-13
+
+`make test-p2-13` agrupa ambas configuraciones, los contratos locales de L1/L2,
+WB/EB y LSU, y balances independientes de los contadores exportados. Verifica
+non-blocking con el controlador y RAM reales: una instalación de WB termina
+mientras un miss sigue transfiriendo datos. Con N=1 no se permite ese solapamiento;
+con N=3/4 se exige, y se comprueba el límite de ocupación configurado.
+
+La exclusividad se comprueba recorriendo todas las líneas válidas de L1 y L2
+durante la ejecución. Se cubren entrada L1 reservada con WB lleno, forwarding,
+WB en servicio, RAW resuelto con otras entradas aún en EB, presión de buffers,
+reservas y finalizaciones fuera de orden. Los balances de accesos, latencias,
+stalls, palabras y pendientes comprueban que las esperas no duplican eventos.
+Los timeouts de los caminos con/sin caché deben terminar con el diagnóstico
+esperado; un cuelgue de simulación no se considera evidencia de timeout correcto.
+
+Por decisión del grupo se conserva la organización interna actual de L2. Esta
+verificación exige non-blocking y exclusividad; no certifica un pipeline interno
+multietapa ni su throughput.

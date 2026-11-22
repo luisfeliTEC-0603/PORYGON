@@ -656,8 +656,13 @@ module tb_cache_l2 #(parameter int N = 4);
     chk(pc_dirtyev == push_cnt, $sformatf("dirty_eviction pulsos=%0d vs eb_push=%0d", pc_dirtyev, push_cnt));
 
     tick(20);
-    if (errors == 0) $display("PASS (N=%0d)", N); else $display("FAIL (N=%0d): %0d errores", N, errors);
+    if (errors != 0)
+      $fatal(1, "FAIL (N=%0d): %0d errores", N, errors);
+    $display("PASS (N=%0d)", N);
     $finish;
   end
-  initial begin #20000000; $display("WATCHDOG"); $finish; end
+  initial begin
+    #20000000;
+    $fatal(1, "WATCHDOG (N=%0d)", N);
+  end
 endmodule

@@ -13,6 +13,7 @@ module tb_data_memory_hierarchy;
     parameter integer DIV = 2;
     parameter integer READ_FIRST = 25;
     parameter integer WRITE_FIRST = 25;
+    parameter integer TIMEOUT_MODE = 0;
     localparam logic [31:0] BASE = pkg_memory::DATA_BASE_ADDRESS;
     logic clk = 0, rst_n, req_valid = 0, req_write = 0, rsp_ready = 1;
     logic req_ready, rsp_valid, rsp_error;
@@ -21,6 +22,7 @@ module tb_data_memory_hierarchy;
     pkg_memory::byte_mask_t req_mask = 0;
     pkg_metrics::demand_origin_t origin;
     pkg_metrics::cpu_events_t cpu_events = '0;
+    pkg_metrics::snapshot_t snapshot;
     logic perf_start = 0, perf_stop = 0;
     logic inject_valid = 0;
     pkg_memory::address_t inject_base = BASE;
@@ -31,6 +33,8 @@ module tb_data_memory_hierarchy;
     integer forwards = 0, raw_waits = 0, eb_waits = 0, wb_full = 0;
     integer mem_read_at, mem_write_at, cycle = 0;
     logic input_used = 0;
+    logic nonblocking_seen = 0, raw_cleared_with_other = 0;
+    integer peak_l2 = 0, wb_raw_cycles = 0;
     always #5 clk = ~clk;
 
     data_memory_hierarchy #(
@@ -44,13 +48,26 @@ module tb_data_memory_hierarchy;
         .dmem_rsp_valid_o(rsp_valid), .dmem_rsp_ready_i(rsp_ready),
         .dmem_rsp_rdata_o(rsp_data), .dmem_rsp_error_o(rsp_error), .dmem_rsp_origin_o(origin),
         .cpu_events_i(cpu_events), .perf_start_i(perf_start), .perf_stop_i(perf_stop),
-        .perf_stop_error_i(1'b0)
+        .perf_stop_error_i(1'b0), .perf_snapshot_o(snapshot)
     );
 
     /** @brief Comprueba conexiones, entregas unicas y tiempos de los bursts. */
     always @(posedge clk) begin
         cycle++;
         if (rst_n) begin
+            if (dut.l2_events.inflight > N) $fatal(1, "L2 excedio su capacidad");
+            if (dut.l2_events.inflight > peak_l2) peak_l2 = dut.l2_events.inflight;
+            wb_raw_cycles += int'(dut.wb_events.state.raw_wait);
+            if (dut.wb_probe_valid && dut.wb_probe_hit && dut.wb_probe_busy && dut.l2_get_valid)
+                $fatal(1, "L1 solicito a L2 una linea todavia en servicio en WB");
+            if (dut.wb_events.install_done.valid && dut.mem_events.read_active) begin
+                if (!nonblocking_seen)
+                    $display("EVIDENCE non-blocking N=%0d: WB id=%0d instalado mientras RAM sigue leyendo", N, dut.wb_done_id);
+                nonblocking_seen = 1;
+            end
+            if (dut.eb_probe_valid && dut.eb_probe_base == BASE+8192 &&
+                !dut.eb_probe_hit && dut.eb_events.state.occupancy != 0)
+                raw_cleared_with_other = 1;
             if (req_valid && req_ready) requests++;
             if (rsp_valid && rsp_ready) responses++;
             if (responses > requests) $fatal(1, "Respuesta sin solicitud");
@@ -83,7 +100,12 @@ module tb_data_memory_hierarchy;
                 else read_words++;
             end
             if (dut.mem_events.complete.valid) begin
-                if (dut.mem_events.complete.write) begin
+                if (TIMEOUT_MODE && dut.mem_events.complete_error == pkg_metrics::ERROR_TIMEOUT) begin
+                    $display("CACHED_TIMEOUT_OK: miss L1/L2 cancelado por timeout real");
+                    $fflush();
+                end else if (dut.mem_events.complete_error != pkg_metrics::ERROR_NONE)
+                    $fatal(1, "Error inesperado de memoria");
+                else if (dut.mem_events.complete.write) begin
                     /** El aviso de la ultima escritura RAM se muestrea al flanco CPU siguiente. */
                     if (cycle-mem_write_at != WRITE_FIRST+7*DIV+1)
                         $fatal(1, "Aviso de escritura fuera de su cruce de reloj");
@@ -139,6 +161,8 @@ module tb_data_memory_hierarchy;
         {requests, responses, gets, fills, mem_reads, mem_writes, read_words, write_words} = '0;
         {forwards, raw_waits, eb_waits, wb_full} = '0;
         input_used = 0;
+        nonblocking_seen = 0; raw_cleared_with_other = 0;
+        peak_l2 = 0; wb_raw_cycles = 0;
         rst_n = 1;
         perf_start = 1;
         @(negedge clk);
@@ -211,6 +235,17 @@ module tb_data_memory_hierarchy;
 
     initial begin
         reset_system();
+        if (TIMEOUT_MODE) begin
+            fork
+                begin
+                    wait (dut.mem_events.accept.valid && !dut.mem_events.accept.write);
+                    @(negedge clk);
+                    force dut.u_memory_controller.ram_clk_o = 1'b0;
+                end
+                access_word(BASE, 0, 0, 0, 0, -1);
+            join
+            $fatal(1, "No se produjo el timeout esperado");
+        end
         if (dut.configuration.write_buffer_depth != WB_DEPTH ||
             dut.configuration.eviction_buffer_depth != EB_DEPTH ||
             dut.configuration.l2_max_inflight != N || dut.configuration.mem_clock_div != DIV ||
@@ -228,7 +263,14 @@ module tb_data_memory_hierarchy;
         access_word(BASE+4, 1, 32'haabbccdd, 4'b0101, 1, pkg_metrics::ORIGIN_L1);
         access_word(BASE+4, 0, 0, 0, 1, pkg_metrics::ORIGIN_L1);
         access_word(BASE+2048, 0, 0, 0, 0, pkg_metrics::ORIGIN_MEMORY);
+        /** La demostracion NB exige que el burst ya este activo al terminar WB. */
+        @(negedge clk);
+        while (dut.u_memory_controller.divider_count_q !=
+               (DIV - READ_FIRST%DIV - pkg_memory::L2_HIT_CYCLES%DIV - 1 + 2*DIV)%DIV)
+            @(negedge clk);
         access_word(BASE+4096, 0, 0, 0, 0, pkg_metrics::ORIGIN_MEMORY);
+        if ((N > 1 && !nonblocking_seen) || (N == 1 && nonblocking_seen))
+            $fatal(1, "No se demostro avance independiente compatible con el limite L2");
         wait (dut.wb_events.state.occupancy == 0 && dut.l2_events.inflight == 0);
         @(negedge clk);
         access_word(BASE+4, 0, 0, 0, 9, pkg_metrics::ORIGIN_L2);
@@ -275,7 +317,13 @@ module tb_data_memory_hierarchy;
         if (forwards != 1 || !input_used || wb_full == 0 || gets != 2)
             $fatal(1, "Forwarding con WB lleno: fwd=%0d input=%b full=%0d gets=%0d", forwards, input_used, wb_full, gets);
         release dut.wb_install_valid;
+        /** La entrada siguiente ya esta en servicio: esperar done y recuperar de L2. */
+        wait (dut.wb_install_valid && dut.wb_install_base == BASE+32);
+        access_word(BASE+32, 0, 0, 0, 0, pkg_metrics::ORIGIN_L2);
         wait (dut.wb_events.state.occupancy == 0);
+        if (forwards != 1 || wb_raw_cycles == 0 || (WB_DEPTH >= N && peak_l2 != N))
+            $fatal(1, "WB ocupado/capacidad L2: fwd=%0d raw=%0d max=%0d", forwards, wb_raw_cycles, peak_l2);
+        $display("EVIDENCE capacidad N=%0d max=%0d; WB en servicio espera y entrega una vez", N, peak_l2);
 
         /** RAW incluso con el push coincidente con la primera oferta de lectura. */
         reset_system();
@@ -287,6 +335,7 @@ module tb_data_memory_hierarchy;
             begin
                 wait (dut.eb_probe_valid);
                 inject_line(BASE+8192, 1);
+                inject_line(BASE+8224, 1);
             end
             begin
                 /** Esperado actualizado antes de que la lectura termine. */
@@ -297,8 +346,10 @@ module tb_data_memory_hierarchy;
         release dut.eb_push_base;
         release dut.eb_push_data;
         release dut.eb_push_dirty;
-        if (raw_waits == 0 || mem_writes != 1 || write_words != 8 || mem_reads != 1)
+        wait (dut.eb_events.state.occupancy == 0);
+        if (raw_waits == 0 || !raw_cleared_with_other || mem_writes != 2 || write_words != 16 || mem_reads != 1)
             $fatal(1, "No se ejercito RAW con drenado y burst completos");
+        $display("EVIDENCE RAW: conflicto resuelto sin exigir EB vacio");
 
         /** EB lleno bloquea instalaciones; al reanudar drenado progresa la cadena. */
         reset_system();
@@ -328,6 +379,13 @@ module tb_data_memory_hierarchy;
         for (integer index = 0; index < 12; index++) access_word(BASE+4096*index, 0, 0, 0, 0, -1);
         if (eb_waits == 0 || mem_writes == 0)
             $fatal(1, "Presion EB: esperas=%0d escrituras=%0d", eb_waits, mem_writes);
+        if (snapshot.l1.reads + snapshot.l1.writes != requests ||
+            snapshot.l1.read_misses + snapshot.l1.write_misses != snapshot.wb.forwarded + snapshot.l2.demands ||
+            snapshot.l2.demands != gets || snapshot.l2.demands != snapshot.l2.hits + snapshot.l2.misses ||
+            snapshot.mem.reads != mem_reads || snapshot.mem.writes != mem_writes ||
+            snapshot.mem.read_words != read_words || snapshot.mem.write_words != write_words)
+            $fatal(1, "Contadores duplicados/perdidos durante presion de buffers");
+        $display("EVIDENCE metricas: accesos y palabras unicos durante stalls y presion");
 
         /** Reset en mitad de un burst: no reaparece su respuesta ni su id. */
         reset_system();
