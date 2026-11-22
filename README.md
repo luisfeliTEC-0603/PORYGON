@@ -105,6 +105,7 @@ El archivo queda en `build/sim/kit_texto_corto/`. `make clean` elimina el conten
 - [Interfaces de la jerarquía del Proyecto II](docs/ii-proyecto/interfaces.md)
 - [Contrato de métricas del Proyecto II](docs/ii-proyecto/metrics.md)
 - [Skeletons de la jerarquía del Proyecto II](docs/ii-proyecto/skeletons.md)
+- [Evaluación de rendimiento del Proyecto II](docs/ii-proyecto/performance.md)
 - [Guía de simulación](docs/simulation.md)
 - [Integración con PIPER-COMPILER](docs/compiler-integration.md)
 - [Programas y ejemplos Feistel4](tests/programs/feistel4/README.md)
