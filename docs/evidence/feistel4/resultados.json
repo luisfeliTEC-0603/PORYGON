@@ -1,0 +1,70 @@
+{
+  "variant": "little-endian",
+  "subkeys": [
+    "0x03020100",
+    "0x07060504",
+    "0x0B0A0908",
+    "0x0F0E0D0C"
+  ],
+  "input_base": "0x10000",
+  "first_output": "0x12000",
+  "second_output": "0x14000",
+  "cases": [
+    {
+      "case": "kit_texto_corto",
+      "cycles": 467,
+      "errors": 0,
+      "cipher_exact": true,
+      "plaintext_exact": true,
+      "original_bytes": 21,
+      "encrypted_bytes": 24,
+      "md5_cipher": "afda5230e535d669f2eb4494771fa4c2",
+      "md5_recovered": "3247eacff3fc91e0a473601222c2806d"
+    },
+    {
+      "case": "kit_texto_largo",
+      "cycles": 7712,
+      "errors": 0,
+      "cipher_exact": true,
+      "plaintext_exact": true,
+      "original_bytes": 523,
+      "encrypted_bytes": 528,
+      "md5_cipher": "5e7c2093e57f7fbad3ed7a97dd5d7194",
+      "md5_recovered": "be88822c77e7fc3a18154788461bbf83"
+    },
+    {
+      "case": "kit_imagen",
+      "cycles": 3457,
+      "errors": 0,
+      "cipher_exact": true,
+      "plaintext_exact": true,
+      "original_bytes": 226,
+      "encrypted_bytes": 232,
+      "md5_cipher": "7bc07697a126f496c8b391adc66242df",
+      "md5_recovered": "b86423062cf25157e34f16417610a3e2"
+    },
+    {
+      "case": "kit_binario",
+      "cycles": 697,
+      "errors": 0,
+      "cipher_exact": true,
+      "plaintext_exact": true,
+      "original_bytes": 40,
+      "encrypted_bytes": 40,
+      "md5_cipher": "3c3d37e833ace215c1c505d192d0c315",
+      "md5_recovered": "cc93b85051cd0b9d0a5d27171e36c8bc"
+    },
+    {
+      "case": "kit_imagen_jpg",
+      "cycles": 104312,
+      "errors": 0,
+      "plaintext_matches_kit_reference": true,
+      "recipher_exact": true,
+      "encrypted_bytes": 7248,
+      "jpeg_through_eoi_bytes": 7245,
+      "padding_bytes": 3,
+      "md5_cipher": "1a51fabffa22818b51978f441c0e2648",
+      "original_not_in_kit": true
+    }
+  ]
+}

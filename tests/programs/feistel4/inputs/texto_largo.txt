@@ -1,0 +1,7 @@
+El algoritmo Feistel4 divide cada bloque de 64 bits en dos mitades L y R de 32
+bits, y aplica 4 rondas de la funcion F parametrizada por una subllave para
+combinar ambas mitades mediante rotaciones, suma modular y XOR. La misma
+unidad de hardware permite cifrar y descifrar simplemente invirtiendo el
+orden en que se consumen las subllaves desde la boveda. Este archivo se usa
+como vector de prueba de longitud variable para validar la herramienta de
+carga de archivos y la unidad criptografica del procesador VLIW propio.

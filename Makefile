@@ -4,52 +4,314 @@ VVP ?= vvp
 
 BUILD_DIR := build
 WAVE_DIR := $(BUILD_DIR)/waves
-SRC_DIR := hardware/src
-TB_DIR := hardware/tb
+RTL_DIR := rtl
+CORE_DIR := $(RTL_DIR)/core
+MEMORY_DIR := $(RTL_DIR)/memory
+METRICS_DIR := $(RTL_DIR)/metrics
+UNIT_TB_DIR := tests/unit
+SUPPORT_TB_DIR := tests/support
+INTEGRATION_TB_DIR := tests/integration
+PROGRAM_DIR := tests/programs
 
-COMMON_FLAGS := -g2012 -Wall -I$(SRC_DIR)
-PKG := $(SRC_DIR)/pkg_vliw.sv
+COMMON_FLAGS := -g2012 -Wall -I$(RTL_DIR) -I$(SUPPORT_TB_DIR)
+PKG := $(RTL_DIR)/pkg_vliw.sv
+MEMORY_PKG := $(MEMORY_DIR)/pkg_memory.sv
+METRICS_PKG := $(RTL_DIR)/metrics/pkg_metrics.sv
 
 # Nucleo reusable con puertos externos de memoria.
-RTL_SOURCES := $(PKG) \
-	$(wildcard $(SRC_DIR)/idd/*.sv) \
-	$(wildcard $(SRC_DIR)/crypto/*.sv) \
-	$(SRC_DIR)/register_file.sv \
-	$(SRC_DIR)/alu_unit.sv $(SRC_DIR)/super_alu_unit.sv \
-	$(SRC_DIR)/lost_unit.sv $(SRC_DIR)/bruh_unit.sv \
-	$(SRC_DIR)/fetch_stage.sv $(SRC_DIR)/execution_stage.sv \
-	$(SRC_DIR)/writeback_stage.sv $(SRC_DIR)/vliw_processor.sv
+RTL_SOURCES := $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(wildcard $(CORE_DIR)/decode/*.sv) \
+	$(wildcard $(CORE_DIR)/crypto/*.sv) \
+	$(CORE_DIR)/register_file.sv \
+	$(CORE_DIR)/alu_unit.sv $(CORE_DIR)/super_alu_unit.sv \
+	$(CORE_DIR)/lost_unit.sv $(CORE_DIR)/bruh_unit.sv \
+	$(CORE_DIR)/fetch_stage.sv $(CORE_DIR)/execution_stage.sv \
+	$(CORE_DIR)/writeback_stage.sv $(CORE_DIR)/vliw_processor.sv
+RTL_SOURCES += $(CORE_DIR)/bundle_completions.sv
+RTL_SOURCES += $(CORE_DIR)/core_metrics.sv
 
-# Sistema conectado: memorias reales de simulacion y wrapper del nucleo.
+# Jerarquia completa; el orden de paquetes precede a todos los consumidores.
+HIERARCHY_RTL_SOURCES := $(MEMORY_DIR)/memory_sp_ram.sv \
+	$(MEMORY_DIR)/main_memory.sv $(MEMORY_DIR)/memory_controller.sv \
+	$(MEMORY_DIR)/eviction_buffer.sv $(MEMORY_DIR)/write_buffer.sv \
+	$(MEMORY_DIR)/cache_l1.sv $(wildcard $(MEMORY_DIR)/cache_l2/*.sv) \
+	$(MEMORY_DIR)/line_return.sv $(RTL_DIR)/metrics/performance_counters.sv \
+	$(MEMORY_DIR)/uncached_adapter.sv $(MEMORY_DIR)/data_memory_hierarchy.sv
+
+# Sistema conectado: ROM, memoria seleccionable y observador P2-10.
 SYSTEM_RTL_SOURCES := $(RTL_SOURCES) \
-	$(SRC_DIR)/instruction_memory.sv $(SRC_DIR)/memory_sp_ram.sv \
-	$(SRC_DIR)/porygon_system.sv
+	$(MEMORY_DIR)/instruction_memory.sv $(HIERARCHY_RTL_SOURCES) \
+	$(RTL_DIR)/porygon_system.sv
 
 .PHONY: elaborate elaborate-core
+.PHONY: test-p2-13 sim-memory-contracts
+test-p2-13: test-p2-11 test-p2-12 sim-memory-contracts sim-lost sim-lost-handshake $(BUILD_DIR)/cached_timeout.vvp
+	python3 tests/tools/test_integrated_metrics.py
+
+sim-memory-contracts: $(addprefix $(BUILD_DIR)/l2_contract_,1.vvp 4.vvp) \
+	$(BUILD_DIR)/l1_contract.vvp $(addprefix $(BUILD_DIR)/eb_contract_,4.vvp 8.vvp)
+	$(VVP) $(BUILD_DIR)/l2_contract_1.vvp
+	$(VVP) $(BUILD_DIR)/l2_contract_4.vvp
+	$(VVP) $(BUILD_DIR)/l1_contract.vvp
+	$(VVP) $(BUILD_DIR)/eb_contract_4.vvp
+	$(VVP) $(BUILD_DIR)/eb_contract_8.vvp
+
+$(BUILD_DIR)/l2_contract_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(wildcard $(MEMORY_DIR)/cache_l2/*.sv) $(UNIT_TB_DIR)/tb_cache_l2.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_cache_l2 -Ptb_cache_l2.N=$* -o $@ $^
+
+$(BUILD_DIR)/l1_contract.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(MEMORY_DIR)/cache_l1.sv $(UNIT_TB_DIR)/memory/tb_cache_l1.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_cache_l1 -o $@ $^
+
+$(BUILD_DIR)/eb_contract_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(MEMORY_DIR)/eviction_buffer.sv $(UNIT_TB_DIR)/tb_eviction_buffer.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_eviction_buffer -Ptb_eviction_buffer.DEPTH=$* -o $@ $^
+
+$(BUILD_DIR)/cached_timeout.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_data_memory_hierarchy.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_data_memory_hierarchy -Ptb_data_memory_hierarchy.TIMEOUT_MODE=1 -o $@ $^
+
+.PHONY: test-p2-12 sim-uncached sim-porygon-reference test-uncached-tools
+test-p2-12: sim-uncached sim-porygon-reference sim-metrics test-uncached-tools
+
+sim-uncached: $(BUILD_DIR)/uncached_2.vvp $(BUILD_DIR)/uncached_5.vvp
+	$(VVP) $(BUILD_DIR)/uncached_2.vvp
+	$(VVP) $(BUILD_DIR)/uncached_5.vvp
+
+$(BUILD_DIR)/uncached_2.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_uncached_memory.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_uncached_memory -o $@ $^
+
+$(BUILD_DIR)/uncached_5.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_uncached_memory.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_uncached_memory -Ptb_uncached_memory.DIV=5 \
+		-Ptb_uncached_memory.READ_FIRST=31 -Ptb_uncached_memory.WRITE_FIRST=29 -o $@ $^
+
+sim-porygon-reference: $(BUILD_DIR)/porygon_uncached.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/porygon_uncached.vvp: $(SYSTEM_RTL_SOURCES) $(SUPPORT_TB_DIR)/cpu_memory_reference.sv \
+	$(INTEGRATION_TB_DIR)/tb_porygon_hierarchy.sv $(SUPPORT_TB_DIR)/hierarchy_snapshot.svh \
+	$(PROGRAM_DIR)/top/top_integration.mem $(PROGRAM_DIR)/top/top_data.mem
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_porygon_hierarchy -Ptb_porygon_hierarchy.REFERENCE_WITHOUT_CACHE=1 -o $@ $(filter %.sv,$^)
+
+$(BUILD_DIR)/uncached_timeout_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_uncached_memory.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_uncached_memory -Ptb_uncached_memory.TIMEOUT_MODE=$* -o $@ $^
+
+test-uncached-tools: $(BUILD_DIR)/uncached_timeout_1.vvp $(BUILD_DIR)/uncached_timeout_2.vvp $(BUILD_DIR)/system.vvp $(BUILD_DIR)/system_reference.vvp
+	python3 tests/tools/test_uncached_tools.py
+
+.PHONY: test-p2-11 sim-line-return sim-data-hierarchy sim-porygon-hierarchy sim-controller-integration sim-write-buffer
+test-p2-11: sim-line-return sim-data-hierarchy sim-porygon-hierarchy sim-controller-integration sim-write-buffer sim-top
+
+sim-write-buffer: $(BUILD_DIR)/write_buffer.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/write_buffer.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(MEMORY_DIR)/write_buffer.sv $(UNIT_TB_DIR)/memory/tb_write_buffer.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_write_buffer -o $@ $^
+
+sim-porygon-hierarchy: $(BUILD_DIR)/porygon_hierarchy.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/porygon_hierarchy.vvp: $(SYSTEM_RTL_SOURCES) $(SUPPORT_TB_DIR)/cpu_memory_reference.sv \
+	$(INTEGRATION_TB_DIR)/tb_porygon_hierarchy.sv $(SUPPORT_TB_DIR)/hierarchy_snapshot.svh \
+	$(PROGRAM_DIR)/top/top_integration.mem $(PROGRAM_DIR)/top/top_data.mem
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_porygon_hierarchy -o $@ $(filter %.sv,$^)
+
+sim-controller-integration: $(addprefix $(BUILD_DIR)/controller_integration_,2.vvp 5.vvp) $(BUILD_DIR)/controller_arbitration.vvp
+	$(VVP) $(BUILD_DIR)/controller_integration_2.vvp
+	$(VVP) $(BUILD_DIR)/controller_integration_5.vvp
+	$(VVP) $(BUILD_DIR)/controller_arbitration.vvp
+
+$(BUILD_DIR)/controller_arbitration.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(MEMORY_DIR)/memory_sp_ram.sv $(MEMORY_DIR)/main_memory.sv \
+	$(MEMORY_DIR)/memory_controller.sv $(UNIT_TB_DIR)/tb_memory_controller_full.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_memory_controller_full -Ptb_memory_controller_full.TEST_MODE=5 -o $@ $^
+
+$(BUILD_DIR)/controller_integration_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(MEMORY_DIR)/memory_sp_ram.sv $(MEMORY_DIR)/main_memory.sv \
+	$(MEMORY_DIR)/memory_controller.sv $(UNIT_TB_DIR)/tb_memory_controller_full.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_memory_controller_full -Ptb_memory_controller_full.DIV=$* -o $@ $^
+
+sim-line-return: $(addprefix $(BUILD_DIR)/line_return_,1.vvp 3.vvp 4.vvp)
+	$(VVP) $(BUILD_DIR)/line_return_1.vvp
+	$(VVP) $(BUILD_DIR)/line_return_3.vvp
+	$(VVP) $(BUILD_DIR)/line_return_4.vvp
+
+$(BUILD_DIR)/line_return_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(MEMORY_DIR)/line_return.sv $(UNIT_TB_DIR)/memory/tb_line_return.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_line_return -Ptb_line_return.N=$* -o $@ $^
+
+sim-data-hierarchy: $(addprefix $(BUILD_DIR)/data_hierarchy_,1.vvp 3.vvp 4.vvp) $(BUILD_DIR)/data_hierarchy_config.vvp
+	$(VVP) $(BUILD_DIR)/data_hierarchy_1.vvp
+	$(VVP) $(BUILD_DIR)/data_hierarchy_3.vvp
+	$(VVP) $(BUILD_DIR)/data_hierarchy_4.vvp
+	$(VVP) $(BUILD_DIR)/data_hierarchy_config.vvp
+
+$(BUILD_DIR)/data_hierarchy_config.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_data_memory_hierarchy.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_data_memory_hierarchy -Ptb_data_memory_hierarchy.N=3 \
+		-Ptb_data_memory_hierarchy.WB_DEPTH=2 -Ptb_data_memory_hierarchy.EB_DEPTH=4 \
+		-Ptb_data_memory_hierarchy.DIV=5 -Ptb_data_memory_hierarchy.READ_FIRST=31 \
+		-Ptb_data_memory_hierarchy.WRITE_FIRST=29 -o $@ $^
+
+$(BUILD_DIR)/data_hierarchy_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(HIERARCHY_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_data_memory_hierarchy.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_data_memory_hierarchy -Ptb_data_memory_hierarchy.N=$* -o $@ $^
+
 elaborate: $(BUILD_DIR)/porygon_system.vvp
 
 elaborate-core: $(BUILD_DIR)/vliw_processor.vvp
 
 $(BUILD_DIR)/porygon_system.vvp: $(SYSTEM_RTL_SOURCES)
-	mkdir -p $(BUILD_DIR)
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s porygon_system -o $@ $^
 
 $(BUILD_DIR)/vliw_processor.vvp: $(RTL_SOURCES)
-	mkdir -p $(BUILD_DIR)
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s vliw_processor -o $@ $^
 
-.PHONY: all sim sim-alu sim-super-alu sim-regfile sim-bruh sim-feistel \
+.PHONY: all sim test test-tools sim-alu sim-super-alu sim-regfile sim-lost sim-bruh sim-feistel \
 	sim-crypto-decode sim-key-vault sim-crypto-wb sim-crypto-unit sim-crypto \
-	sim-top sim-system clean
+	sim-top sim-system sim-metrics clean
 
 all: sim
 
 ifeq ($(strip $(PROG)),)
-sim: sim-alu sim-super-alu sim-top
+sim: sim-top
 else
 sim:
-	@./sim.sh "$(PROG)" $(if $(strip $(DATA)),--data "$(DATA)") $(if $(strip $(MAX_CYCLES)),--max-cycles "$(MAX_CYCLES)")
+	@./tools/sim.sh "$(PROG)" $(if $(strip $(DATA)),--data "$(DATA)") $(if $(strip $(MAX_CYCLES)),--max-cycles "$(MAX_CYCLES)") $(if $(filter 1,$(NO_CACHE)),--no-cache)
 endif
+
+test: sim-alu sim-super-alu sim-regfile sim-lost sim-bruh sim-crypto \
+	sim-metrics test-tools
+
+.PHONY: test-p2-09 sim-lost-handshake sim-pipeline-hold sim-instruction-memory
+test-p2-09: sim-instruction-memory sim-pipeline-hold sim-lost sim-lost-handshake \
+	sim-load-wb sim-core-memory-wait sim-reference-storage sim-reference-timing \
+	sim-bundle-completions sim-core-metrics sim-core-reference
+
+sim-lost-handshake: $(BUILD_DIR)/lost_handshake.vvp
+	$(VVP) $<
+$(BUILD_DIR)/lost_handshake.vvp: $(PKG) $(CORE_DIR)/lost_unit.sv $(UNIT_TB_DIR)/tb_lost_handshake.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_lost_handshake -o $@ $^
+
+sim-pipeline-hold: $(BUILD_DIR)/pipeline_hold.vvp
+	$(VVP) $<
+$(BUILD_DIR)/pipeline_hold.vvp: $(PKG) $(CORE_DIR)/fetch_stage.sv $(CORE_DIR)/writeback_stage.sv $(MEMORY_DIR)/instruction_memory.sv $(UNIT_TB_DIR)/tb_pipeline_hold.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_pipeline_hold -o $@ $^
+
+sim-instruction-memory: $(BUILD_DIR)/instruction_memory.vvp
+	$(VVP) $<
+$(BUILD_DIR)/instruction_memory.vvp: $(PKG) $(MEMORY_DIR)/instruction_memory.sv $(UNIT_TB_DIR)/tb_instruction_memory.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_instruction_memory -o $@ $^
+
+.PHONY: bench
+# Evaluacion de rendimiento P2-14: regenera las cargas, mide la jerarquia y la
+# referencia sin cache con los mismos parametros, y arma la tabla comparativa.
+BENCH_SRC := $(PROGRAM_DIR)/benchmarks
+BENCH_DIR := $(BUILD_DIR)/bench
+BENCH_PATTERNS := secuencial stride aleatorio
+BENCH_EXPECT := 301981696
+
+bench:
+	python3 $(BENCH_SRC)/mem_microbenchmark.py
+	@for p in $(BENCH_PATTERNS); do \
+		./tools/sim.sh $(BENCH_SRC)/mem_microbenchmark.mem --data $(BENCH_SRC)/$${p}_datos.mem \
+			--max-cycles 400000 --expect r1=$(BENCH_EXPECT) --expect errors=0 \
+			--out $(BENCH_DIR)/$$p || exit 1; \
+		./tools/sim.sh $(BENCH_SRC)/mem_microbenchmark.mem --data $(BENCH_SRC)/$${p}_datos.mem \
+			--no-cache --max-cycles 600000 --expect r1=$(BENCH_EXPECT) --expect errors=0 \
+			--out $(BENCH_DIR)/$${p}_sincache || exit 1; \
+	done
+	python3 tools/metrics/compare.py \
+		secuencial=$(BENCH_DIR)/secuencial/indicators.json \
+		stride=$(BENCH_DIR)/stride/indicators.json \
+		aleatorio=$(BENCH_DIR)/aleatorio/indicators.json \
+		sin-cache=$(BENCH_DIR)/secuencial_sincache/indicators.json \
+		--baseline sin-cache
+
+test-tools:
+	sh tests/tools/test_loader.sh
+	sh tests/tools/test_indicators.sh
+
+.PHONY: sim-core-memory-wait
+.PHONY: sim-reference-storage
+.PHONY: sim-reference-timing
+.PHONY: sim-core-reference
+.PHONY: sim-load-wb
+.PHONY: sim-bundle-completions
+.PHONY: sim-core-metrics
+sim-core-metrics: $(BUILD_DIR)/core_metrics_test.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/core_metrics_test.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(CORE_DIR)/bundle_completions.sv $(CORE_DIR)/core_metrics.sv $(UNIT_TB_DIR)/tb_core_metrics.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_core_metrics -o $@ $^
+
+sim-bundle-completions: $(BUILD_DIR)/bundle_completions_test.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/bundle_completions_test.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) $(CORE_DIR)/bundle_completions.sv $(UNIT_TB_DIR)/tb_bundle_completions.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_bundle_completions -o $@ $^
+
+sim-load-wb: $(BUILD_DIR)/load_wb.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/load_wb.vvp: $(RTL_SOURCES) $(UNIT_TB_DIR)/tb_load_wb.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_load_wb -o $@ $^
+
+sim-core-reference: $(addprefix sim-core-reference-,1 9 48)
+sim-core-reference-%: $(BUILD_DIR)/core_reference_%.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/core_reference_%.vvp: $(RTL_SOURCES) $(MEMORY_DIR)/instruction_memory.sv \
+	$(SUPPORT_TB_DIR)/cpu_memory_reference.sv $(INTEGRATION_TB_DIR)/tb_core_reference.sv \
+	$(PROGRAM_DIR)/top/top_integration.mem
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_core_reference -Ptb_core_reference.RESPONSE_CYCLES=$* -o $@ $(filter %.sv,$^)
+
+sim-reference-timing: $(addprefix $(BUILD_DIR)/reference_timing_,1.vvp 9.vvp 48.vvp)
+	$(VVP) $(BUILD_DIR)/reference_timing_1.vvp
+	$(VVP) $(BUILD_DIR)/reference_timing_9.vvp
+	$(VVP) $(BUILD_DIR)/reference_timing_48.vvp
+
+$(BUILD_DIR)/reference_timing_%.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(SUPPORT_TB_DIR)/cpu_memory_reference.sv $(UNIT_TB_DIR)/tb_reference_timing.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_reference_timing -Ptb_reference_timing.RESPONSE_CYCLES=$* -o $@ $^
+
+sim-reference-storage: $(BUILD_DIR)/reference_storage.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/reference_storage.vvp: $(PKG) $(MEMORY_PKG) $(METRICS_PKG) \
+	$(SUPPORT_TB_DIR)/cpu_memory_reference.sv $(UNIT_TB_DIR)/tb_reference_storage.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_reference_storage -o $@ $^
+
+sim-core-memory-wait: $(BUILD_DIR)/core_memory_wait.vvp
+	$(VVP) $<
+
+$(BUILD_DIR)/core_memory_wait.vvp: $(RTL_SOURCES) $(UNIT_TB_DIR)/tb_core_memory_wait.sv
+	mkdir -p $(BUILD_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_core_memory_wait -o $@ $^
 
 sim-top: $(BUILD_DIR)/top.vvp | $(WAVE_DIR)
 	$(VVP) $<
@@ -57,52 +319,55 @@ sim-top: $(BUILD_DIR)/top.vvp | $(WAVE_DIR)
 sim-system: $(BUILD_DIR)/system.vvp | $(WAVE_DIR)
 	$(VVP) $< $(ARGS)
 
-$(BUILD_DIR)/system.vvp: $(SYSTEM_RTL_SOURCES) $(TB_DIR)/tb_system.sv
-	mkdir -p $(BUILD_DIR)
-	$(IVERILOG) $(COMMON_FLAGS) -s tb_system -o $@ $(SYSTEM_RTL_SOURCES) $(TB_DIR)/tb_system.sv
+$(BUILD_DIR)/system.vvp: $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_system.sv $(SUPPORT_TB_DIR)/hierarchy_snapshot.svh $(SUPPORT_TB_DIR)/metrics_export.svh
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_system -o $@ $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_system.sv
+
+$(BUILD_DIR)/system_reference.vvp: $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_system.sv \
+	$(SUPPORT_TB_DIR)/hierarchy_snapshot.svh $(SUPPORT_TB_DIR)/metrics_export.svh
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_system -Ptb_system.REFERENCE_WITHOUT_CACHE=1 -o $@ $(filter %.sv,$^)
 
 
-$(BUILD_DIR)/top.vvp: $(SYSTEM_RTL_SOURCES) $(TB_DIR)/tb_top.sv \
-	$(TB_DIR)/programs/top_integration.mem $(TB_DIR)/programs/top_data.mem
-	mkdir -p $(BUILD_DIR)
-	$(IVERILOG) $(COMMON_FLAGS) -s tb_top -o $@ $(SYSTEM_RTL_SOURCES) $(TB_DIR)/tb_top.sv
+$(BUILD_DIR)/top.vvp: $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_top.sv \
+	$(SUPPORT_TB_DIR)/hierarchy_snapshot.svh \
+	$(PROGRAM_DIR)/top/top_integration.mem $(PROGRAM_DIR)/top/top_data.mem
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_top -o $@ $(SYSTEM_RTL_SOURCES) $(INTEGRATION_TB_DIR)/tb_top.sv
 
 sim-alu: $(BUILD_DIR)/alu.vvp
 	$(VVP) $<
 
-$(BUILD_DIR)/alu.vvp: $(PKG) $(SRC_DIR)/alu_unit.sv $(TB_DIR)/tb_alu.sv
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/alu.vvp: $(PKG) $(CORE_DIR)/alu_unit.sv $(UNIT_TB_DIR)/tb_alu.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_alu -o $@ $^
 
 sim-super-alu: $(BUILD_DIR)/super_alu.vvp
 	$(VVP) $<
 
-$(BUILD_DIR)/super_alu.vvp: $(PKG) $(SRC_DIR)/super_alu_unit.sv $(TB_DIR)/tb_super_alu.sv
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/super_alu.vvp: $(PKG) $(CORE_DIR)/super_alu_unit.sv $(UNIT_TB_DIR)/tb_super_alu.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_super_alu -o $@ $^
 
-# Banco de registros: se habilita después de validar el flujo inicial de ALU.
 sim-regfile: $(BUILD_DIR)/regfile.vvp
 	$(VVP) $<
 
-$(BUILD_DIR)/regfile.vvp: $(PKG) $(SRC_DIR)/register_file.sv $(TB_DIR)/tb_regfile.sv
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/regfile.vvp: $(PKG) $(CORE_DIR)/register_file.sv $(UNIT_TB_DIR)/tb_regfile.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_regfile -o $@ $^
 
 sim-lost: $(BUILD_DIR)/lost.vvp
 	$(VVP) $<
 
-$(BUILD_DIR)/lost.vvp: $(PKG) $(SRC_DIR)/lost_unit.sv $(TB_DIR)/tb_lost.sv
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/lost.vvp: $(PKG) $(CORE_DIR)/lost_unit.sv $(UNIT_TB_DIR)/tb_lost.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_lost -o $@ $^
 
-# Espacios reservados para las siguientes unidades:
-# sim-bruh: compilar bruh_unit.sv y tb_bruh.sv.
 sim-bruh: $(BUILD_DIR)/bruh.vvp
 	$(VVP) $<
 
-$(BUILD_DIR)/bruh.vvp: $(PKG) $(SRC_DIR)/bruh_unit.sv $(TB_DIR)/tb_bruh.sv
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/bruh.vvp: $(PKG) $(CORE_DIR)/bruh_unit.sv $(UNIT_TB_DIR)/tb_bruh.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_bruh -o $@ $^
 
 sim-crypto: sim-feistel sim-crypto-decode sim-key-vault sim-crypto-wb sim-crypto-unit
@@ -110,51 +375,59 @@ sim-crypto: sim-feistel sim-crypto-decode sim-key-vault sim-crypto-wb sim-crypto
 sim-feistel: $(BUILD_DIR)/feistel_round.vvp | $(WAVE_DIR)
 	$(VVP) $<
 
-$(BUILD_DIR)/feistel_round.vvp: $(PKG) $(SRC_DIR)/crypto/feistel_round_logic.sv $(TB_DIR)/tb_crypto.sv
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/feistel_round.vvp: $(PKG) $(CORE_DIR)/crypto/feistel_round_logic.sv $(UNIT_TB_DIR)/tb_crypto.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto -o $@ $^
 
 sim-crypto-decode: $(BUILD_DIR)/crypto_decode.vvp | $(WAVE_DIR)
 	$(VVP) $<
 
-$(BUILD_DIR)/crypto_decode.vvp: $(PKG) $(SRC_DIR)/crypto/crypto_decode.sv $(TB_DIR)/tb_crypto_decode.sv
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/crypto_decode.vvp: $(PKG) $(CORE_DIR)/crypto/crypto_decode.sv $(UNIT_TB_DIR)/tb_crypto_decode.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto_decode -o $@ $^
 
 sim-key-vault: $(BUILD_DIR)/key_vault.vvp | $(WAVE_DIR)
 	$(VVP) $<
 
-$(BUILD_DIR)/key_vault.vvp: $(PKG) $(SRC_DIR)/crypto/key_vault.sv $(TB_DIR)/tb_key_vault.sv
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/key_vault.vvp: $(PKG) $(CORE_DIR)/crypto/key_vault.sv $(UNIT_TB_DIR)/tb_key_vault.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_key_vault -o $@ $^
 
 sim-crypto-wb: $(BUILD_DIR)/crypto_wb.vvp | $(WAVE_DIR)
 	$(VVP) $<
 
-$(BUILD_DIR)/crypto_wb.vvp: $(PKG) $(SRC_DIR)/crypto/crypto_wb.sv $(TB_DIR)/tb_crypto_wb.sv
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/crypto_wb.vvp: $(PKG) $(CORE_DIR)/crypto/crypto_wb.sv $(UNIT_TB_DIR)/tb_crypto_wb.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto_wb -o $@ $^
 
 sim-crypto-unit: $(BUILD_DIR)/crypto_unit.vvp | $(WAVE_DIR)
 	$(VVP) $<
 
 $(BUILD_DIR)/crypto_unit.vvp: $(PKG) \
-	$(SRC_DIR)/crypto/crypto_decode.sv \
-	$(SRC_DIR)/crypto/key_vault.sv \
-	$(SRC_DIR)/crypto/feistel_round_logic.sv \
-	$(SRC_DIR)/crypto/crypto_wb.sv \
-	$(SRC_DIR)/crypto/crypto_unit.sv \
-	$(TB_DIR)/tb_crypto_unit.sv
-	mkdir -p $(BUILD_DIR)
+	$(CORE_DIR)/crypto/crypto_decode.sv \
+	$(CORE_DIR)/crypto/key_vault.sv \
+	$(CORE_DIR)/crypto/feistel_round_logic.sv \
+	$(CORE_DIR)/crypto/crypto_wb.sv \
+	$(CORE_DIR)/crypto/crypto_unit.sv \
+	$(UNIT_TB_DIR)/tb_crypto_unit.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
 	$(IVERILOG) $(COMMON_FLAGS) -s tb_crypto_unit -o $@ $^
+
+# Observador de metricas P2-10: no depende del nucleo ni de la jerarquia,
+# los eventos se construyen en el testbench.
+sim-metrics: $(BUILD_DIR)/metrics.vvp | $(WAVE_DIR)
+	$(VVP) $<
+
+$(BUILD_DIR)/metrics.vvp: $(PKG) \
+	$(MEMORY_DIR)/pkg_memory.sv \
+	$(METRICS_DIR)/pkg_metrics.sv \
+	$(METRICS_DIR)/performance_counters.sv \
+	$(UNIT_TB_DIR)/tb_performance_counters.sv
+	mkdir -p $(BUILD_DIR) $(WAVE_DIR)
+	$(IVERILOG) $(COMMON_FLAGS) -s tb_performance_counters -o $@ $^
 
 $(WAVE_DIR):
 	mkdir -p $@
-
-# Espacios reservados para las siguientes unidades:
-# sim-lost: compilar lost_unit.sv y tb_lost.sv.
-# sim-pkg: compilar utilidades de pkg_vliw.sv y tb_pkg.sv.
-# sim-top: compilar todas las unidades, etapas, memoria, vliw_processor.sv y tb_top.sv.
 
 clean:
 	rm -rf $(BUILD_DIR)

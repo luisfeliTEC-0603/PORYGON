@@ -1,140 +1,120 @@
 # PORYGON
 
-<div align="center">
+<img src="docs/imgs/porygon.png" alt="PORYGON" width="140">
 
-<img src="https://markdownviewer.pages.dev/api/image/0vHRcN0FG_gpvkRPJEdgWxjp" alt="porygon" width="200" height="200">
+PORYGON es un procesador VLIW de 32 bits con ISA propia, implementado en SystemVerilog para el curso CE4301 Arquitectura de Computadores I. Ejecuta *bundles* de 64 bits con cuatro slots de 16 bits en un pipeline de cuatro etapas. Cuenta con ocho registros de propósito general, unidades aritméticas, de saltos y de acceso a memoria, y una unidad Feistel4 con bóveda de llaves.
 
-[![VLIW](https://img.shields.io/badge/Architecture-VLIW-fa646b?style=for-the-badge&logoColor=white)]()
-[![SystemVerilog](https://img.shields.io/badge/SystemVerilog-2026-5fa69f?style=for-the-badge&logoColor=white)]()
-[![Cipher](https://img.shields.io/badge/Cipher-Feistel4-fa646b?style=for-the-badge&logoColor=white)]()
+El Proyecto II incorpora una jerarquía exclusiva de datos con L1-D de 4 KiB, L2 de 16 KiB y RAM de 64 KiB. Los contadores permiten medir cómo cambia el tiempo de ejecución al variar el patrón de acceso y comparar el mismo programa con una referencia sin caché.
 
-**Procesador VLIW con ISA propia y una unidad criptográfica Feistel4**
+## Requisitos y compilación
 
-</div>
-
-El repositorio contiene el procesador, sus memorias de simulación, testbenches, ensamblador, scheduler y herramientas de carga y extracción. El `Makefile` permite ejecutar pruebas unitarias y de sistema con Icarus Verilog; `sim.sh` ofrece la interfaz corta para cargar programas externos y conservar evidencia.
-
-La ISA define bundles de 64 bits, compuestos por cuatro slots de 16 bits, con asignación flexible de unidades funcionales.
-
-## Simulación rápida
+Se necesitan Icarus Verilog (`iverilog` y `vvp`), GNU Make, Bash y Python 3. GTKWave es opcional para ver las formas de onda. Las imágenes de instrucciones incluidas se pueden ejecutar directamente. Todos los comandos siguientes parten de la raíz de PORYGON.
 
 ```bash
-make sim PROG=programa.mem
-make sim PROG=programa.mem DATA=datos.mem
+make elaborate   # Compila y elabora el sistema con Icarus Verilog
+make sim         # Ejecuta la prueba de integración predeterminada
 ```
 
-La simulación termina cuando BRUH ejecuta un salto tomado hacia el PC de esa misma instrucción, convención usada por el codegen para representar `halt`. Cada programa conserva `memory.dump.mem`, `waves.vcd`, `simulation.log` y `results.txt` en `sim_output/<programa>/`; al terminar se imprimen las rutas absolutas de esos archivos.
+## Ejecutar un benchmark
 
-Existe también un script de simulación avanzado: 
+El microbenchmark recorre 4096 nodos de una lista enlazada y acumula sus direcciones. La imagen de instrucciones define el recorrido y la imagen de datos determina el orden de las visitas. El siguiente comando ejecuta el patrón secuencial con caché y comprueba que el registro `r1` contenga la suma esperada.
 
 ```bash
-./sim.sh programa.mem
-./sim.sh programa.mem --data datos.mem
-./sim.sh programa.mem --max-cycles 200000 --expect r1=10 --expect errors=0
+bench=tests/programs/benchmarks
+./tools/sim.sh "$bench/mem_microbenchmark.mem" \
+  --data "$bench/secuencial_datos.mem" --out build/sim/secuencial \
+  --max-cycles 400000 --expect r1=301981696 --expect errors=0
 ```
 
-`--max-cycles` cambia el watchdog solo cuando el programa necesita un límite mayor. `--out directorio` cambia la ubicación de los artefactos. Sin expectativas se informa una ejecución completada, pero no se afirma corrección funcional.
-
-## Extracción rápida
-
-Después de `make sim`, el wrapper local recupera un rango del volcado sin pedir su ruta completa:
+La evaluación completa se reproduce con el siguiente comando.
 
 ```bash
-./extract.sh programa 0x10000 32 resultado.bin
+make bench
 ```
 
-El comando lee `sim_output/programa/memory.dump.mem` y guarda la salida como `sim_output/programa/resultado.bin`. El cuarto argumento es opcional y vale `resultado.bin` por defecto. También se puede pasar como primer argumento la ruta explícita a cualquier dump `.mem`.
+Este comando regenera las imágenes y ejecuta seis simulaciones. Prueba los recorridos secuencial, con salto de ocho palabras y aleatorio, cada uno con y sin caché. Comprueba la misma suma final en las seis corridas, imprime una tabla comparativa y guarda los resultados por caso en `build/bench/`. La [evaluación de rendimiento](docs/performance.md) explica los patrones y los resultados.
 
-## Estructura
+## Ejecutar un programa propio
+
+El simulador recibe una imagen hexadecimal de instrucciones (`PROG`, un bundle por línea). Si el programa necesita datos iniciales, se agrega una segunda imagen (`DATA`, organizada por bytes).
+
+```bash
+make sim PROG=programa.mem DATA=datos.mem MAX_CYCLES=400000
+```
+
+Se puede omitir `DATA` si el programa inicializa sus datos. La opción `NO_CACHE=1` selecciona la referencia sin caché. Por defecto, las salidas quedan en `build/sim/<nombre-del-programa>/`.
+
+La variable `PIPER` debe apuntar al repositorio local de [PIPER-COMPILER](https://github.com/luisfeliTEC-0603/PIPER-COMPILER). Una vez compiladas las herramientas, se utiliza uno de los dos comandos según el formato del archivo fuente. Los programas Piper se compilan con `pipoc` y los programas en ASM lineal se procesan con `porygon-schedule`.
+
+```bash
+PIPER=/ruta/a/PIPER-COMPILER
+make -C "$PIPER" all
+mkdir -p build
+# Desde Piper
+"$PIPER/bin/pipoc" mem programa.rwt -o build/programa.mem
+# Desde ASM lineal
+"$PIPER/bin/porygon-schedule" programa.asm build/programa.bundles build/programa.mem
+```
+
+En ambos casos, la imagen generada se ejecuta con `make sim PROG=build/programa.mem`.
+
+### Cargar datos y recuperar memoria
+
+La herramienta `load_file.py` convierte un archivo binario en una imagen de datos para la dirección inicial que espera el programa. En este ejemplo, la entrada se carga en `0x10000`. Tras la simulación, se extraen cuatro bytes a partir de esa dirección y se muestran en hexadecimal.
+
+```bash
+mkdir -p build
+python3 tools/memory/load_file.py --input entrada.bin --output build/datos.mem --address 0x10000
+make sim PROG=build/programa.mem DATA=build/datos.mem
+python3 tools/memory/extract_data.py --memory build/sim/programa/memory.dump.mem \
+  --address 0x10000 --size 4 --output build/resultado.bin
+od -An -tx1 build/resultado.bin
+```
+
+La dirección de extracción y la cantidad de bytes dependen de la ubicación y del tamaño del resultado en memoria. Si el programa devuelve el resultado en un registro, su valor final se puede consultar en `results.txt`.
+
+## Leer los resultados
+
+Al finalizar una simulación exitosa, la terminal muestra el estado y los registros, seguidos de un cuadro con los ciclos, las instrucciones completadas, el IPC, los ciclos de espera por memoria, las tasas de acierto y el AMAT observado. Las tasas se muestran como porcentajes y los valores que no aplican aparecen como `N/A`.
+
+| Archivo de cada corrida | Qué consultar |
+| --- | --- |
+| `results.txt` | Estado de terminación, errores y valores finales de los registros. |
+| `memory.dump.mem` | Imagen final de la memoria de datos, incluidas las modificaciones pendientes en la jerarquía. |
+| `metrics.txt` | Contadores en formato `clave=valor`, entre ellos ciclos, instrucciones, esperas y accesos a memoria. |
+| `indicators.json` | Indicadores derivados, incluidos IPC, tasas de acierto y AMAT (latencia media observada por acceso a datos). |
+| `waves.vcd` | Señales de la simulación para inspeccionar en GTKWave. |
+
+El siguiente comando muestra en la terminal los indicadores del ejemplo secuencial.
+
+```bash
+python3 tools/metrics/indicators.py --input build/sim/secuencial/metrics.txt --format texto
+```
+
+A igual frecuencia, la corrida con menos ciclos termina antes. El IPC indica cuántas instrucciones se completaron por ciclo. Las esperas por memoria y el AMAT ayudan a explicar la diferencia entre las corridas con y sin caché.
+
+## Estructura del repositorio
 
 | Ruta | Contenido |
-|------|-----------|
-| `hardware/src/` | Paquete compartido, etapas del pipeline, unidades funcionales, banco de registros y modelo de memoria |
-| `hardware/src/crypto/` | Interfaces de la unidad CRYPTO, decodificador, bóveda, ronda Feistel y registro EX/WB |
-| `hardware/tb/` | Archivos reservados para testbenches unitarios y de integración |
-| `tools/assembler/` | Ensamblador propio pendiente de implementación |
-| `tools/data_loader/` | Herramienta de carga y extracción de archivos (implementada) |
-| `docs/` | Enunciado, ISA, guía y documentación técnica |
-| `Makefile` | Archivo reservado para automatizar la simulación |
-| `agents.md` | Directrices de trabajo y codificación para agentes |
+| --- | --- |
+| [rtl/core/](rtl/core/) | Pipeline, registros y unidades funcionales. |
+| [rtl/memory/](rtl/memory/) | Memoria de instrucciones, cachés, buffers, controlador y RAM. |
+| [rtl/metrics/](rtl/metrics/) | Eventos y contadores de rendimiento. |
+| [rtl/porygon_system.sv](rtl/porygon_system.sv) | Integración del procesador con el subsistema de memoria. |
+| [tests/](tests/) | Pruebas unitarias y de integración, programas, datos y benchmarks. |
+| [tools/](tools/) | Simulación, conversión de imágenes de memoria y análisis de métricas. |
+| [Makefile](Makefile) | Compilación, simulación, pruebas y benchmarks. |
+| [docs/](docs/) | Documentación de diseño y resultados. |
 
-## Referencias
+## Documentación
 
-- [Enunciado del proyecto](docs/project-description.md): requisitos oficiales.
-- [ISA](docs/isa.md): formatos, instrucciones y codificación.
-- [Microarquitectura](docs/microarchitecture.md): pendiente de documentar.
-- [Simulación](docs/simulation.md): pendiente de documentar.
-- [Integración con CE1108](docs/compiler-integration.md): pendiente de documentar.
-
-## Herramienta de carga y extracción de archivos
-
-Inyecta archivos de cualquier formato (texto, imágenes, binarios) en la memoria de la simulación y recupera los datos procesados. Requiere únicamente Python 3.8 o superior, sin dependencias externas.
-
-| Archivo | Función |
-|---------|---------|
-| `tools/data_loader/load_file.py` | Convierte un archivo en una imagen `.mem` para `$readmemh` |
-| `tools/data_loader/extract_data.py` | Recupera un rango de un volcado de `$writememh` como archivo binario |
-| `tools/data_loader/memimage.py` | Empaquetado, renderizado y parseo del formato `.mem`, compartido por ambos |
-
-### Carga
-
-```bash
-python tools/data_loader/load_file.py --input archivo.txt --output memory.mem --address 0x8000
-```
-
-| Opción | Default | Descripción |
-|--------|---------|-------------|
-| `--input` | — | Archivo de entrada, de cualquier formato |
-| `--output` | — | Imagen `.mem` de salida |
-| `--address` | `0x0` | Dirección de carga |
-| `--width` | `8` | Bits por palabra del `.mem`; debe coincidir con el ancho del arreglo de `memory_sp_ram.sv` |
-| `--endian` | `little` | Orden de bytes dentro de la palabra |
-| `--mem-base` | `0x0` | Dirección que corresponde a la posición 0 del arreglo |
-| `--mem-bytes` | `65536` | Tamaño del arreglo en bytes; coincide con `MEMORY_BYTES` de `pkg_vliw.sv` |
-| `--block` | `8` | Rellena con ceros hasta múltiplo de N bytes (los 64 bits de un bloque Feistel4) |
-| `--no-pad` | — | No rellenar el último bloque |
-| `--append` | — | Agrega el bloque a un `.mem` existente en lugar de sobrescribirlo |
-
-La salida arranca con una directiva `@`, de modo que `$readmemh` deposita los datos en la posición correcta sin necesidad de emitir las posiciones previas. El reporte indica el tamaño original, el relleno aplicado, el rango de direcciones ocupado y los argumentos exactos que hay que pasarle después a `extract_data.py`.
-
-### Extracción
-
-```bash
-python tools/data_loader/extract_data.py --memory memory_dump.mem --address 0x8000 --size 1024 --output resultado.bin
-```
-
-| Opción | Default | Descripción |
-|--------|---------|-------------|
-| `--memory` | — | Volcado generado por `$writememh` |
-| `--address` | — | Dirección inicial del rango |
-| `--size` | — | Cantidad de bytes a extraer |
-| `--output` | — | Archivo binario de salida |
-| `--width` | `8` | Bits por palabra del volcado |
-| `--endian` | `little` | Orden de bytes dentro de la palabra |
-| `--mem-base` | `0x0` | Dirección que corresponde a la posición 0 del arreglo |
-
-Acepta comentarios `//` y `/* */`, directivas `@` y posiciones marcadas con `x` o `z`, que se interpretan como cero. Las palabras ausentes del volcado se rellenan con cero y se reporta cuántas fueron.
-
-### Ejemplo completo
-
-Cargar un archivo, cifrarlo en la simulación y recuperar el resultado:
-
-```bash
-# 1. Inyectar el archivo en el segmento de datos
-python tools/data_loader/load_file.py --input imagen.bmp --output data.mem --address 0x8000
-#    tamano original : 70 bytes
-#    relleno         : 2 bytes de ceros
-#    para extraer    : --address 0x00008000 --size 70
-
-# 2. Ejecutar la simulación: lee data.mem con $readmemh y vuelca memory_dump.mem con $writememh
-
-# 3. Recuperar el resultado con el tamaño original que reportó la carga
-python tools/data_loader/extract_data.py --memory memory_dump.mem --address 0x8000 --size 70 --output cifrado.bmp
-```
-
-Varios archivos en una misma imagen de memoria:
-
-```bash
-python tools/data_loader/load_file.py --input texto.txt  --output data.mem --address 0x8000
-python tools/data_loader/load_file.py --input imagen.bmp --output data.mem --address 0x8100 --append
-```
+| Documento | Pregunta que responde |
+| --- | --- |
+| [Organización y microarquitectura](docs/microarchitecture.md) | ¿Cómo se conectan el pipeline, las unidades funcionales y la memoria? |
+| [Jerarquía de memoria](docs/memory-hierarchy.md) | ¿Cómo se resuelven aciertos, fallos, reemplazos y escrituras pendientes? |
+| [Evaluación de rendimiento](docs/performance.md) | ¿Cómo cambian los ciclos, el IPC y el AMAT según el patrón de acceso? |
+| [Guías por módulo](docs/modulos/) | ¿Cómo funcionan internamente L1-D, L2, los buffers y el controlador? |
+| [ISA](docs/isa.md) | ¿Cómo se codifican y agrupan las instrucciones? |
+| [Simulación](docs/simulation.md) | ¿Cómo se modela y verifica el sistema? |
+| [Integración con el compilador](docs/compiler-integration.md) | ¿Cómo llega un programa Piper al procesador? |
+| [Ejemplos Feistel4](tests/programs/feistel4/README.md) | ¿Cómo se procesan y recuperan archivos con la unidad criptográfica? |

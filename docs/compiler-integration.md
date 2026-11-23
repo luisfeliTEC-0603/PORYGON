@@ -42,6 +42,10 @@ flowchart TD
 
 El ensamblador y scheduler usados en esta integración están en
 `PIPER-COMPILER/porygon_assembler/` y `PIPER-COMPILER/scheduler/`.
+Su código y sus pruebas se mantienen en ese repositorio. PORYGON conserva
+el RTL en `rtl/`, la verificación del hardware en `tests/` y las herramientas
+de ejecución y memoria en `tools/`. Los programas de prueba del procesador
+pueden consumir imágenes generadas por Piper sin duplicar su toolchain.
 
 ## 3. Contrato de salida del compilador
 
@@ -94,13 +98,26 @@ offset = bundle_destino - bundle_salto
 PC_destino = PC_salto + 8 × offset
 ```
 
+La ROM de instrucciones registra su salida al terminar IF; esa salida es la
+frontera de datos IF/ID. Fetch registra su PC y validez en paralelo, sin añadir
+otro registro del bundle. Se conserva así el calendario y los dos bundles de
+retardo existentes.
+
 El scheduler resuelve las etiquetas después de distribuir las instrucciones.
 Los saltos directos con etiqueta se representan internamente en forma larga,
 con literal de 16 bits. `jr` recibe una dirección absoluta en bytes, alineada
 a ocho. Después de cada salto se reservan **dos bundles NOP**, porque el
 pipeline no hace flush de los bundles recientes.
 
-No existe una instrucción `halt` en el procesador: el codegen emite un salto a su propia etiqueta. `tb_system` detecta ese salto tomado y termina la simulación, el halt es impementado por software.
+No existe una instrucción `halt` en el procesador: el codegen emite un salto a
+su propia etiqueta. En la iteración 1, `tb_system` cierra el conteo al detectar
+ese salto tomado y observa las salidas tras `#1`. Para Proyecto II, ese salto
+marca el final del programa: al aceptarlo en EX se detienen fetch y admisión,
+se invalidan los bundles posteriores ya capturados y se permite completar su
+bundle y todas las operaciones anteriores. Los NOPs posteriores al marcador
+no se ejecutan; los demás saltos conservan sus dos bundles de retardo. La regla
+se define en el [control de avance del núcleo](microarchitecture.md)
+y el cierre de medición, en el [método de medición](performance.md#método).
 
 ## 4. Contratos del codegen
 
@@ -195,11 +212,14 @@ limpia el buffer tras el intento. Las subllaves permanecen dentro de la bóveda.
 El reset las pone en cero y restaura la contraseña de simulación
 `0x146317BBDA48DB07A9A67018DFF0F76A`.
 
-La sesión expira tras **32 ciclos** de inactividad en el RTL por defecto;
-una operación protegida aceptada recarga el temporizador. El programa debe
-autenticar de nuevo cuando la separación entre operaciones lo requiera,
+La sesión expira tras **32 ciclos de avance del núcleo** de inactividad por defecto;
+la actividad autorizada de `write`, `feistel` y `lopw` recarga el temporizador.
+El programa debe autenticar de nuevo cuando la separación entre operaciones lo requiera,
 considerando también los NOPs insertados. El scheduler conserva el orden del
-estado criptográfico, pero no inserta reautenticación.
+estado criptográfico, pero no inserta reautenticación. En Proyecto II, las
+esperas de memoria conservan el tiempo restante de sesión. Los NOPs que avanzan
+sí consumen ese tiempo. Una instrucción retenida no actúa ni recarga; se valida
+al aceptarse, según el [control de avance del núcleo](microarchitecture.md).
 
 La instrucción `pwd` existe en la ISA y el RTL, pero **no tiene intrínseca
 Piper** en esta versión. Un fallo de autenticación se observa mediante los
@@ -208,10 +228,11 @@ eventos del simulador; estas llamadas no producen un booleano en Piper.
 ## 5. Carga, ejecución y observación
 
 1. `pipoc mem` genera la imagen de instrucciones calendarizada y verificada.
-2. Opcionalmente, `load_file.py` convierte un archivo en una imagen de datos
-   de ocho bits por posición. El índice cero de esa imagen corresponde a
-   la dirección física `0x10000`: `@00000020` carga desde `0x10020`.
-3. `sim.sh` construye el sistema y entrega las imágenes a `tb_system`.
+2. Opcionalmente, `tools/memory/load_file.py` convierte un archivo en una
+   imagen de datos de ocho bits por posición. Requiere la dirección física
+   en `--address`; la base del arreglo es `0x10000` por defecto:
+   `@00000020` carga desde `0x10020`.
+3. `tools/sim.sh` construye el sistema y entrega las imágenes a `tb_system`.
    El testbench las carga con `$readmemh` y aplica el reset.
 4. Fetch obtiene un bundle; decode separa instrucciones y literales y lee
    operandos; execute activa las unidades; writeback actualiza los GPR.
@@ -226,9 +247,12 @@ eventos del simulador; estas llamadas no producen un booleano en Piper.
 | `memory.dump.mem` | Bytes finales de toda la RAM; no incluye GPR ni instrucciones. |
 | `waves.vcd` | Evolución temporal de señales para depuración. |
 
-Los resultados aritméticos se ven en GPR; para aparecer en el volcado deben
-almacenarse en RAM. `extract_data.py` recupera un rango por dirección física
-y longitud. Si el loader añadió relleno para completar bloques de ocho bytes,
+Las salidas se guardan por defecto en `build/sim/<programa>/`. Los resultados
+aritméticos se ven en GPR; para aparecer en el volcado deben almacenarse en
+RAM. `tools/memory/extract_data.py` recupera un rango por dirección física y
+longitud. Rechaza posiciones ausentes y valores `x/z` en el rango solicitado;
+`--allow-uninitialized` permite completar únicamente los huecos ausentes con
+cero. Si el loader añadió relleno para completar bloques de ocho bytes,
 se usa la longitud original al extraer el archivo.
 
 ## 6. Evidencia de validación: factorial
@@ -315,6 +339,11 @@ Revisiones de referencia de la implementación:
 
 El resumen de registros y eventos se conserva en
 [factorial.results.txt](evidence/compiler-integration/factorial.results.txt).
+Esta evidencia corresponde a las revisiones anteriores y conserva sus
+resultados originales; la reorganización de carpetas no constituye una
+nueva validación funcional. En esas revisiones las salidas se escribían en
+`PORYGON/sim_output/factorial/`; los comandos actuales usan
+`PORYGON/build/sim/factorial/`.
 
 | Indicador | Esperado | Observado |
 | --- | --- | --- |
@@ -326,8 +355,8 @@ El resumen de registros y eventos se conserva en
 | Ciclos ejecutados | Menos de 1000 | 625 |
 | PC de terminación, `halt_pc` | Final normal generado para esta imagen | `0x000006D8` |
 
-La ejecución genera los siguientes archivos en
-`PORYGON/sim_output/factorial/`:
+Con la organización actual, la ejecución genera los siguientes archivos en
+`PORYGON/build/sim/factorial/`:
 
 | Archivo | Uso en esta prueba |
 | --- | --- |

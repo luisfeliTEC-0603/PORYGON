@@ -1,0 +1,16 @@
+# md5sums-big-endian.txt -- vectores de prueba Feistel4 (Proyecto Grupal I, CE4301)
+# llave usada: llaves/llave_01.hex (000102030405060708090A0B0C0D0E0F)
+# interpretacion de bytes: big-endian (subllaves: 0x00010203, 0x04050607, 0x08090A0B, 0x0C0D0E0F)
+# verificar con: md5sum -c hashes/md5sums-big-endian.txt (ejecutar desde kit-verificacion-feistel4/)
+# el tamano original (para truncar el relleno de 0x00 al descifrar) es el
+# tamano del archivo correspondiente en originales/.
+
+cc93b85051cd0b9d0a5d27171e36c8bc  originales/binario.bin
+5e3345f8de04b1c27887241e190fd0d9  cifrados/big-endian/binario.bin.enc
+b86423062cf25157e34f16417610a3e2  originales/imagen.gif
+532e5ee3417379a7e654a91b86dae3d8  cifrados/big-endian/imagen.gif.enc
+c522d0b3fb4dd19c41ddbaa6800191c4  cifrados/big-endian/imagen.jpg.enc
+3247eacff3fc91e0a473601222c2806d  originales/texto_corto.txt
+7ff2810cde1963f0f777390761e72f02  cifrados/big-endian/texto_corto.txt.enc
+be88822c77e7fc3a18154788461bbf83  originales/texto_largo.txt
+54f485af6f9cd14c713212aa199897c0  cifrados/big-endian/texto_largo.txt.enc

@@ -1,6 +1,5 @@
 # Simulation outputs and build artifacts
 /build/
-/sim_output/
 obj_dir/
 *.vvp
 *.vcd
@@ -15,3 +14,6 @@ __pycache__/
 *.swp
 *.swo
 *~
+
+# quartus
+/quartus/
