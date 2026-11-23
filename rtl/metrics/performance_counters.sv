@@ -7,7 +7,7 @@
  * y sin operaciones pendientes prepara E0; se cuentan intervalos E0..EN y
  * eventos E1..EN, incluido stop. Un stall no detiene el observador. Las sumas
  * de 64 bits saturan y activan overflow. No se calculan cocientes en hardware.
- * @see docs/ii-proyecto/metrics.md
+ * @see docs/modulos/microarquitectura-contadores.md
  */
 module performance_counters #(
     parameter integer L2_MAX_INFLIGHT = pkg_memory::L2_MAX_INFLIGHT_DEFAULT,
@@ -54,7 +54,7 @@ module performance_counters #(
      * @details Un solo arreglo y una sola suma saturada sirven a todos los
      * grupos, de modo que el desbordamiento se trata en un unico lugar.
      * Cada grupo de metricas agrega aqui sus entradas.
-     * @see docs/ii-proyecto/metrics.md seccion 8
+     * @see docs/modulos/microarquitectura-contadores.md seccion 5
      */
     typedef enum int {
         C_CPU_CYCLES, C_CPU_BUNDLES, C_CPU_INSTRUCTIONS,
@@ -122,7 +122,7 @@ module performance_counters #(
      * registro y no una tabla. El tiempo arranca en la primera presentacion
      * en EX y termina al consumir la respuesta; los ciclos de espera por miss
      * se guardan hasta el cierre para repartirlos segun el origen.
-     * @see docs/ii-proyecto/metrics.md seccion 4
+     * @see docs/modulos/microarquitectura-contadores.md seccion 6
      */
     logic demand_active_q;
     logic demand_write_q;
@@ -139,7 +139,7 @@ module performance_counters #(
      * @details Cada bloque emite su propio error_event_t; el controlador de
      * memoria informa el suyo en el resultado de la transferencia. Cualquiera
      * de los dos marca la ejecucion como fallida y conserva la evidencia.
-     * @see docs/ii-proyecto/metrics.md seccion 8
+     * @see docs/modulos/microarquitectura-contadores.md seccion 7
      */
     wire [63:0] error_pulses;
     logic memory_failure;
@@ -190,7 +190,7 @@ module performance_counters #(
      * @details start solo exige medicion inactiva: la ausencia de operaciones
      * pendientes la garantiza el entorno. Un cierre por watchdog termina la
      * ventana igual que stop y ademas marca la ejecucion como fallida.
-     * @see docs/ii-proyecto/metrics.md seccion 2
+     * @see docs/modulos/microarquitectura-contadores.md seccion 4
      */
     logic start_accepted;
     logic stop_accepted;

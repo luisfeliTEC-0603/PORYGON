@@ -495,6 +495,8 @@ El hardware **no** resuelve dependencias de control. El scheduler debe garantiza
 | Dirección inválida (IF) | `instruction_access_error_o` | Acceso desalineado o fuera del segmento de texto |
 | Error de datos | `data_access_error_o` | Acceso fuera del segmento de datos |
 
+Aparte de estos errores, la jerarquía está instrumentada: cada bloque emite un bus de eventos que el módulo `performance_counters` acumula durante una ventana de medición y publica como una instantánea. Es un observador puro, sin `ready` hacia ningún bloque, de modo que instrumentar no altera los tiempos que se miden. Detalle del módulo: [contadores de métricas](modulos/microarquitectura-contadores.md).
+
 ## Referencias
 
 - [ISA de PORYGON](isa.md): formatos, instrucciones y codificación.

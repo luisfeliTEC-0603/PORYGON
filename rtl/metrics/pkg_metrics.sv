@@ -4,7 +4,7 @@
  * flanco. Las estructuras no tienen ready ni controlan la jerarquia.
  * Los ids de eventos se extienden con ceros a 32 bits; los puertos funcionales
  * conservan su ancho derivado. Los deltas admiten finalizaciones simultaneas.
- * @see docs/ii-proyecto/metrics.md
+ * @see docs/modulos/microarquitectura-contadores.md
  */
 package pkg_metrics;
     typedef logic [63:0] counter_t;
