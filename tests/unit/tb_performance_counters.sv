@@ -3,7 +3,7 @@
  * @details Los eventos se construyen a mano a partir de pkg_metrics, sin
  * instanciar caches ni buffers, de modo que los valores esperados provienen
  * del contrato y no de otra implementacion. Los casos reproducen los de
- * referencia de docs/ii-proyecto/metrics.md seccion 9.
+ * referencia de docs/modulos/microarquitectura-contadores.md seccion 10.
  */
 module tb_performance_counters;
     import pkg_metrics::*;
