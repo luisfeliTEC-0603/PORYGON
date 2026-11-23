@@ -113,7 +113,7 @@ A igual frecuencia, la corrida con menos ciclos termina antes. El IPC indica cu�
 | [Organización y microarquitectura](docs/microarchitecture.md) | ¿Cómo se conectan el pipeline, las unidades funcionales y la memoria? |
 | [Jerarquía de memoria](docs/memory-hierarchy.md) | ¿Cómo se resuelven aciertos, fallos, reemplazos y escrituras pendientes? |
 | [Evaluación de rendimiento](docs/performance.md) | ¿Cómo cambian los ciclos, el IPC y el AMAT según el patrón de acceso? |
-| [Guías por módulo](docs/modulos/) | ¿Cómo funcionan internamente L1-D, L2, los buffers y el controlador? |
+| [Guías por módulo](docs/modulos/) | ¿Cómo funcionan internamente L1-D, L2, los buffers, el controlador y los contadores de métricas? |
 | [ISA](docs/isa.md) | ¿Cómo se codifican y agrupan las instrucciones? |
 | [Simulación](docs/simulation.md) | ¿Cómo se modela y verifica el sistema? |
 | [Integración con el compilador](docs/compiler-integration.md) | ¿Cómo llega un programa Piper al procesador? |
