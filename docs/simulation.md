@@ -182,10 +182,10 @@ En la iteración 1 cierra el conteo en esa detección y observa las salidas tras
 adaptado, reconocer el marcador al avanzar EX detiene fetch y admisión e
 invalida los bundles posteriores ya capturados. Ejecución y WB siguen avanzando
 para completar el bundle marcador y las operaciones anteriores, según el
-[contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#parada-del-programa-y-vaciado-del-pipeline).
+[control de avance del núcleo](microarchitecture.md).
 El núcleo ya detecta el vaciado e informa ese último flanco con `stop_done_o`;
 el sistema conecta ese pulso al cierre de los contadores P2-10. El drenado posterior de líneas
-dirty queda fuera de esa ventana, según el [contrato de métricas](ii-proyecto/metrics.md#2-periodo-de-medición).
+dirty queda fuera de esa ventana, según el [método de medición](performance.md#método).
 
 ## 2. Banco de registros y estado criptográfico
 
@@ -219,7 +219,7 @@ memoria y descuenta en cada avance sin recargas, incluidos los NOPs. La bóveda
 conserva su reloj y reset sigue activo. Las instrucciones criptográficas
 retenidas no se aceptan ni recargan la sesión hasta avanzar. Las métricas y el
 timeout de memoria continúan en ciclos reales. La regla completa se define en el
-[contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#temporizador-de-autenticación).
+[control de avance del núcleo](microarchitecture.md).
 
 ## 3. Memorias y direcciones efectivas
 
@@ -414,7 +414,7 @@ Los errores y el watchdog conservan la instantánea parcial como fallida.
 
 Cada load obtiene una línea completa y cada store lee, modifica por máscara y
 escribe una línea completa. Los tiempos y el tráfico de esta adaptación están
-definidos en [CPU–memoria §6](ii-proyecto/cpu-memory-contract.md#6-referencia-sin-caché-de-p2-12).
+definidos en [modelo de referencia sin caché](../rtl/memory/uncached_adapter.sv).
 La inicialización y el cierre usan las mismas reglas en ambos modos: inicio
 antes de fetch y cierre al completar el programa, incluidos sus últimos efectos.
 El volcado recupera también los datos residentes en cachés/buffers en la

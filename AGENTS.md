@@ -19,15 +19,10 @@ Antes de diseñar una implementación:
 
 1. Lee el issue vigente completo: objetivo, alcance, comportamiento esperado,
    verificación, dependencias y referencias. Si no puedes consultarlo, solicita
-   su contenido; no lo reconstruyas desde el título ni desde `issue-map.md`,
-   que es un borrador de planificación.
-2. Lee los contratos de `docs/ii-proyecto/`: [Jerarquía](docs/ii-proyecto/hierarchy.md),
-   [CPU–memoria](docs/ii-proyecto/cpu-memory-contract.md),
-   [Movimiento de líneas](docs/ii-proyecto/line-transfers.md),
-   [Interfaces](docs/ii-proyecto/interfaces.md),
-   [Métricas](docs/ii-proyecto/metrics.md) y
-   [Skeletons](docs/ii-proyecto/skeletons.md). Usa la tabla siguiente para profundizar
-   en los contratos que afectan al issue, incluidos sus casos concretos.
+   su contenido.
+2. Consulta [Jerarquía](docs/memory-hierarchy.md), [Rendimiento](docs/performance.md)
+   y las [guías por módulo](docs/modulos/) para identificar el comportamiento
+   documentado y los módulos afectados.
 3. Contrasta el alcance con la parte **CE4301** del
    [enunciado](../../proyecto-ii-grupal-perf-cache.pdf), incluidos los requisitos
    avanzados aplicables. El archivo está en el workspace, fuera de este repositorio;
@@ -37,22 +32,7 @@ Antes de diseñar una implementación:
    [Simulación](docs/simulation.md) y el RTL relacionado para distinguir el
    comportamiento implementado de los cambios previstos para Proyecto II.
 
-| Issue | Contratos que requieren especial atención |
-| --- | --- |
-| P2-03: memoria y controlador | Jerarquía §6, Interfaces §§6–7, Skeletons §3 y Métricas §6. |
-| P2-04: eviction buffer | Jerarquía §§4–5, Movimiento de líneas §§2–3, Interfaces §§5 y 7, Métricas §§5–6. |
-| P2-05: write buffer | Jerarquía §§4–5, Movimiento de líneas §§2–3, Interfaces §§2 y 4, Métricas §5. |
-| P2-06: L1-D | CPU–memoria, Jerarquía §§2–4, Movimiento de líneas, Interfaces §§2–3 y 8, Métricas §§4–5. |
-| P2-07/P2-08: L2 | Jerarquía §§2–5, Movimiento de líneas, Interfaces §§3–7 y 9, Métricas §§5–6. |
-| P2-09: LSU y núcleo | CPU–memoria completo, especialmente stalls, parada y temporizador; Métricas §§2–4 y RTL de las etapas y unidades con estado. |
-| P2-10: contadores | Métricas completo, Skeletons §4 y contratos de los canales que originan cada evento. |
-| P2-11: integración | CPU–memoria, Interfaces completo, Movimiento de líneas, Skeletons §§3–4 y Métricas §§2–4. |
-| P2-12: referencia sin caché | CPU–memoria, Jerarquía §6, Interfaces §§6–7 y Métricas; la adaptación palabra/línea requiere diseño aprobado. |
-| P2-13/P2-14: verificación y evaluación | Todos los contratos; especialmente tiempos de referencia, casos concretos, periodo de medición, indicadores y recuperación de resultados. |
-
-El enunciado establece requisitos y los Markdown recogen las decisiones acordadas.
-El issue delimita el trabajo; los skeletons concretan interfaces y todavía no
-demuestran comportamiento funcional. No elijas silenciosamente una fuente ante
+El enunciado establece los requisitos y el issue delimita el trabajo. No elijas silenciosamente una fuente ante
 una contradicción entre ellas o con el RTL: cita las secciones, explica el
 conflicto y consulta. Tampoco reduzcas requisitos avanzados al mínimo funcional;
 por ejemplo, pipeline interno de caché y non-blocking son requisitos distintos.

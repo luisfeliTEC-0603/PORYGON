@@ -116,8 +116,8 @@ marca el final del programa: al aceptarlo en EX se detienen fetch y admisión,
 se invalidan los bundles posteriores ya capturados y se permite completar su
 bundle y todas las operaciones anteriores. Los NOPs posteriores al marcador
 no se ejecutan; los demás saltos conservan sus dos bundles de retardo. La regla
-se define en el [contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#parada-del-programa-y-vaciado-del-pipeline)
-y el cierre de medición, en el [contrato de métricas](ii-proyecto/metrics.md#2-periodo-de-medición).
+se define en el [control de avance del núcleo](microarchitecture.md)
+y el cierre de medición, en el [método de medición](performance.md#método).
 
 ## 4. Contratos del codegen
 
@@ -219,7 +219,7 @@ considerando también los NOPs insertados. El scheduler conserva el orden del
 estado criptográfico, pero no inserta reautenticación. En Proyecto II, las
 esperas de memoria conservan el tiempo restante de sesión. Los NOPs que avanzan
 sí consumen ese tiempo. Una instrucción retenida no actúa ni recarga; se valida
-al aceptarse, según el [contrato CPU–memoria](ii-proyecto/cpu-memory-contract.md#temporizador-de-autenticación).
+al aceptarse, según el [control de avance del núcleo](microarchitecture.md).
 
 La instrucción `pwd` existe en la ISA y el RTL, pero **no tiene intrínseca
 Piper** en esta versión. Un fallo de autenticación se observa mediante los
