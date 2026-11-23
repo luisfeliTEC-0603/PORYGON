@@ -1,119 +1,120 @@
 # PORYGON
 
-<div align="center">
+<img src="docs/imgs/porygon.png" alt="PORYGON" width="140">
 
-<img src="docs/imgs/porygon.png" alt="porygon" width="200" height="200">
+PORYGON es un procesador VLIW de 32 bits con ISA propia, implementado en SystemVerilog para el curso CE4301 Arquitectura de Computadores I. Ejecuta *bundles* de 64 bits con cuatro slots de 16 bits en un pipeline de cuatro etapas. Cuenta con ocho registros de propósito general, unidades aritméticas, de saltos y de acceso a memoria, y una unidad Feistel4 con bóveda de llaves.
 
-[![VLIW](https://img.shields.io/badge/Architecture-VLIW-fa646b?style=for-the-badge&logoColor=white)]()
-[![SystemVerilog](https://img.shields.io/badge/SystemVerilog-2026-5fa69f?style=for-the-badge&logoColor=white)]()
-[![Cipher](https://img.shields.io/badge/Cipher-Feistel4-fa646b?style=for-the-badge&logoColor=white)]()
+El Proyecto II incorpora una jerarquía exclusiva de datos con L1-D de 4 KiB, L2 de 16 KiB y RAM de 64 KiB. Los contadores permiten medir cómo cambia el tiempo de ejecución al variar el patrón de acceso y comparar el mismo programa con una referencia sin caché.
 
-**Procesador VLIW con ISA propia y una unidad criptográfica Feistel4**
+## Requisitos y compilación
 
-</div>
-
-PORYGON es un procesador VLIW de 32 bits implementado en SystemVerilog. Su ISA propia organiza las instrucciones en bundles de 64 bits, con cuatro slots de 16 bits y asignación flexible de unidades funcionales.
-
-Incluye un pipeline de cuatro etapas, ocho registros de propósito general, unidades aritméticas, acceso a memoria, saltos y una unidad criptográfica Feistel4 con bóveda de llaves. El repositorio reúne el RTL, las memorias de instrucciones y datos, los testbenches y las herramientas para cargar archivos y recuperar los resultados de la simulación.
-
-Se integra con [PIPER-COMPILER](https://github.com/luisfeliTEC-0603/PIPER-COMPILER), que genera, ensambla y calendariza los programas para su ejecución en PORYGON.
-
-## Estructura
-
-| Ruta | Contenido |
-|------|-----------|
-| `rtl/` | Paquete compartido y conexión del sistema |
-| `rtl/core/` | Pipeline, registros, unidades funcionales, decode y criptografía |
-| `rtl/memory/` | Memorias de instrucciones y datos |
-| `tests/unit/` | Testbenches de componentes |
-| `tests/integration/` | Testbenches del sistema completo |
-| `tests/programs/` | Programas, datos de entrada y resultados de referencia |
-| `tests/tools/` | Pruebas de carga y extracción |
-| `tools/` | Script de simulación y herramientas de memoria en `memory/` |
-| `docs/` | ISA, microarquitectura, simulación e integración con el compilador |
-| `build/` | Simuladores, ondas y resultados generados |
-| `Makefile` | Compilación, ejecución y limpieza |
-
-## Instalación
-
-Requiere **Icarus Verilog** (`iverilog` y `vvp`), **GNU Make**, **Bash** y **Python 3**. GTKWave es opcional para visualizar las ondas de simulación.
-
-Desde la raíz del repositorio, con las herramientas instaladas, compilar el sistema:
+Se necesitan Icarus Verilog (`iverilog` y `vvp`), GNU Make, Bash y Python 3. GTKWave es opcional para ver las formas de onda. Las imágenes de instrucciones incluidas se pueden ejecutar directamente. Todos los comandos siguientes parten de la raíz de PORYGON.
 
 ```bash
-make elaborate
+make elaborate   # Compila y elabora el sistema con Icarus Verilog
+make sim         # Ejecuta la prueba de integración predeterminada
 ```
 
-Los programas `.mem` incluidos se pueden ejecutar sin instalar el compilador Piper.
+## Ejecutar un benchmark
 
-## Ejecución
-
-Ejecutar la simulación de integración del procesador (`tb_top`):
+El microbenchmark recorre 4096 nodos de una lista enlazada y acumula sus direcciones. La imagen de instrucciones define el recorrido y la imagen de datos determina el orden de las visitas. El siguiente comando ejecuta el patrón secuencial con caché y comprueba que el registro `r1` contenga la suma esperada.
 
 ```bash
-make sim
+bench=tests/programs/benchmarks
+./tools/sim.sh "$bench/mem_microbenchmark.mem" \
+  --data "$bench/secuencial_datos.mem" --out build/sim/secuencial \
+  --max-cycles 400000 --expect r1=301981696 --expect errors=0
 ```
 
-Ejecutar las pruebas unitarias disponibles de ALU, SuperALU, registros, LOST, BRUH y CRYPTO, junto con las herramientas de memoria:
+La evaluación completa se reproduce con el siguiente comando.
 
 ```bash
-make test
+make bench
 ```
 
-Para ejecutar un programa, indicar su imagen de instrucciones y, opcionalmente, su imagen de datos:
+Este comando regenera las imágenes y ejecuta seis simulaciones. Prueba los recorridos secuencial, con salto de ocho palabras y aleatorio, cada uno con y sin caché. Comprueba la misma suma final en las seis corridas, imprime una tabla comparativa y guarda los resultados por caso en `build/bench/`. La [evaluación de rendimiento](docs/performance.md) explica los patrones y los resultados.
+
+## Ejecutar un programa propio
+
+El simulador recibe una imagen hexadecimal de instrucciones (`PROG`, un bundle por línea). Si el programa necesita datos iniciales, se agrega una segunda imagen (`DATA`, organizada por bytes).
 
 ```bash
-make sim PROG=programa.mem DATA=datos.mem
+make sim PROG=programa.mem DATA=datos.mem MAX_CYCLES=400000
 ```
 
-Por ejemplo, el caso Feistel4 de texto corto incluido en el repositorio:
+Se puede omitir `DATA` si el programa inicializa sus datos. La opción `NO_CACHE=1` selecciona la referencia sin caché. Por defecto, las salidas quedan en `build/sim/<nombre-del-programa>/`.
+
+La variable `PIPER` debe apuntar al repositorio local de [PIPER-COMPILER](https://github.com/luisfeliTEC-0603/PIPER-COMPILER). Una vez compiladas las herramientas, se utiliza uno de los dos comandos según el formato del archivo fuente. Los programas Piper se compilan con `pipoc` y los programas en ASM lineal se procesan con `porygon-schedule`.
 
 ```bash
-make sim PROG=tests/programs/feistel4/kit_texto_corto.mem \
-  DATA=tests/programs/feistel4/kit_texto_corto_datos.mem
+PIPER=/ruta/a/PIPER-COMPILER
+make -C "$PIPER" all
+mkdir -p build
+# Desde Piper
+"$PIPER/bin/pipoc" mem programa.rwt -o build/programa.mem
+# Desde ASM lineal
+"$PIPER/bin/porygon-schedule" programa.asm build/programa.bundles build/programa.mem
 ```
 
-Los registros finales, el volcado de memoria, las ondas y los logs se guardan en `build/sim/<programa>/`. El script `tools/sim.sh` permite configurar límites de ciclos, directorios de salida y valores esperados.
+En ambos casos, la imagen generada se ejecuta con `make sim PROG=build/programa.mem`.
 
-### Carga y extracción de archivos
+### Cargar datos y recuperar memoria
 
-Convertir un archivo a una imagen de memoria de datos:
+La herramienta `load_file.py` convierte un archivo binario en una imagen de datos para la dirección inicial que espera el programa. En este ejemplo, la entrada se carga en `0x10000`. Tras la simulación, se extraen cuatro bytes a partir de esa dirección y se muestran en hexadecimal.
 
 ```bash
 mkdir -p build
-python3 tools/memory/load_file.py --input archivo.bin \
-  --output build/datos.mem --address 0x10000
+python3 tools/memory/load_file.py --input entrada.bin --output build/datos.mem --address 0x10000
+make sim PROG=build/programa.mem DATA=build/datos.mem
+python3 tools/memory/extract_data.py --memory build/sim/programa/memory.dump.mem \
+  --address 0x10000 --size 4 --output build/resultado.bin
+od -An -tx1 build/resultado.bin
 ```
 
-Después de ejecutar el ejemplo Feistel4, recuperar el texto descifrado:
+La dirección de extracción y la cantidad de bytes dependen de la ubicación y del tamaño del resultado en memoria. Si el programa devuelve el resultado en un registro, su valor final se puede consultar en `results.txt`.
+
+## Leer los resultados
+
+Al finalizar una simulación exitosa, la terminal muestra el estado y los registros, seguidos de un cuadro con los ciclos, las instrucciones completadas, el IPC, los ciclos de espera por memoria, las tasas de acierto y el AMAT observado. Las tasas se muestran como porcentajes y los valores que no aplican aparecen como `N/A`.
+
+| Archivo de cada corrida | Qué consultar |
+| --- | --- |
+| `results.txt` | Estado de terminación, errores y valores finales de los registros. |
+| `memory.dump.mem` | Imagen final de la memoria de datos, incluidas las modificaciones pendientes en la jerarquía. |
+| `metrics.txt` | Contadores en formato `clave=valor`, entre ellos ciclos, instrucciones, esperas y accesos a memoria. |
+| `indicators.json` | Indicadores derivados, incluidos IPC, tasas de acierto y AMAT (latencia media observada por acceso a datos). |
+| `waves.vcd` | Señales de la simulación para inspeccionar en GTKWave. |
+
+El siguiente comando muestra en la terminal los indicadores del ejemplo secuencial.
 
 ```bash
-./tools/memory/extract.sh kit_texto_corto 0x14000 21 texto_recuperado.txt
+python3 tools/metrics/indicators.py --input build/sim/secuencial/metrics.txt --format texto
 ```
 
-El archivo queda en `build/sim/kit_texto_corto/`. `make clean` elimina el contenido generado en `build/`.
+A igual frecuencia, la corrida con menos ciclos termina antes. El IPC indica cuántas instrucciones se completaron por ciclo. Las esperas por memoria y el AMAT ayudan a explicar la diferencia entre las corridas con y sin caché.
+
+## Estructura del repositorio
+
+| Ruta | Contenido |
+| --- | --- |
+| [rtl/core/](rtl/core/) | Pipeline, registros y unidades funcionales. |
+| [rtl/memory/](rtl/memory/) | Memoria de instrucciones, cachés, buffers, controlador y RAM. |
+| [rtl/metrics/](rtl/metrics/) | Eventos y contadores de rendimiento. |
+| [rtl/porygon_system.sv](rtl/porygon_system.sv) | Integración del procesador con el subsistema de memoria. |
+| [tests/](tests/) | Pruebas unitarias y de integración, programas, datos y benchmarks. |
+| [tools/](tools/) | Simulación, conversión de imágenes de memoria y análisis de métricas. |
+| [Makefile](Makefile) | Compilación, simulación, pruebas y benchmarks. |
+| [docs/](docs/) | Documentación de diseño y resultados. |
 
 ## Documentación
 
-- [Instrucciones para agentes y aprobación de diseños](AGENTS.md)
-- [Descripción del proyecto](docs/project-description.md)
-- [ISA](docs/isa.md)
-- [Microarquitectura](docs/microarchitecture.md)
-- [Jerarquía de memoria del Proyecto II (diseño)](docs/ii-proyecto/hierarchy.md)
-- [Contrato CPU–memoria del Proyecto II (propuesta de diseño)](docs/ii-proyecto/cpu-memory-contract.md)
-- [Movimiento de líneas del Proyecto II](docs/ii-proyecto/line-transfers.md)
-- [Interfaces de la jerarquía del Proyecto II](docs/ii-proyecto/interfaces.md)
-- [Contrato de métricas del Proyecto II](docs/ii-proyecto/metrics.md)
-- [Skeletons de la jerarquía del Proyecto II](docs/ii-proyecto/skeletons.md)
-- [Evaluación de rendimiento del Proyecto II](docs/ii-proyecto/performance.md)
-- [Guía de simulación](docs/simulation.md)
-- [Integración con PIPER-COMPILER](docs/compiler-integration.md)
-- [Programas y ejemplos Feistel4](tests/programs/feistel4/README.md)
-
-## TODO — Proyecto 2: implementación de jerarquía de memoria
-
-- [ ] Diseñar la jerarquía de memoria y definir sus parámetros e interfaces.
-- [ ] Implementar los módulos y controladores de memoria caché.
-- [ ] Integrar la jerarquía con el procesador y adaptar el manejo de las latencias de acceso.
-- [ ] Incorporar pruebas para verificar el funcionamiento del sistema de memoria.
-- [ ] Evaluar el rendimiento y documentar la arquitectura y los resultados.
+| Documento | Pregunta que responde |
+| --- | --- |
+| [Organización y microarquitectura](docs/microarchitecture.md) | ¿Cómo se conectan el pipeline, las unidades funcionales y la memoria? |
+| [Jerarquía de memoria](docs/memory-hierarchy.md) | ¿Cómo se resuelven aciertos, fallos, reemplazos y escrituras pendientes? |
+| [Evaluación de rendimiento](docs/performance.md) | ¿Cómo cambian los ciclos, el IPC y el AMAT según el patrón de acceso? |
+| [Guías por módulo](docs/modulos/) | ¿Cómo funcionan internamente L1-D, L2, los buffers y el controlador? |
+| [ISA](docs/isa.md) | ¿Cómo se codifican y agrupan las instrucciones? |
+| [Simulación](docs/simulation.md) | ¿Cómo se modela y verifica el sistema? |
+| [Integración con el compilador](docs/compiler-integration.md) | ¿Cómo llega un programa Piper al procesador? |
+| [Ejemplos Feistel4](tests/programs/feistel4/README.md) | ¿Cómo se procesan y recuperan archivos con la unidad criptográfica? |

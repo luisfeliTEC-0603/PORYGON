@@ -200,4 +200,5 @@ if (( ${#expectations[@]} == 0 )); then
 else
     printf '  estado : PASS\n'
 fi
+python3 "$root_dir/tools/metrics/summary.py" "$indicators_file"
 print_artifact_paths

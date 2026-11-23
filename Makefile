@@ -230,12 +230,12 @@ BENCH_PATTERNS := secuencial stride aleatorio
 BENCH_EXPECT := 301981696
 
 bench:
-	python3 $(BENCH_SRC)/gen_benchmarks.py
+	python3 $(BENCH_SRC)/mem_microbenchmark.py
 	@for p in $(BENCH_PATTERNS); do \
-		./tools/sim.sh $(BENCH_SRC)/patron.mem --data $(BENCH_SRC)/$${p}_datos.mem \
+		./tools/sim.sh $(BENCH_SRC)/mem_microbenchmark.mem --data $(BENCH_SRC)/$${p}_datos.mem \
 			--max-cycles 400000 --expect r1=$(BENCH_EXPECT) --expect errors=0 \
 			--out $(BENCH_DIR)/$$p || exit 1; \
-		./tools/sim.sh $(BENCH_SRC)/patron.mem --data $(BENCH_SRC)/$${p}_datos.mem \
+		./tools/sim.sh $(BENCH_SRC)/mem_microbenchmark.mem --data $(BENCH_SRC)/$${p}_datos.mem \
 			--no-cache --max-cycles 600000 --expect r1=$(BENCH_EXPECT) --expect errors=0 \
 			--out $(BENCH_DIR)/$${p}_sincache || exit 1; \
 	done

@@ -120,7 +120,7 @@ def main():
     out = Path(args.output)
 
     bundles, loop_start, loop_len = program()
-    (out / "patron.mem").write_text("\n".join(bundles) + "\n")
+    (out / "mem_microbenchmark.mem").write_text("\n".join(bundles) + "\n")
 
     resultados = {}
     for name, builder in PATTERNS.items():
@@ -129,7 +129,7 @@ def main():
         (out / f"{name}_datos.mem").write_text(data_image(order))
         resultados[name] = expected_sum(order)
 
-    print(f"programa        : patron.mem, {len(bundles)} bundles")
+    print(f"programa        : mem_microbenchmark.mem, {len(bundles)} bundles")
     print(f"bucle           : {loop_len} bundles por acceso, inicia en {loop_start}")
     print(f"arreglo         : {NODES} nodos de {NODE_BYTES} B = {NODES * NODE_BYTES} B")
     print(f"accesos         : {ACCESSES}")
